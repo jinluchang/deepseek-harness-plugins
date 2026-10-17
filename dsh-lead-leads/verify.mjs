@@ -437,18 +437,45 @@ check('A keep list naming a scope-registered tool is pruned, not fatal', () => {
 
 // --- empty-keep outcomes: the fail-open fix and the case left unchanged -------
 
-// These three checks replace the single old check that encoded the fail-open
-// behaviour ("A Lead with no restrictable tool keeps its tools and warns"): that
-// scenario is the UNKNOWN-names case, which is deliberately retained, and the
-// two fail-closed outcomes are new.
+// Empty-keep outcomes. The ORIGIN of the keep list decides the result: a
+// catalog/toggle-derived list knows the scope is not the issue and fails closed,
+// while an explicit legacy `leadTools` keeps the warn-and-keep path. These
+// replace the old check "A Lead with no restrictable tool keeps its tools and
+// warns", whose scenario is now case (b).
 
-check('UNKNOWN names: a keep list whose names are all absent from the scope keeps the preset tools and warns', () => {
+check('(b) LEGACY leadTools naming only absent tools keeps the preset tools and warns', () => {
   const lead = makeAgent({ preset: 'lead-leads', role: 'lead' })
   lead.agent.ctx.tools.schemas = () => [...AGENT_LAYER].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
-  apply(host, {})
-  assert.equal(lead.activeAllow(), undefined, 'nothing was restricted: the scope is not what the config describes')
+  apply(host, { leadTools: ['pwsh'] })
+  assert.equal(lead.activeAllow(), undefined, 'an explicit legacy keep list is the ONE retained warn-and-keep path')
   assert.match(warnings.join(' | '), /no configured Lead tool/)
+  assert.equal(lead.names().includes('bash'), true, 'this path deliberately leaves the preset surface intact')
+})
+
+check('(a) TOGGLE-derived keep list of only absent tools restricts the Lead to nothing', () => {
+  const lead = makeAgent({ preset: 'lead-leads', role: 'lead' })
+  // A scope without `pwsh` (platform-conditional row) alongside the own-scope tools.
+  lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'pwsh'), ...AGENT_LAYER].map(name => ({ name }))
+  const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
+  apply(host, { tools: { ...ALL_WHITELIST_OFF, pwsh: true } })
+  assert.deepEqual(lead.activeAllow(), [], 'a toggle-derived list resolving to nothing must fail closed')
+  const names = lead.names()
+  assert.equal(names.includes('bash'), false, 'bash must not survive: the Lead keeps nothing')
+  assert.equal(names.includes('write'), false, 'write must not survive either')
+  for (const own of AGENT_LAYER) {
+    assert.equal(names.includes(own), true, `own-scope ${own} cannot be hidden by a restriction`)
+  }
+  assert.match(warnings.join(' | '), /pwsh is not mounted in this scope/, 'the warning must name the absent tool')
+})
+
+check('(c) MIXED toggle list of known and absent tools restricts to the known name only', () => {
+  const lead = makeAgent({ preset: 'lead-leads', role: 'lead' })
+  lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'pwsh'), ...AGENT_LAYER].map(name => ({ name }))
+  const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
+  apply(host, { tools: { ...ALL_WHITELIST_OFF, read: true, pwsh: true } })
+  assert.deepEqual(lead.activeAllow(), ['read'], 'the known name is kept and the absent one is dropped')
+  assert.equal(warnings.length, 0, `the mixed case must not warn; got: ${warnings.join(' | ')}`)
 })
 
 check('ALL-OFF intent: an empty keep list restricts to nothing instead of failing open', () => {

@@ -108,16 +108,23 @@ change reaches **Leads created afterwards**; a running Lead keeps the surface it
 was constrained with and is never re-reconciled. First-time discovery of the
 client half needs one Host restart; later `client.js` edits hot-reload.
 
-Fail-open fix. An empty keep list is a deliberate "keep nothing" intent (every
-`whitelist` toggle off) and now calls `restrict({ allow: [] })`, which hides the
-whole inherited surface, instead of leaving the Lead holding every tool. Two
-distinct cases are handled separately:
+Fail-open fix. Every outcome in which the Lead may keep nothing now calls
+`restrict({ allow: [] })`, which hides the whole inherited surface, instead of
+leaving the Lead holding every tool. The **origin** of the keep list decides what
+a zero result means:
 
-- names **unknown to the scope** (a non-empty keep list in which nothing exists)
-  keeps today's warning and leaves the Lead with its preset tools — the scope is
-  not what the config describes, so nothing is hidden on that reading;
+- an empty keep list — every `whitelist` toggle off, or an explicit empty
+  `leadTools` — restricts to nothing;
+- a **toggle-derived** list whose names are all absent from the scope (every
+  default off and only `pwsh` on, say, on Linux) also restricts to nothing, and
+  the warning names the tools that are not mounted. This path is reachable from
+  the page, so it fails closed rather than handing the Lead `bash` and `write`;
 - names known but **none restrictable** (e.g. only own-scope Team tools) also
-  keeps nothing, rather than failing open.
+  keeps nothing;
+- the **one** retained warn-and-keep path is an explicit legacy `leadTools` row
+  config whose names are all absent from the scope: the user spoke in tool names
+  about a scope the plugin did not choose, so the preset surface is left intact
+  and a warning is logged.
 
 The page is `settings.section` id `lead-leads-tools`, registered by the client
 half; the Host suppresses the auto-generated generic config page for this row
@@ -149,12 +156,14 @@ half; the Host suppresses the auto-generated generic config page for this row
    required teammates before giving the final answer" lives. The section names
    that instruction and supersedes it.
 6. The plugin fails safe. A configured name the registry rejects is dropped and
-   the remaining allow list still applies. An empty keep list (all `whitelist`
-   toggles off, or an explicit empty `leadTools`) restricts the Lead to nothing
-   rather than leaving it unrestricted; a keep list whose names are all unknown
-   to the scope keeps the preset tools and logs a warning, and a keep list whose
-   names are known but none restrictable also keeps nothing. The Host never fails
-   to boot because of this plugin.
+   the remaining allow list still applies. Everything that resolves to "keep
+   nothing" restricts the Lead to nothing rather than leaving it unrestricted: an
+   empty keep list (all `whitelist` toggles off, or an explicit empty
+   `leadTools`), a toggle-derived list whose names are all absent from the scope,
+   and a list whose names are known but none restrictable. The only retained
+   warn-and-keep path is an explicit legacy `leadTools` whose names are all
+   absent from the scope, which keeps the preset tools and logs a warning. The
+   Host never fails to boot because of this plugin.
 
 ## Non-goals
 

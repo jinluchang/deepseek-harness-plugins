@@ -413,24 +413,39 @@ function constrain(agent, config, ctx) {
       disposers.push(scopedTools.restrict({ allow: [] }))
     }
     if (policy.keep.length === 0) {
-      // Deliberate "keep nothing": every class-`whitelist` toggle is off, or the
-      // legacy `leadTools` was configured as an empty array. Skipping the
-      // restriction here is the fail-open that once left an all-off Lead
-      // holding every tool, so restrict to nothing instead.
+      // Branch 1 — "keep nothing" by intent: every class-`whitelist` toggle is
+      // off, or the legacy `leadTools` was configured as an empty array.
+      // Skipping the restriction here is the fail-open that once left an all-off
+      // Lead holding every tool, so restrict to nothing instead.
       restrictToNothing()
     } else if (allow.length === 0) {
-      // The DISTINCT case, deliberately unchanged: the config names tools but
-      // NONE of them exist in this scope, so the scope is not what the config
-      // describes. Warn and keep the preset surface instead of hiding everything
-      // on a reading we cannot trust (e.g. a platform-conditional row).
-      warn(ctx, `${name}: no configured Lead tool exists in this scope; the Lead keeps its preset tools`)
+      // Branch 2 — the keep list is non-empty but EVERY name in it is absent
+      // from this scope, so nothing can be kept. What that means depends on who
+      // authored the list:
+      if (policy.keepConfigured) {
+        // LEGACY explicit `leadTools`: the user named tools for a scope the
+        // plugin did not choose, so the scope may simply not be what the config
+        // describes. This is the ONE retained warn-and-keep path.
+        warn(ctx, `${name}: no configured Lead tool exists in this scope; the Lead keeps its preset tools`)
+      } else {
+        // CATALOG toggles: the page authored this list against the tool
+        // universe, so a list resolving to nothing means "keep nothing" — fail
+        // CLOSED. Reached by turning every default off except a tool this scope
+        // does not mount (e.g. `pwsh` on Linux); warning and leaving the Lead
+        // unrestricted would hand it bash, write and edit again.
+        const absent = policy.keep.filter(entry => !available.includes(entry))
+        restrictToNothing()
+        warn(ctx, `${name}: ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not mounted in this scope; the Lead keeps none of its preset tools`)
+      }
     } else if (allow.length < available.length) {
+      // Branch 3 — at least one requested name is restrictable; a mixed
+      // known+absent list lands here and restricts to the known names only.
       try {
         disposers.push(restrictPruning(scopedTools, agent, allow))
       } catch (error) {
-        // Non-empty by user intent yet zero RESTRICTABLE names: every requested
-        // tool is own-scope (the Team tools) or otherwise unreachable by
-        // `restrict()`. Keep nothing rather than fail open.
+        // Branch 4 — non-empty by user intent yet zero RESTRICTABLE names:
+        // every requested tool is own-scope (the Team tools) or otherwise
+        // unreachable by `restrict()`. Keep nothing rather than fail open.
         restrictToNothing()
         warn(ctx, `${name}: none of ${allow.length} configured Lead tools is restrictable; the Lead keeps none of its preset tools (${error instanceof Error ? error.message : String(error)})`)
       }

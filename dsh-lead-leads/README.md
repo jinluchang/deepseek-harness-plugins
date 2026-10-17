@@ -68,9 +68,14 @@ install needs one Host restart for the client half to be discovered; later
 `client.js` edits hot-reload.
 
 Turning every whitelist toggle off keeps **nothing** — the Lead is restricted to
-its own-scope tools rather than left holding every tool. An explicitly configured
-legacy `leadTools`/`denyTools` array still wins wholesale over the catalog for its
-own list, and the page shows a notice while one is set.
+its own-scope tools rather than left holding every tool. The same fail-closed
+rule covers a toggle list whose tools are not mounted in this scope (everything
+off except `pwsh`, say, on Linux): the Lead keeps nothing and the warning names
+the tools that are not mounted. The only path that leaves the preset surface
+intact is an explicit legacy `leadTools` row config whose names are all absent
+from the scope. An explicitly configured legacy `leadTools`/`denyTools` array
+still wins wholesale over the catalog for its own list, and the page shows a
+notice while one is set.
 
 ## Files
 
