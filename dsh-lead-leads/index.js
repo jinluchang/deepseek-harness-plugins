@@ -33,7 +33,62 @@
  * @module @local/dsh-lead-leads
  */
 
-import z from '@deepseek-ai/schemastery'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
+
+/**
+ * Resolve the config-schema library (`@deepseek-ai/schemastery`) without a
+ * bundle-local `node_modules`.
+ *
+ * A settings `Config` cannot be a bare standard-schema object. Three harness
+ * seams decide that, and all three need the real library:
+ *
+ * - the loader only treats a config change as volatile-only when
+ *   `schema['~standard'].vendor === 'schemastery'` and it can read the schema's
+ *   `meta`/`type`/`dict` (`vendor/loader/src/config/diff.ts` `equalExceptVolatile`);
+ *   any other value compares the whole raw config, so a toggle edit would remount
+ *   the plugin and re-reconcile every running Lead;
+ * - the settings service needs `toJSON()` plus `meta`/`type`/`dict` on the schema
+ *   (`packages/settings/settings/src/index.ts` `schema()`/`describe()`, and
+ *   `packages/settings/settings/src/schema.ts` `volatileForm`/`isVolatilePath`);
+ * - the no-remount commit walks cosmokit `Volatile` references that the schema
+ *   validator produced, in the running config (`vendor/loader/src/config/entry.ts`
+ *   `_commitVolatile`).
+ *
+ * The bundle ships no `node_modules`, and the Host that loads it always has the
+ * library in its own resolution graph, so resolve from the Host — offline, and
+ * stable across restarts:
+ *
+ * 1. the plugin's own location, for an install that did fetch dependencies;
+ * 2. the running process entry (`process.argv[1]`), which is inside the harness;
+ * 3. `$DSH_HARNESS_CHECKOUT` (the offline suites) through the pnpm workspace's
+ *    hoisted store.
+ *
+ * @returns {object|undefined} the library, or `undefined` when no anchor resolves
+ *   it. `Config` is then undefined: the plugin still enforces the catalog
+ *   defaults, but no settings namespace exists to render the page.
+ */
+function resolveSchemaLibrary() {
+  const anchors = [import.meta.url, process.argv[1]]
+  const checkout = process.env.DSH_HARNESS_CHECKOUT
+  if (typeof checkout === 'string' && checkout.length > 0) {
+    anchors.push(join(checkout, 'node_modules', '.pnpm', 'node_modules', '__dsh_plugin_anchor__.js'))
+  }
+  for (const anchor of anchors) {
+    if (typeof anchor !== 'string' || anchor.length === 0) continue
+    try {
+      const loaded = createRequire(anchor)('@deepseek-ai/schemastery')
+      if (typeof loaded?.object === 'function') return loaded
+      if (typeof loaded?.default?.object === 'function') return loaded.default
+    } catch {
+      // The next anchor may be the one inside the Host installation.
+    }
+  }
+  return undefined
+}
+
+/** Schema library `Config` is built from; `undefined` when unresolved. */
+export const schemaLibrary = resolveSchemaLibrary()
 
 /** Preset that selects a non-blocking Lead. Must match the patch's preset id. */
 const PRESET_ID = 'lead-leads'
@@ -146,8 +201,14 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
  * so without that the page could not show its "legacy override is set" notice.
  * A volatile field is wrapped, so `volatileValue()` unwraps it and `.get()` is
  * what still distinguishes absent (`undefined`) from an explicit `[]`.
+ *
+ * `schemaLibrary` is the Host's own copy (see `resolveSchemaLibrary`). When no
+ * anchor resolves it, `Config` is undefined and only the page is lost: the
+ * loader skips validation and `apply()` reads the catalog defaults.
  */
-export const Config = z.object({
+const z = schemaLibrary
+
+export const Config = z === undefined ? undefined : z.object({
   preset: z.string(),
   leadTools: z.union([z.array(z.string()), z.const(undefined)]).volatile(),
   denyTools: z.union([z.array(z.string()), z.const(undefined)]).volatile(),

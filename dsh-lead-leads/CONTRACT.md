@@ -130,6 +130,20 @@ The page is `settings.section` id `lead-leads-tools`, registered by the client
 half; the Host suppresses the auto-generated generic config page for this row
 (`settings.configure({ auto: false })`, `index.js`).
 
+Schema resolution. `Config` needs the real `@deepseek-ai/schemastery`, not a bare
+standard-schema object: the loader decides "volatile-only, no remount" from
+`~standard.vendor === 'schemastery'` plus the schema's `meta`/`type`/`dict`
+(`vendor/loader/src/config/diff.ts`), the settings service needs `toJSON()` and
+the same node shape (`packages/settings/settings/src/index.ts` `schema()`), and
+the commit walks cosmokit `Volatile` references (`vendor/loader/src/config/entry.ts`
+`_commitVolatile`). The bundle ships **no `node_modules`**; `resolveSchemaLibrary()`
+in `index.js` loads the library from the Host that loaded the plugin — the
+plugin's own location first (a marketplace install that fetched dependencies),
+then the running process entry, then `$DSH_HARNESS_CHECKOUT` through the pnpm
+workspace's hoisted store. If none resolves, `Config` is `undefined`: the loader
+skips validation, `apply()` still enforces the catalog defaults, and the settings
+page is absent because no namespace is served.
+
 ## Config
 
 | Key | Type | Default | Meaning |

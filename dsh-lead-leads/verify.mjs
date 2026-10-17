@@ -27,7 +27,16 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import {
+const HERE = dirname(fileURLToPath(import.meta.url))
+const HARNESS = process.env.DSH_HARNESS_CHECKOUT ?? '/home/user/Public/deepseek-harness'
+const STANDARD_PRESET = join(HARNESS, 'packages/bundle/web-app/presets/standard.patch.yml')
+
+// index.js resolves `@deepseek-ai/schemastery` from the Host installation (it
+// ships no node_modules). Point it at the same checkout this suite already reads
+// for js-yaml before it is evaluated; the env var is the offline anchor.
+process.env.DSH_HARNESS_CHECKOUT ??= HARNESS
+
+const {
   apply,
   Config,
   catalogDefaults,
@@ -38,14 +47,11 @@ import {
   rejectedNames,
   resolveToolPolicy,
   restrictPruning,
+  schemaLibrary,
   selectLeadTools,
   toolToggleMap,
   volatileValue,
-} from './index.js'
-
-const HERE = dirname(fileURLToPath(import.meta.url))
-const HARNESS = process.env.DSH_HARNESS_CHECKOUT ?? '/home/user/Public/deepseek-harness'
-const STANDARD_PRESET = join(HARNESS, 'packages/bundle/web-app/presets/standard.patch.yml')
+} = await import('./index.js')
 
 /** Tool names the `standard` preset mounts, which an Agent of it inherits. */
 const PRESET_SURFACE = [
@@ -257,6 +263,15 @@ check('leadContract states the non-blocking contract and supersedes the wait rul
 })
 
 // --- config schema and catalog ----------------------------------------------
+
+check('the config schema library resolves from the Host, with no bundle-local node_modules', () => {
+  assert.notEqual(schemaLibrary, undefined, 'index.js must resolve @deepseek-ai/schemastery from the Host installation')
+  assert.equal(typeof schemaLibrary.object, 'function', 'the resolved value must be the schema library')
+  assert.notEqual(Config, undefined, 'Config exists whenever the library resolves')
+  // The loader decides "volatile-only, no remount" from this tag
+  // (vendor/loader/src/config/diff.ts), so it has to be the real library.
+  assert.equal(Config['~standard'].vendor, 'schemastery', 'the loader keys volatile-only updates off this vendor tag')
+})
 
 check('Config declares a volatile tools dict and default-free volatile legacy keys', () => {
   const json = Config.toJSON()

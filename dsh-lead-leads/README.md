@@ -67,6 +67,13 @@ that is already running keeps the surface it was constrained with. The first
 install needs one Host restart for the client half to be discovered; later
 `client.js` edits hot-reload.
 
+The bundle ships **no `node_modules`**. `index.js` resolves the config-schema
+library (`@deepseek-ai/schemastery`) from the Host that loaded it: a normal
+import first (a marketplace install that fetched dependencies), then the running
+process entry, then `$DSH_HARNESS_CHECKOUT` through the workspace's hoisted store.
+Offline and restart-safe. If none resolves, the plugin still enforces the catalog
+defaults; only the settings page is absent, because no config namespace exists.
+
 Turning every whitelist toggle off keeps **nothing** — the Lead is restricted to
 its own-scope tools rather than left holding every tool. The same fail-closed
 rule covers a toggle list whose tools are not mounted in this scope (everything
