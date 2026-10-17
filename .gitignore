@@ -1,5 +1,0 @@
-# Generated artifacts — never commit
-dsh-lead-leads/node_modules/
-.verify-lead-leads/node_modules/
-.verify-lead-leads/sessions/
-*.log
