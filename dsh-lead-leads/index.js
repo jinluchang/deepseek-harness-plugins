@@ -26,6 +26,12 @@
  * - A guard only denies; it cannot re-allow. Nothing downstream can turn the
  *   Lead's refusal to wait back into a permission.
  *
+ * That deny list is the CATALOG default, not a fixed law: a profile `tools`
+ * override can re-enable a guard tool (the live `web` profile patch re-enables
+ * `subagent` and `list_subagent_models`), so the prompt contract below is built
+ * from whatever policy `constrain()` actually resolved. The Lead never claims a
+ * refusal its own scope does not enforce.
+ *
  * The Lead also gets its own prompt section, ordered after the generic Agent
  * Teams policy section and stating plainly that the generic rule to wait for
  * teammates does not apply in this preset.
@@ -242,12 +248,65 @@ export const inject = ['agents', 'tools', 'systemPrompt']
 /**
  * Prompt text that turns the generic Agent Teams policy into this preset's
  * contract. It states behaviour, not mechanism, and says each fact once.
+ *
+ * The text follows the policy `constrain()` actually resolved, so the Lead is
+ * never told it cannot do something its own scope still allows:
+ *
+ * - `deny` is the resolved deny list. The refusal sentence names exactly those
+ *   tools (0/1/many grammar) and disappears when the list is empty. The
+ *   follow-on clause mentions waiting only while `wait_agent` is denied and
+ *   one-shot delegation only while `subagent` is.
+ * - `shellHidden` / `writersHidden` gate the "cannot run shell commands" and
+ *   "cannot write or edit files" claims on whether `bash`/`pwsh` and
+ *   `write`/`edit` are actually off the Lead's resolved allow list.
+ *
+ * Every argument falls back to the catalog default, so a call with NO arguments
+ * returns the pre-options text byte for byte, and a fact the caller cannot
+ * supply never fails a boot.
+ * @param {object} [options] - the resolved policy.
+ * @param {readonly string[]} [options.deny] - denied tools; defaults to the catalog guard defaults.
+ * @param {boolean} [options.shellHidden] - whether `bash`/`pwsh` are hidden; defaults true.
+ * @param {boolean} [options.writersHidden] - whether `write`/`edit` are hidden; defaults true.
  * @returns {string} the section text.
  */
-export function leadContract() {
+export function leadContract(options = {}) {
+  // An unknown fact (a non-array `deny`) falls back to the catalog defaults
+  // rather than guessing, which is also the pre-options text.
+  const deny = Array.isArray(options?.deny)
+    ? [...new Set(options.deny.filter(entry => typeof entry === 'string' && entry.length > 0))]
+    : DEFAULT_DENIED_TOOLS
+  // Only an explicit `false` drops a claim: an unknown flag keeps today's text.
+  const shellHidden = options?.shellHidden !== false
+  const writersHidden = options?.writersHidden !== false
+
+  const quoted = deny.map(entry => `\`${entry}\``)
+  const refused = quoted.length === 0
+    ? ''
+    : quoted.length === 1
+      ? `${quoted[0]} is refused`
+      : quoted.length === 2
+        ? `${quoted[0]} and ${quoted[1]} are refused`
+        : `${quoted.slice(0, -1).join(', ')}, and ${quoted[quoted.length - 1]} are refused`
+  const followOn = [
+    deny.includes('wait_agent') ? 'waiting' : undefined,
+    deny.includes('subagent') ? 'one-shot delegation' : undefined,
+  ].filter(Boolean)
+  const refusal = refused === '' || followOn.length === 0
+    ? refused
+    : `${refused} — do not plan around ${followOn.join(' or around ')}`
+
+  const claims = []
+  if (shellHidden) claims.push('You cannot run shell commands')
+  if (writersHidden) claims.push('you cannot write or edit files')
+  if (refusal !== '') claims.push(refusal)
+  const joined = claims.length <= 1
+    ? claims.join('')
+    : `${claims.slice(0, -1).join(', ')}${claims.length > 2 ? ',' : ''} and ${claims[claims.length - 1]}`
+  const restriction = joined === '' ? '' : ` ${joined[0].toUpperCase()}${joined.slice(1)}.`
+
   return `Non-blocking Lead
 
-You are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, and \`wait_agent\`, \`subagent\`, and \`list_subagent_models\` are refused — do not plan around waiting or around one-shot delegation. This supersedes the Agent Teams instruction to wait for teammates before answering.
+You are a non-blocking Team Lead.${restriction} This supersedes the Agent Teams instruction to wait for teammates before answering.
 
 Hand every part of the job out, and answer the user as soon as it is out.
 - Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result.
@@ -463,15 +522,22 @@ function constrain(agent, config, ctx) {
   const scopedTools = agent.ctx.tools
   const prompt = agent.ctx.systemPrompt
   const policy = resolveToolPolicy(config)
+  // What the Lead can reach once the restriction below has run, or `undefined`
+  // when the scope could not be read. The contract text is built from THIS, so
+  // it never claims a tool is hidden that the Lead actually keeps; `undefined`
+  // keeps the catalog wording rather than guessing.
+  let reachable
 
   try {
     const available = scopedTools.schemas(agent).map(schema => schema.name)
+    reachable = available
     const allow = selectLeadTools(policy.keep, available)
     const restrictToNothing = () => {
       // `restrict({ allow: [] })` is legal and hides the whole inherited surface
       // (the registry rejects only `{}`), which is the fail-closed outcome for
       // "the Lead may keep nothing".
       disposers.push(scopedTools.restrict({ allow: [] }))
+      reachable = []
     }
     if (policy.keep.length === 0) {
       // Branch 1 — "keep nothing" by intent: every class-`whitelist` toggle is
@@ -503,6 +569,7 @@ function constrain(agent, config, ctx) {
       // known+absent list lands here and restricts to the known names only.
       try {
         disposers.push(restrictPruning(scopedTools, agent, allow))
+        reachable = allow
       } catch (error) {
         // Branch 4 — non-empty by user intent yet zero RESTRICTABLE names:
         // every requested tool is own-scope (the Team tools) or otherwise
@@ -524,8 +591,22 @@ function constrain(agent, config, ctx) {
     }))
   }
 
+  // The contract has to describe the surface the Lead really has: `deny` is the
+  // resolved deny list, and the shell/write claims follow the resolved allow
+  // list (`reachable === undefined` = unreadable scope, so keep the catalog text).
+  const shellHidden = reachable === undefined
+    ? true
+    : !reachable.includes('bash') && !reachable.includes('pwsh')
+  const writersHidden = reachable === undefined
+    ? true
+    : !reachable.includes('write') && !reachable.includes('edit')
+
   try {
-    disposers.push(prompt.section({ name: SECTION_NAME, order: SECTION_ORDER, text: leadContract() }))
+    disposers.push(prompt.section({
+      name: SECTION_NAME,
+      order: SECTION_ORDER,
+      text: leadContract({ deny: policy.deny, shellHidden, writersHidden }),
+    }))
   } catch (error) {
     warn(ctx, `${name}: the Lead contract section was not registered: ${error instanceof Error ? error.message : String(error)}`)
   }

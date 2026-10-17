@@ -326,8 +326,10 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One toggle row. The default text renders immediately after the
-     * description; `none` rows show a reason instead of a switch.
+     * One toggle row. A togglable row renders its default text immediately after
+     * the description, plus a switch; a `none` row renders neither — that label
+     * was inert for a row no toggle can affect — and instead shows the reason and
+     * a `Not toggleable` badge where the switch would be.
      * @param props - row entry, live value, disabled state, and writers.
      * @returns the row element.
      */
@@ -337,7 +339,9 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dll-row-text' },
           h('div', { className: 'dll-row-name' }, entry.name),
           h('p', { className: 'dll-row-desc' }, t(descKey(entry.name))),
-          h('p', { className: 'dll-row-default' }, t(entry.def ? 'default.on' : 'default.off')),
+          entry.klass === 'none'
+            ? null
+            : h('p', { className: 'dll-row-default' }, t(entry.def ? 'default.on' : 'default.off')),
           reason === undefined
             ? null
             : h('p', { className: 'dll-row-none' }, t(`none.${reason}`)),

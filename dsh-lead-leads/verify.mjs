@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -262,6 +263,77 @@ check('leadContract states the non-blocking contract and supersedes the wait rul
   assert.match(text, /end your turn/i)
 })
 
+/**
+ * The contract text exactly as it shipped before `leadContract()` accepted
+ * options, embedded so the check needs neither git state nor a historical copy.
+ * The no-argument call must still return this byte for byte.
+ */
+const LEGACY_CONTRACT_TEXT = "Non-blocking Lead\n\nYou are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, and `wait_agent`, `subagent`, and `list_subagent_models` are refused — do not plan around waiting or around one-shot delegation. This supersedes the Agent Teams instruction to wait for teammates before answering.\n\nHand every part of the job out, and answer the user as soon as it is out.\n- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result.\n- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.\n- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.\n- Use read, glob, and grep to inspect the workspace before and while briefing, and ask_user_question when the decision is the user's to make. Teammates do the writing.\n- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn."
+
+check('leadContract() with no arguments is byte-identical to the pre-options text', () => {
+  const text = leadContract()
+  assert.equal(text, LEGACY_CONTRACT_TEXT)
+  assert.equal(Buffer.byteLength(text, 'utf8'), 1098, 'the frozen text is 1098 UTF-8 bytes')
+  assert.equal(createHash('sha256').update(text, 'utf8').digest('hex'), '85224c623b11cdcbced5db780028b7c1ce6921fad0625764439423bd5357dfa9')
+  assert.equal(leadContract({}), LEGACY_CONTRACT_TEXT, 'an empty options object must also keep the legacy text')
+})
+
+check('leadContract({ deny: [] }) states no refusal clause at all', () => {
+  const text = leadContract({ deny: [] })
+  assert.equal(text.includes('refused'), false, 'an empty deny list must not claim a refusal')
+  assert.equal(text.includes('wait_agent'), false)
+  assert.equal(text.includes('subagent'), false)
+  assert.equal(text.includes('list_subagent_models'), false)
+  assert.match(text, /You cannot run shell commands and you cannot write or edit files\./)
+  assert.match(text, /supersedes the Agent Teams instruction/i)
+})
+
+check('leadContract({ deny: ["subagent"] }) names only subagent and keeps the delegation clause', () => {
+  const text = leadContract({ deny: ['subagent'] })
+  assert.match(text, /`subagent` is refused/)
+  assert.match(text, /do not plan around one-shot delegation/)
+  assert.equal(text.includes('wait_agent'), false, 'a tool outside `deny` must not be named')
+  assert.equal(text.includes('list_subagent_models'), false)
+  assert.equal(text.includes('around waiting'), false, 'waiting is only refused while wait_agent is denied')
+})
+
+check('leadContract defaults follow the catalog; deny grammar and hidden flags are faithful', () => {
+  const catalog = catalogDefaults()
+  assert.equal(leadContract({ deny: catalog.deny }), LEGACY_CONTRACT_TEXT, 'the catalog deny list must reproduce the legacy text')
+  for (const denied of catalog.deny) {
+    assert.equal(leadContract().includes(`\`${denied}\``), true, `the default text must name ${denied}`)
+  }
+  // 0/1/many grammar for the refusal sentence.
+  assert.equal(leadContract({ deny: [] }).includes('refused'), false)
+  assert.match(leadContract({ deny: ['subagent'] }), /`subagent` is refused/)
+  assert.match(leadContract({ deny: ['wait_agent', 'subagent'] }), /`wait_agent` and `subagent` are refused/)
+  const bare = leadContract({ deny: ['wait_agent'], shellHidden: false, writersHidden: false })
+  assert.match(bare, /`wait_agent` is refused — do not plan around waiting\./)
+  assert.equal(bare.includes('shell commands'), false, 'shellHidden: false must drop the shell claim')
+  assert.equal(bare.includes('write or edit files'), false, 'writersHidden: false must drop the writer claim')
+  // An unknown flag (anything but an explicit `false`) keeps the catalog text.
+  assert.equal(leadContract({ deny: ['wait_agent'], shellHidden: undefined }), leadContract({ deny: ['wait_agent'] }))
+})
+
+check('the registered contract follows the resolved policy (live-profile override shape)', () => {
+  const lead = makeAgent({ preset: 'lead-leads', role: 'lead' })
+  const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
+  // Exactly the live `web` profile patch: the guard keeps `subagent` and
+  // `list_subagent_models`, so only `wait_agent` may be refused, and the prompt
+  // must not claim a refusal this policy does not enforce.
+  apply(host, { tools: { subagent: true, list_subagent_models: true } })
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT)
+  assert.equal(lead.deny('subagent'), undefined, 'an allowed guard tool must not be denied')
+  assert.equal(lead.deny('list_subagent_models'), undefined)
+  assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
+  const text = lead.sections.get('lead-leads:contract').text
+  assert.match(text, /`wait_agent` is refused — do not plan around waiting\./)
+  assert.equal(text.includes('list_subagent_models'), false, 'the prompt must not name a tool this policy allows')
+  assert.equal(/`subagent`/.test(text), false, 'the prompt must not name `subagent` when it is allowed')
+  assert.match(text, /cannot run shell commands/, 'the resolved allow list still hides bash/pwsh')
+  assert.equal(warnings.length, 0, `no warnings expected, got: ${warnings.join(' | ')}`)
+})
+
 // --- config schema and catalog ----------------------------------------------
 
 check('the config schema library resolves from the Host, with no bundle-local node_modules', () => {
@@ -374,6 +446,7 @@ check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope 
 
   const section = lead.sections.get('lead-leads:contract')
   assert.notEqual(section, undefined, 'the Lead gets its own contract section')
+  assert.equal(section.text, LEGACY_CONTRACT_TEXT, 'the catalog default must register the frozen contract text')
   assert.equal(section.order > 600 && section.order < 800, true, 'it is ordered after TEAM_POLICY (600)')
   assert.equal(warnings.length, 0, `no warnings expected, got: ${warnings.join(' | ')}`)
 

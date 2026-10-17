@@ -63,6 +63,19 @@ Refused while they stay listed (the catalog `guard` default): `wait_agent`,
 tool both register into the Agent's **own** layer, which a restriction cannot
 reach, so a monotonic guard is the only seam that can take these three away.
 
+That three-name list is the catalog default, not a fixed law: a profile `tools`
+override can shrink it (the live `web` profile patch sets `subagent: true` and
+`list_subagent_models: true`, leaving only `wait_agent` denied). The Lead's prompt
+contract is generated from the policy `constrain()` actually resolved, so it
+cannot contradict the Lead's own permissions: its refusal sentence names only the
+tools present in the resolved deny list (singular/plural grammar, and the clause
+is omitted entirely for an empty list), its "do not plan around waiting" clause
+appears only while `wait_agent` is denied, its "one-shot delegation" clause only
+while `subagent` is, and its "cannot run shell commands" / "cannot write or edit
+files" claims appear only while `bash`/`pwsh` and `write`/`edit` are off the
+resolved allow list. `leadContract()` called with no arguments still returns the
+catalog-default text byte for byte.
+
 Hidden, because the preset mounts them and the restriction filters them:
 `bash`, `pwsh`, `write`, `edit`, `job_*`, `schedule_*`, `web_search`,
 `web_fetch`, `subagent_fork`, `workflow`, `skill`, `present`, `plan_mode`. A tool
@@ -163,12 +176,17 @@ page is absent because no namespace is served.
 3. Everything this plugin adds is released on preset change, on Agent disposal,
    and on plugin unload. Nothing is registered on the Host composition, so an
    uninstall leaves no residue.
-4. `wait_agent` remains in the model's tool list. It is refused with actionable
-   text: "wait_agent is disabled for a non-blocking Lead: end your turn instead."
+4. `wait_agent` remains in the model's tool list. While the resolved deny list
+   contains it (the catalog default), it is refused with actionable text:
+   "wait_agent is disabled for a non-blocking Lead: end your turn instead." A
+   profile `tools` override that turns it back on removes both the denial and the
+   contract's refusal sentence.
 5. The Lead's prompt section is named `lead-leads:contract` and ordered 650 —
    after `TEAM_POLICY` (600), which is where the generic "The Lead must wait for
    required teammates before giving the final answer" lives. The section names
-   that instruction and supersedes it.
+   that instruction and supersedes it. Its body is generated from the resolved
+   keep/deny lists, so it describes the surface the Lead actually has; the
+   no-argument `leadContract()` text is the frozen catalog-default text.
 6. The plugin fails safe. A configured name the registry rejects is dropped and
    the remaining allow list still applies. Everything that resolves to "keep
    nothing" restricts the Lead to nothing rather than leaving it unrestricted: an
