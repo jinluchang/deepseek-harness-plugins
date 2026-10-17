@@ -1,0 +1,167 @@
+# CONTRACT — dsh-lead-leads
+
+Frozen interface of the `Lead leads` preset and the host plugin that keeps a
+Team Lead non-blocking. Public names here are referenced by the profile's
+`package.json` and by the preset picker in the Web UI.
+
+## Why this exists
+
+A Team Lead that can block is a Team Lead the user cannot talk to. `wait_agent`,
+a long `bash` job, or a half-written file all hold the turn open, and the user's
+next message has to wait behind them. The `Lead leads` preset exists to remove
+that: the Lead hands work out and returns to the user immediately.
+
+## Why the preset carries the whole standard environment
+
+A teammate spawned by a Team Lead joins the **Lead's exact preset generation**
+(the subagent runtime mounts the parent's composed preset when the activation
+names none — and the Team roster never names one). Anything the preset omits
+would be missing for teammates too, and teammates must stay ordinary agents:
+they may block, they may wait on each other, they write the files.
+
+So the asymmetry is not in the preset. The preset is the `standard` row list
+verbatim — same plugins, same order, same configs — and the Lead-only reduction
+is applied per **Agent scope** at runtime, by the host plugin this bundle also
+mounts. `verify.mjs` fails if the preset's row list ever drifts from the shipped
+`standard` preset's.
+
+## Why per-Agent scope is the right seam
+
+- Tools a preset mounts live in an **ancestor** layer of every Agent scope bound
+  to that preset, and `tools.restrict()` filters exactly what a scope inherits.
+  A restriction on the Lead's own scope therefore hides preset tools from the
+  Lead and from nobody else.
+- A scope's **own** layer is exempt from its own restriction — that is where the
+  Agent Teams tools are registered. Handing work out is the Lead's whole job, so
+  those tools must survive, and they do. The delegation tool is the second
+  contributor to that layer: when the preset mounts it with
+  `modelSelectionSettings: true`, it installs `subagent` and
+  `list_subagent_models` into each Agent's own scope. The cost of the exemption
+  is therefore `wait_agent`, `subagent`, and `list_subagent_models`: all three
+  are Agent-layer tools, so no restriction can hide them.
+- A guard can only deny. Nothing after this plugin can turn the Lead's refusal
+  to wait back into a permission.
+
+## Host rows
+
+| Row id | Plugin | Purpose |
+| --- | --- | --- |
+| `lead-leads` | `@local/dsh-lead-leads` | Applies the contract to each Lead of the preset. |
+| `preset-lead-leads` | `@deepseek-ai/dsh-agent-preset` | Declares the `lead-leads` preset (`Lead leads`, order 5). |
+
+## The Lead's surface
+
+Kept from the preset (the catalog `whitelist` default): `read`, `read_image`,
+`glob`, `grep`, `ask_user_question`, `todo_write`.
+
+Kept from the Agent Teams layer: `spawn_teammate`, `send_message`, `list_agents`,
+`interrupt_agent`, `team_task_create`, `team_task_list`, `team_task_get`,
+`team_task_update`.
+
+Refused while they stay listed (the catalog `guard` default): `wait_agent`,
+`subagent`, and `list_subagent_models`. The Agent Teams tools and the delegation
+tool both register into the Agent's **own** layer, which a restriction cannot
+reach, so a monotonic guard is the only seam that can take these three away.
+
+Hidden, because the preset mounts them and the restriction filters them:
+`bash`, `pwsh`, `write`, `edit`, `job_*`, `schedule_*`, `web_search`,
+`web_fetch`, `subagent_fork`, `workflow`, `skill`, `present`, `plan_mode`. A tool
+that is not visible is also absent from the prompt, because each tool's own
+prompt section gates on its visibility. (`subagent_fork` stays hidden: it is a
+separate preset-layer row, not an own-scope registration.)
+
+## Per-tool toggles (the settings page)
+
+`LEAD_TOOL_CATALOG` in `index.js` is the single source of truth for the tool
+universe: 51 entries of `{ name, klass, def }`, fixed order, `klass` ∈
+`whitelist` | `guard` | `none`. The client half (`client.js`) mirrors the array
+verbatim and `verify.mjs` deep-compares the two.
+
+| Class | Count | Toggle effect |
+| --- | --- | --- |
+| `whitelist` | 34 | ON ⇒ the name joins the Lead's allow list; OFF ⇒ omitted (the allow list hides it). |
+| `guard` | 11 | OFF ⇒ denied by the guard while still listed; ON ⇒ no denial. |
+| `none` | 6 | No effect. Rendered inoperative: `/goal`, `/plan`, `/compact` (commands, not tools), `plugin_manager`, `plugin_market` (disabled rows), `structured_output` (child-only). |
+
+Defaults — ON is what the Lead can use today (6 + 8):
+
+- ON: `read`, `read_image`, `glob`, `grep`, `ask_user_question`, `todo_write`
+  (whitelist) and `spawn_teammate`, `send_message`, `list_agents`,
+  `interrupt_agent`, `team_task_create`, `team_task_list`, `team_task_get`,
+  `team_task_update` (guard).
+- OFF: `wait_agent`, `subagent`, `list_subagent_models` (guard).
+
+Semantics. A `whitelist` tool is kept iff `tools[name] ?? def`; a `guard` tool is
+denied iff `tools[name] ?? def` is OFF. The page writes one dictionary key per
+toggle (`{ op: 'set', path: ['tools', name], value }`); an absent key means "use
+the catalog default", so new catalog entries inherit theirs.
+
+Precedence. An explicitly configured legacy `leadTools`/`denyTools` array wins
+**wholesale** for its own list, and the catalog is not consulted for that list.
+Absence of the key — not an empty array — is what selects the catalog, which is
+why both keys are declared volatile and **without** a schema default.
+
+Apply timing. `tools` (and the two legacy keys) are volatile, so a page edit is
+committed into the running config in place and does not remount the plugin. The
+keep and deny lists are resolved inside `constrain()` from that live config, so a
+change reaches **Leads created afterwards**; a running Lead keeps the surface it
+was constrained with and is never re-reconciled. First-time discovery of the
+client half needs one Host restart; later `client.js` edits hot-reload.
+
+Fail-open fix. An empty keep list is a deliberate "keep nothing" intent (every
+`whitelist` toggle off) and now calls `restrict({ allow: [] })`, which hides the
+whole inherited surface, instead of leaving the Lead holding every tool. Two
+distinct cases are handled separately:
+
+- names **unknown to the scope** (a non-empty keep list in which nothing exists)
+  keeps today's warning and leaves the Lead with its preset tools — the scope is
+  not what the config describes, so nothing is hidden on that reading;
+- names known but **none restrictable** (e.g. only own-scope Team tools) also
+  keeps nothing, rather than failing open.
+
+The page is `settings.section` id `lead-leads-tools`, registered by the client
+half; the Host suppresses the auto-generated generic config page for this row
+(`settings.configure({ auto: false })`, `index.js`).
+
+## Config
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `preset` | `string` | `lead-leads` | Preset whose Leads get the contract. |
+| `tools` | `Record<string, boolean>` (volatile) | `{}` — catalog defaults | Per-tool overrides; an absent key means "use the catalog default". |
+| `leadTools` | `string[]` (volatile, no default) | catalog whitelist ON | Legacy explicit keep list; wins wholesale when present. Names the scope cannot restrict are pruned. An explicit empty array keeps nothing. |
+| `denyTools` | `string[]` (volatile, no default) | catalog guard OFF (`wait_agent`, `subagent`, `list_subagent_models`) | Legacy explicit deny list; wins wholesale when present. `[]` removes the guard. |
+
+## Invariants
+
+1. Only Agents composed under the configured preset are touched, and only the
+   **Lead** of one: the Team roster decides. A teammate, an unrelated preset, and
+   a provider-owned worker keep their full surface.
+2. A Lead's session may be re-presetted while it is still blank. The plugin
+   listens for the preset change and both applies and **lifts** its contribution.
+3. Everything this plugin adds is released on preset change, on Agent disposal,
+   and on plugin unload. Nothing is registered on the Host composition, so an
+   uninstall leaves no residue.
+4. `wait_agent` remains in the model's tool list. It is refused with actionable
+   text: "wait_agent is disabled for a non-blocking Lead: end your turn instead."
+5. The Lead's prompt section is named `lead-leads:contract` and ordered 650 —
+   after `TEAM_POLICY` (600), which is where the generic "The Lead must wait for
+   required teammates before giving the final answer" lives. The section names
+   that instruction and supersedes it.
+6. The plugin fails safe. A configured name the registry rejects is dropped and
+   the remaining allow list still applies. An empty keep list (all `whitelist`
+   toggles off, or an explicit empty `leadTools`) restricts the Lead to nothing
+   rather than leaving it unrestricted; a keep list whose names are all unknown
+   to the scope keeps the preset tools and logs a warning, and a keep list whose
+   names are known but none restrictable also keeps nothing. The Host never fails
+   to boot because of this plugin.
+
+## Non-goals
+
+- It does not remove `wait_agent` from the catalog. Achieving that would mean
+  disabling the profile-wide Agent Teams tool plugin and re-registering all nine
+  Team tools here, changing every other session's Team tools for one catalog
+  entry that is already refused.
+- It does not stop teammates from waiting on each other. That is their job.
+- It does not hide file content from the Lead: `read`/`glob`/`grep` stay, so the
+  Lead can still see what it is briefing.

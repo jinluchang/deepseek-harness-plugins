@@ -1,0 +1,40 @@
+{
+  "name": "@local/dsh-lead-leads",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lead leads: a preset whose Team Lead delegates every job and never waits on a teammate, plus the host plugin that enforces that contract.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "CONTRACT.md",
+    "README.md",
+    "verify.mjs"
+  ],
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.5-alpha.2"
+  }
+}

@@ -1,0 +1,544 @@
+/**
+ * Host half of `dsh-lead-leads`: keep a Team Lead non-blocking.
+ *
+ * The `lead-leads` preset (inserted by this bundle's patch) carries the full
+ * standard environment, because a teammate spawned by a Team Lead joins the
+ * Lead's exact preset generation — a narrower preset would narrow the teammates
+ * too, and teammates must stay ordinary agents that may block on each other.
+ * The Lead-only asymmetry is therefore applied here, per Agent scope, once the
+ * Agent exists.
+ *
+ * Per-Agent scope is what makes the asymmetry safe:
+ *
+ * - Tools a preset mounts live in an ANCESTOR layer of the Agent's scope, so
+ *   `tools.restrict()` on the Agent's own scope hides them for that Agent alone.
+ *   The Lead loses the shell, the file writers, delegation-to-subagents, the web,
+ *   jobs, scheduling, and plan mode; teammates keep all of it.
+ * - The Agent's OWN layer is exempt from restrictions. The Agent Teams tools are
+ *   registered there, which is why restricting the Lead cannot — and should not —
+ *   hide `spawn_teammate`, `send_message`, `list_agents`, or the shared task
+ *   board: handing work out is the Lead's entire job. The same exemption covers
+ *   the delegation tool whenever the preset mounts it with
+ *   `modelSelectionSettings: true`: `subagent` and `list_subagent_models` are
+ *   installed into each Agent's own scope, so no restriction can hide them
+ *   either. `wait_agent`, `subagent`, and `list_subagent_models` are therefore
+ *   taken away by a monotonic execution guard that denies them instead.
+ * - A guard only denies; it cannot re-allow. Nothing downstream can turn the
+ *   Lead's refusal to wait back into a permission.
+ *
+ * The Lead also gets its own prompt section, ordered after the generic Agent
+ * Teams policy section and stating plainly that the generic rule to wait for
+ * teammates does not apply in this preset.
+ *
+ * @module @local/dsh-lead-leads
+ */
+
+import z from '@deepseek-ai/schemastery'
+
+/** Preset that selects a non-blocking Lead. Must match the patch's preset id. */
+const PRESET_ID = 'lead-leads'
+
+/**
+ * Tools a Lead keeps from the preset surface, in the order they are listed for
+ * the model. Reading is how a Lead writes an accurate brief; the rest is how it
+ * talks to the user and the Team. Everything else the preset mounts is hidden.
+ */
+const DEFAULT_LEAD_TOOLS = Object.freeze([
+  'read',
+  'read_image',
+  'glob',
+  'grep',
+  'ask_user_question',
+  'todo_write',
+])
+
+/**
+ * Tools denied even though they stay listed. `wait_agent` is registered into the
+ * Agent's own scope by the Agent Teams plugin, and `subagent` /
+ * `list_subagent_models` into that same own scope by the delegation tool when the
+ * preset sets `modelSelectionSettings: true`; a restriction cannot reach any of
+ * them, so the guard is the only way to take them away.
+ */
+const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent', 'subagent', 'list_subagent_models'])
+
+/**
+ * The tool universe the settings page toggles, in display order. One entry per
+ * tool: `klass` is the only mechanism a toggle can use, `def` the default on/off.
+ *
+ * - `whitelist` — a preset- or global-layer tool. ON keeps the name in the
+ *   Lead's allow list; OFF simply omits it (the allow list hides it).
+ * - `guard` — an own-scope tool (the Team tools, the delegation tools) that a
+ *   restriction cannot reach. OFF denies it through the guard; ON removes the
+ *   denial.
+ * - `none` — not reachable by either mechanism (slash commands, `disabled` rows,
+ *   a child-only tool). `def` is fixed `false`, the page renders the row
+ *   inoperative, and this plugin ignores the name entirely.
+ *
+ * The client half mirrors this exact array (same names, same order, same
+ * klass/def); `verify.mjs` deep-compares the two so they cannot drift.
+ */
+export const LEAD_TOOL_CATALOG = Object.freeze([
+  // whitelist (34)
+  { name: 'read', klass: 'whitelist', def: true },
+  { name: 'read_image', klass: 'whitelist', def: true },
+  { name: 'glob', klass: 'whitelist', def: true },
+  { name: 'grep', klass: 'whitelist', def: true },
+  { name: 'ask_user_question', klass: 'whitelist', def: true },
+  { name: 'todo_write', klass: 'whitelist', def: true },
+  { name: 'bash', klass: 'whitelist', def: false },
+  { name: 'pwsh', klass: 'whitelist', def: false },
+  { name: 'write', klass: 'whitelist', def: false },
+  { name: 'edit', klass: 'whitelist', def: false },
+  { name: 'job_output', klass: 'whitelist', def: false },
+  { name: 'job_list', klass: 'whitelist', def: false },
+  { name: 'job_kill', klass: 'whitelist', def: false },
+  { name: 'schedule_create', klass: 'whitelist', def: false },
+  { name: 'schedule_list', klass: 'whitelist', def: false },
+  { name: 'schedule_delete', klass: 'whitelist', def: false },
+  { name: 'schedule_update', klass: 'whitelist', def: false },
+  { name: 'skill', klass: 'whitelist', def: false },
+  { name: 'get_goal', klass: 'whitelist', def: false },
+  { name: 'create_goal', klass: 'whitelist', def: false },
+  { name: 'update_goal', klass: 'whitelist', def: false },
+  { name: 'exit_plan_mode', klass: 'whitelist', def: false },
+  { name: 'subagent_fork', klass: 'whitelist', def: false },
+  { name: 'workflow', klass: 'whitelist', def: false },
+  { name: 'web_search', klass: 'whitelist', def: false },
+  { name: 'web_fetch', klass: 'whitelist', def: false },
+  { name: 'present', klass: 'whitelist', def: false },
+  { name: 'session_search', klass: 'whitelist', def: false },
+  { name: 'session_event_search', klass: 'whitelist', def: false },
+  { name: 'session_event_read', klass: 'whitelist', def: false },
+  { name: 'session_event_trace', klass: 'whitelist', def: false },
+  { name: 'session_trace', klass: 'whitelist', def: false },
+  { name: 'ralph', klass: 'whitelist', def: false },
+  { name: 'create_worktree', klass: 'whitelist', def: false },
+  // guard (11)
+  { name: 'spawn_teammate', klass: 'guard', def: true },
+  { name: 'send_message', klass: 'guard', def: true },
+  { name: 'list_agents', klass: 'guard', def: true },
+  { name: 'interrupt_agent', klass: 'guard', def: true },
+  { name: 'team_task_create', klass: 'guard', def: true },
+  { name: 'team_task_list', klass: 'guard', def: true },
+  { name: 'team_task_get', klass: 'guard', def: true },
+  { name: 'team_task_update', klass: 'guard', def: true },
+  { name: 'wait_agent', klass: 'guard', def: false },
+  { name: 'subagent', klass: 'guard', def: false },
+  { name: 'list_subagent_models', klass: 'guard', def: false },
+  // none (6) — rendered inoperative; no config effect
+  { name: '/goal', klass: 'none', def: false },
+  { name: '/plan', klass: 'none', def: false },
+  { name: '/compact', klass: 'none', def: false },
+  { name: 'plugin_manager', klass: 'none', def: false },
+  { name: 'plugin_market', klass: 'none', def: false },
+  { name: 'structured_output', klass: 'none', def: false },
+])
+
+/**
+ * Row config. `tools` is the per-tool toggle map the settings page writes; it is
+ * volatile, so a toggle edit commits into the running fiber without a remount
+ * and is read by Leads constrained afterwards (never by ones already running).
+ *
+ * The legacy keys carry NO default and are unions with `undefined`, because
+ * `z.array(z.string())` on its own normalizes an absent key to `[]` — which
+ * would erase the "not configured" signal the legacy precedence rule needs.
+ * They are ALSO volatile: the settings projection carries only volatile fields,
+ * so without that the page could not show its "legacy override is set" notice.
+ * A volatile field is wrapped, so `volatileValue()` unwraps it and `.get()` is
+ * what still distinguishes absent (`undefined`) from an explicit `[]`.
+ */
+export const Config = z.object({
+  preset: z.string(),
+  leadTools: z.union([z.array(z.string()), z.const(undefined)]).volatile(),
+  denyTools: z.union([z.array(z.string()), z.const(undefined)]).volatile(),
+  tools: z.dict(z.boolean()).default({}).volatile(),
+})
+
+/** Section name and placement: after `TEAM_POLICY` (600), before `PTC_ONLY` (800). */
+const SECTION_NAME = 'lead-leads:contract'
+const SECTION_ORDER = 650
+
+/** Denial text per denied tool; the model reads this instead of a result. */
+const DENIALS = Object.freeze({
+  wait_agent: 'wait_agent is disabled for a non-blocking Lead: end your turn instead. A teammate report or the next user message starts a new turn; use send_message to steer or wake a teammate.',
+  subagent: 'subagent is disabled for a non-blocking Lead: hand the work to a teammate with spawn_teammate instead, and use send_message to steer it.',
+  list_subagent_models: 'list_subagent_models is disabled for a non-blocking Lead: it only describes routes for the delegation tools this preset refuses. Use spawn_teammate to start a teammate.',
+})
+
+/**
+ * Bounded attempts at a restriction whose candidate names are pruned from the
+ * registry's own rejection. One attempt suffices unless the caller configured a
+ * name the scope cannot restrict.
+ */
+const RESTRICT_ATTEMPTS = 8
+
+/** Plugin name reported to the Host loader. */
+export const name = 'lead-leads'
+
+/** Services this plugin needs mounted before it can shrink a Lead. */
+export const inject = ['agents', 'tools', 'systemPrompt']
+
+/**
+ * Prompt text that turns the generic Agent Teams policy into this preset's
+ * contract. It states behaviour, not mechanism, and says each fact once.
+ * @returns {string} the section text.
+ */
+export function leadContract() {
+  return `Non-blocking Lead
+
+You are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, and \`wait_agent\`, \`subagent\`, and \`list_subagent_models\` are refused — do not plan around waiting or around one-shot delegation. This supersedes the Agent Teams instruction to wait for teammates before answering.
+
+Hand every part of the job out, and answer the user as soon as it is out.
+- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result.
+- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.
+- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.
+- Use read, glob, and grep to inspect the workspace before and while briefing, and ask_user_question when the decision is the user's to make. Teammates do the writing.
+- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn.`
+}
+
+/**
+ * Normalize a configured or defaulted name list.
+ * @param {unknown} value - the configured value, honoured only when it is an array.
+ * @param {readonly string[]} fallback - names used when `value` is absent.
+ * @returns {string[]} unique, non-empty names in first-seen order.
+ */
+export function nameList(value, fallback) {
+  const source = Array.isArray(value) ? value : fallback
+  return [...new Set(source.filter(entry => typeof entry === 'string' && entry.length > 0))]
+}
+
+/**
+ * Keep only the configured names this scope can actually restrict.
+ *
+ * A name the scope does not know makes `tools.restrict()` throw, and a name the
+ * scope registers itself (the Agent Teams tools) is not restrictable at all, so
+ * both are dropped here. Names that are absent are absent for a reason the Lead
+ * does not need: a tool it never had needs no rule.
+ * @param {readonly string[]} configured - requested Lead tools.
+ * @param {Iterable<string>} available - tool names visible in the Lead's scope.
+ * @returns {string[]} the configured names that exist in that scope.
+ */
+export function selectLeadTools(configured, available) {
+  const known = new Set(available)
+  return configured.filter(entry => known.has(entry))
+}
+
+/**
+ * The catalog defaults, derived from the same array the page mirrors.
+ * @returns {{keep: string[], deny: string[]}} default keep and deny lists.
+ */
+export function catalogDefaults() {
+  return {
+    keep: LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'whitelist' && entry.def).map(entry => entry.name),
+    deny: LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'guard' && !entry.def).map(entry => entry.name),
+  }
+}
+
+/**
+ * Read the live toggle map.
+ *
+ * `config.tools` is a schemastery volatile wrapper whose `.get()` returns the
+ * value currently committed into the running fiber, so calling this at constrain
+ * time sees a settings edit without the plugin having been remounted. A plain
+ * object is accepted too, for direct callers and tests.
+ * @param {object} [config] - the row config.
+ * @returns {Record<string, boolean>} the sparse per-tool override map.
+ */
+export function toolToggleMap(config = {}) {
+  const tools = config?.tools
+  if (tools === undefined || tools === null) return {}
+  if (typeof tools.get === 'function') return tools.get() ?? {}
+  return typeof tools === 'object' ? tools : {}
+}
+
+/**
+ * Read a possibly-volatile config field.
+ *
+ * `.volatile()` wraps its value, so a configured legacy array and an absent key
+ * are both wrapper objects; only `.get()` tells them apart (`[]` versus
+ * `undefined`). Plain values pass through, for direct callers and tests.
+ * @param {unknown} value - the raw or wrapped config field.
+ * @returns {unknown} the underlying value, or `undefined` when absent.
+ */
+export function volatileValue(value) {
+  if (value === undefined || value === null) return undefined
+  return typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
+}
+
+/**
+ * Resolve a config into the effective keep and deny lists.
+ *
+ * Catalog semantics: a `whitelist` tool is kept iff `tools[name] ?? def`, and a
+ * `guard` tool is denied iff `tools[name] ?? def` is OFF. `none` entries never
+ * contribute to either list.
+ *
+ * Precedence: an explicitly configured legacy `leadTools`/`denyTools` array wins
+ * WHOLESALE for its own list (backward compatibility). Absence of the key — not
+ * an empty array — is what selects the catalog, which is exactly why `Config`
+ * declares those keys without defaults.
+ * @param {object} [config] - the row config.
+ * @returns {{keep: string[], deny: string[], keepConfigured: boolean, denyConfigured: boolean}}
+ *   the effective lists and whether each came from the legacy key.
+ */
+export function resolveToolPolicy(config = {}) {
+  const map = toolToggleMap(config)
+  const legacyKeepValue = volatileValue(config.leadTools)
+  const legacyDenyValue = volatileValue(config.denyTools)
+  const legacyKeep = Array.isArray(legacyKeepValue) ? legacyKeepValue : undefined
+  const legacyDeny = Array.isArray(legacyDenyValue) ? legacyDenyValue : undefined
+  const on = entry => map[entry.name] ?? entry.def
+  const catalogKeep = LEAD_TOOL_CATALOG
+    .filter(entry => entry.klass === 'whitelist' && on(entry))
+    .map(entry => entry.name)
+  const catalogDeny = LEAD_TOOL_CATALOG
+    .filter(entry => entry.klass === 'guard' && !on(entry))
+    .map(entry => entry.name)
+  return {
+    keep: legacyKeep === undefined ? catalogKeep : nameList(legacyKeep, DEFAULT_LEAD_TOOLS),
+    deny: legacyDeny === undefined ? catalogDeny : nameList(legacyDeny, DEFAULT_DENIED_TOOLS),
+    keepConfigured: legacyKeep !== undefined,
+    denyConfigured: legacyDeny !== undefined,
+  }
+}
+
+/**
+ * Parse the tool names a rejection message names, which is the registry's own
+ * report of names it will not accept.
+ * @param {unknown} error - the thrown rejection.
+ * @returns {string[]} quoted names found in the message.
+ */
+export function rejectedNames(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return [...message.matchAll(/"([^"]+)"/g)].map(match => match[1])
+}
+
+/**
+ * Restrict a scope, pruning names the registry rejects instead of leaving the
+ * Lead unrestricted.
+ * @param {object} tools - the Agent-scoped Tools service.
+ * @param {object} agent - the Agent, used as the scope key.
+ * @param {string[]} names - candidate allow list.
+ * @returns {() => void} the restriction disposer.
+ * @throws when every attempt is rejected, or when a rejection names nothing.
+ */
+export function restrictPruning(tools, agent, names) {
+  let candidate = [...names]
+  for (let attempt = 0; attempt < RESTRICT_ATTEMPTS; attempt += 1) {
+    try {
+      return tools.restrict({ allow: candidate })
+    } catch (error) {
+      const rejected = rejectedNames(error)
+      const kept = candidate.filter(entry => !rejected.includes(entry))
+      if (kept.length === candidate.length || kept.length === 0) throw error
+      candidate = kept
+    }
+  }
+  throw new Error(`tools.restrict() was rejected for every one of: ${names.join(', ')}`)
+}
+
+/**
+ * Log a warning without assuming the context carries a logger.
+ * @param {object} ctx - the plugin context.
+ * @param {string} message - the warning.
+ */
+function warn(ctx, message) {
+  const logger = ctx.get?.('logger') ?? ctx.logger
+  if (logger !== undefined && typeof logger.warn === 'function') logger.warn(message)
+}
+
+/**
+ * Read the preset an Agent is composed under, preferring the live binding.
+ * @param {object} agent - the Agent to inspect.
+ * @param {object|undefined} presets - the Agent-preset registry, when mounted.
+ * @returns {string|undefined} the bound preset id.
+ */
+function presetOf(agent, presets) {
+  if (presets !== undefined && typeof presets.composedPreset === 'function') {
+    const bound = presets.composedPreset(agent.ctx)
+    if (bound !== undefined) return bound
+  }
+  return agent.session?.header?.agentPreset
+}
+
+/**
+ * Decide whether an Agent is the Lead of this preset.
+ *
+ * Teammates inherit the Lead's preset, so the preset alone cannot tell them
+ * apart; the Team roster can. When no Team service is mounted there is no roster
+ * to ask and a root Session is the Lead by construction.
+ * @param {object} agent - the Agent to classify.
+ * @param {object|undefined} teams - the Agent Teams service, when mounted.
+ * @returns {boolean} true only for a Lead that may be shrunk.
+ */
+export function isTeamLead(agent, teams) {
+  if (teams === undefined || typeof teams.tryMembership !== 'function') {
+    return agent.session?.header?.parentSession === undefined
+  }
+  try {
+    return teams.tryMembership(agent)?.role === 'lead'
+  } catch {
+    // A membership probe that cannot answer must not shrink an Agent: a
+    // teammate has to keep its ordinary tools.
+    return false
+  }
+}
+
+/**
+ * Register the Lead's prompt contract, restriction, and denial guard for one
+ * Agent, and return the disposers that undo exactly that.
+ *
+ * The keep and deny lists are resolved HERE, from the live config, not at mount:
+ * `config.tools` is volatile, so a settings-page edit is committed into the
+ * running config in place and has to be visible to every Lead constrained after
+ * it without the plugin remounting. That is also why `apply()` captures neither
+ * list.
+ * @param {object} agent - the Lead.
+ * @param {object} config - the row config, read live.
+ * @param {object} ctx - the plugin context, for diagnostics.
+ * @returns {Array<() => void>} disposers, in registration order.
+ */
+function constrain(agent, config, ctx) {
+  const disposers = []
+  const scopedTools = agent.ctx.tools
+  const prompt = agent.ctx.systemPrompt
+  const policy = resolveToolPolicy(config)
+
+  try {
+    const available = scopedTools.schemas(agent).map(schema => schema.name)
+    const allow = selectLeadTools(policy.keep, available)
+    const restrictToNothing = () => {
+      // `restrict({ allow: [] })` is legal and hides the whole inherited surface
+      // (the registry rejects only `{}`), which is the fail-closed outcome for
+      // "the Lead may keep nothing".
+      disposers.push(scopedTools.restrict({ allow: [] }))
+    }
+    if (policy.keep.length === 0) {
+      // Deliberate "keep nothing": every class-`whitelist` toggle is off, or the
+      // legacy `leadTools` was configured as an empty array. Skipping the
+      // restriction here is the fail-open that once left an all-off Lead
+      // holding every tool, so restrict to nothing instead.
+      restrictToNothing()
+    } else if (allow.length === 0) {
+      // The DISTINCT case, deliberately unchanged: the config names tools but
+      // NONE of them exist in this scope, so the scope is not what the config
+      // describes. Warn and keep the preset surface instead of hiding everything
+      // on a reading we cannot trust (e.g. a platform-conditional row).
+      warn(ctx, `${name}: no configured Lead tool exists in this scope; the Lead keeps its preset tools`)
+    } else if (allow.length < available.length) {
+      try {
+        disposers.push(restrictPruning(scopedTools, agent, allow))
+      } catch (error) {
+        // Non-empty by user intent yet zero RESTRICTABLE names: every requested
+        // tool is own-scope (the Team tools) or otherwise unreachable by
+        // `restrict()`. Keep nothing rather than fail open.
+        restrictToNothing()
+        warn(ctx, `${name}: none of ${allow.length} configured Lead tools is restrictable; the Lead keeps none of its preset tools (${error instanceof Error ? error.message : String(error)})`)
+      }
+    }
+  } catch (error) {
+    warn(ctx, `${name}: restricting the Lead failed, so it keeps its preset tools: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  if (policy.deny.length > 0) {
+    const denied = policy.deny
+    disposers.push(scopedTools.guard(execution => {
+      if (!denied.includes(execution.name)) return undefined
+      return DENIALS[execution.name]
+        ?? `${execution.name} is disabled for a non-blocking Lead in this preset.`
+    }))
+  }
+
+  try {
+    disposers.push(prompt.section({ name: SECTION_NAME, order: SECTION_ORDER, text: leadContract() }))
+  } catch (error) {
+    warn(ctx, `${name}: the Lead contract section was not registered: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  return disposers
+}
+
+/**
+ * Apply the non-blocking Lead contract to every Lead of the configured preset.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
+ * @param {object} [config] - row config.
+ * @param {string} [config.preset] - presets that keep a non-blocking Lead, default `lead-leads`.
+ * @param {string[]} [config.leadTools] - legacy explicit keep list; wins wholesale over the catalog.
+ * @param {string[]} [config.denyTools] - legacy explicit deny list; wins wholesale over the catalog.
+ * @param {Record<string, boolean>} [config.tools] - volatile per-tool toggles; absent key = catalog default.
+ */
+export function apply(ctx, config = {}) {
+  const presetId = typeof config.preset === 'string' && config.preset.length > 0 ? config.preset : PRESET_ID
+  // The keep and deny lists are deliberately NOT captured here. `constrain()`
+  // resolves them from this same `config` object at constrain time, so a
+  // volatile `tools` edit (committed in place, without a remount) is picked up
+  // by every Lead created afterwards.
+
+  /** Agents already constrained, mapped to the disposers that undo it. */
+  const constrained = new Map()
+
+  const presets = ctx.get('agentPresets')
+  const teams = ctx.get('agentTeams')
+
+  // The bundle ships its own settings page, so suppress the auto-generated
+  // generic config form for this same row; otherwise one namespace renders two
+  // pages. This is a HOST call by construction: only the Host can register an
+  // instance page policy (`settings.configure`, see the ui-settings precedent
+  // packages/client/ui-settings/src/index.ts:23-24). Guarded, because a policy
+  // conflict must not fail the boot.
+  ctx.inject(['settings'], child => child.effect(() => {
+    try {
+      return child.settings.configure({ auto: false }, ctx.fiber)
+    } catch (error) {
+      warn(ctx, `${name}: the automatic settings page could not be suppressed: ${error instanceof Error ? error.message : String(error)}`)
+      return () => {}
+    }
+  }))
+
+  /**
+   * Undo this plugin's contribution for one Agent, leaving any other scope
+   * registration alone.
+   * @param {object} agent - the Agent to release.
+   */
+  const release = agent => {
+    const disposers = constrained.get(agent)
+    if (disposers === undefined) return
+    constrained.delete(agent)
+    for (const dispose of disposers.reverse()) {
+      try {
+        dispose()
+      } catch (error) {
+        warn(ctx, `${name}: releasing a Lead failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+
+  /**
+   * Bring one Agent in line with its current preset and Team role. Idempotent:
+   * the same Agent is constrained once, and a preset change releases it again.
+   * @param {object} agent - the Agent to reconcile.
+   */
+  const reconcile = agent => {
+    const wanted = presetOf(agent, presets) === presetId && isTeamLead(agent, teams)
+    if (!wanted) {
+      release(agent)
+      return
+    }
+    if (constrained.has(agent)) return
+    constrained.set(agent, constrain(agent, config, ctx))
+  }
+
+  ctx.effect(() => () => {
+    for (const agent of [...constrained.keys()]) release(agent)
+  }, `${name}: per-Agent restrictions`)
+
+  for (const agent of ctx.agents.list()) reconcile(agent)
+  ctx.on('agent/created', ({ agent }) => reconcile(agent))
+  ctx.on('agent/disposed', ({ agent }) => release(agent))
+  // A live but unused Session can be re-presetted (the Web composer reuses a
+  // blank Session), so the preset bound at creation is not the last word.
+  ctx.on('agent-preset/selected', sessionId => {
+    const id = typeof sessionId === 'string' ? sessionId : sessionId?.id
+    const agent = id === undefined ? undefined : ctx.agents.get(id)
+    if (agent !== undefined) reconcile(agent)
+  })
+}
