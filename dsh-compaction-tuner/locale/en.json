@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Compaction tuner",
-    "description": "Tune the compaction threshold, retained tail, and retry count once for every agent preset in this profile."
+    "description": "Tune every compaction-basic policy option — threshold, headroom, retention, summarization target, token cap, retries, per-model policies, and the auto switch — once for every agent preset in this profile. Each field names its upstream code default and its allowed range."
   }
 }

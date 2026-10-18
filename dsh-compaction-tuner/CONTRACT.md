@@ -6,15 +6,22 @@ Host half: `index.js`. Client half: `client.js`. Mount patch: `cordis.patch.yml`
 ## Why this exists
 
 A profile may declare several `@deepseek-ai/dsh-agent-preset` rows, and each one carries its own
-`compaction-basic` child with its own `thresholdRatio`, `retainRatio`, and `compactionRetries`.
-Tuning them by hand means editing the same three numbers in every preset patch, and forgetting one
-preset leaves it on different compaction behaviour. This plugin owns the three values in its **own**
-row, renders them as one Settings page, and pushes them into every preset row of the active profile.
+`compaction-basic` child with its own policy — `thresholdRatio`, `headroomTokens`, `retainRatio`,
+`retainTokens`, `summarizationProvider`, `summarizationModel`, `maxTokens`, `compactionRetries`,
+`maxOverflowRetries`, `modelPolicies`, and `auto`. Tuning them by hand means editing the same values in
+every preset patch, and forgetting one preset leaves it on different compaction behaviour. This plugin
+owns the full key set in its **own** row, renders it as one Settings page, and projects it into every
+preset row of the active profile. Each option is documented with its **upstream code default** and its
+**allowed range** (`index.js` `OPTION_SPECS`, the single source of both).
 
-Non-goals: it is not a per-preset knob, it does not touch another profile, and it is not a global
-setting.
+Non-goals: it is not a per-preset knob, it does not touch another profile, it is not a global setting,
+and it does not touch the separate `@deepseek-ai/dsh-compaction-tool-result-pruner` sibling (its
+`thresholdChars` / `headChars` / `tailChars` are out of scope; see *Honest limits*).
 
 ## Identity (do not change without updating both halves)
+
+`file:line` references in this document name the revision the contract was written against; the named
+symbol is authoritative, and `verify.mjs` pins behaviour rather than line numbers.
 
 | Item | Value |
 | --- | --- |
@@ -22,74 +29,153 @@ setting.
 | Loader entry id | `compaction-tuner` — the row `id` in the profile's `cordis.patch.yml` |
 | Settings namespace | `compaction-tuner` — the same id, read with `ctx.configForms.get('compaction-tuner')` |
 | Locale namespace | `compaction-tuner` |
-| Host `name` export | `compaction-tuner` (`index.js:153`) |
-| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`client.js:32`) |
-| Client plugin `name` | `@local/dsh-compaction-tuner` (`client.js:715`) |
-| Host ↔ Client wire | **No RPC channel of its own.** The tuner's values travel over the ui-settings form mirror: `configForms.get('compaction-tuner')` whose `mutate()` calls the Host's `ctx.remote.settings.mutate('compaction-tuner', ops, revision)` (`packages/client/ui-settings/src/client/config-form.ts:134`). The restart action separately calls a sibling-owned channel — see *Restart action (soft dependency)*. |
-| Host `inject` | `['configEditor', 'loader']` (`index.js:156`) |
-| Client `inject` | `['slots', 'locale', 'configForms', 'connection']` (`client.js:716`) |
-| Restart channel | `/backend-restart`, owned by `@local/dsh-backend-restart`, called through `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` (`client.js:735`) |
-| Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`client.js:737-745`) |
+| Host `name` export | `compaction-tuner` (`name` `index.js:315`) |
+| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`__ModuleLoader__.load` `client.js:46`) |
+| Client plugin `name` | `@local/dsh-compaction-tuner` (`name` `client.js:1080`) |
+| Host ↔ Client wire | **No RPC channel of its own.** The tuner's values travel over the ui-settings form mirror: `configForms.get('compaction-tuner')` whose `mutate()` calls the Host's `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:134`). The restart action separately calls a sibling-owned channel — see *Restart action (soft dependency)*. |
+| Host `inject` | `['configEditor', 'loader']` (`inject` `index.js:318`) |
+| Client `inject` | `['slots', 'locale', 'configForms', 'connection']` (`inject` `client.js:1081`) |
+| Restart channel | `/backend-restart`, owned by `@local/dsh-backend-restart`, called through `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
+| Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`ctx.slots.register` `client.js:1102`) |
 
 The two halves never import each other's values. The Host owns the numbers; the Client reads and
 writes them only through the config-form service.
 
-## Config fields (the one namespace, `index.js:146-150`)
+## Config fields (the one namespace, `index.js` `OPTION_SPECS` → `Config`)
 
-Exactly three flat `.volatile()` fields. The root must stay a plain schemastery object: `volatileForm()`
-only descends `type === 'object'` (`packages/settings/settings/src/schema.ts:37-47`), so a
-transform/refine/intersect/union node anywhere at the root would yield **no settings section at all**.
+Eleven `.volatile()` fields, one per owned option. The root must stay a plain schemastery object:
+`volatileForm()` only descends `type === 'object'` (`packages/settings/settings/src/schema.ts:37-47`),
+so a transform/refine/intersect/union node anywhere at the root would yield **no settings section at
+all**. The `modelPolicies` field is a volatile **array**; that is still supported, because
+`volatileForm()` returns a volatile node before it ever looks at `type`.
 
-| Field | Schemastery shape | Constraint the Host schema enforces | Default |
+The *Code default* column is the upstream `compaction-basic` resolution fallback
+(`packages/compaction/compaction-basic/src/config.ts:20,23,75-76,102-103,105-108,244-245`); the
+*Range (enforced by)* column is the load-time assert. **Precisely:** upstream's own `Config` declares
+**no `.max()`** and leaves the two ratio nodes bare `z.number()`
+(`packages/compaction/compaction-basic/src/index.ts:81,83,117,119`), so the `(0, 1]` ratio bound lives
+ONLY in `assertRatio`; the token/count nodes do carry `.min(0)`/`.min(1)` (`index.ts:82,84,87-89`).
+**This install's seed** is what `cordis.patch.yml` commits for three of the keys.
+
+| Field | Schemastery shape | Code default | Range (enforced by) |
 | --- | --- | --- | --- |
-| `thresholdRatio` | `z.number().step(0.01).min(0.01).max(1).default(0.8).volatile()` | number, `0.01`–`1`, step `0.01` | `0.8` |
-| `retainRatio` | `z.number().step(0.01).min(0.01).max(1).default(0.16).volatile()` | number, `0.01`–`1`, step `0.01` | `0.16` |
-| `compactionRetries` | `z.natural().default(1).volatile()` (`natural()` = `number().step(1).min(0)`) | integer, `>= 0` | `1` |
+| `thresholdRatio` | `number().step(0.01).min(0.01).max(1).default(0.8).volatile()` | `0.8` | ratio in (0, 1], step 0.01 (upstream `assertRatio`, `config.ts:358-361`); upstream accepts any finite `(0, 1]`, the tuner schema narrows it to 0.01-multiples |
+| `headroomTokens` | `number().step(1).min(0).default(65536).volatile()` | `65536` | integer >= 0 (`assertNonNegativeInteger` `config.ts:352-356`) |
+| `retainRatio` | `number().step(0.01).min(0.01).max(1).volatile()` — **no default** | `0.16` | ratio in (0, 1], step 0.01 **and below the resolved `thresholdRatio`** (`config.ts:230-241`); mutually exclusive with `retainTokens` (`config.ts:292-294`) |
+| `retainTokens` | `number().step(1).min(0).volatile()` — **no default** | unset (the retainRatio default 0.16 governs) | integer `>= 0`; mutually exclusive with `retainRatio`; the resolved value must stay below the target `thresholdTokens` (`config.ts:198-204`, capacity-dependent) |
+| `summarizationProvider` | `string().default('').volatile()` | `''` (inherit the routed target) | any string; must be set together with `summarizationModel` as an empty or non-empty pair (`config.ts:306-327`) |
+| `summarizationModel` | `string().default('').volatile()` | `''` (inherit the routed target) | any string; same pair rule |
+| `maxTokens` | `number().step(1).min(1).volatile()` — **no default** | unset (derives from headroomTokens: 65536) — **DERIVED** `config.maxTokens ?? headroomTokens` (`config.ts:76`), from the TUNER row's headroom | integer >= 1 on the resolved value (`assertPositiveInteger` `config.ts:346-350`) |
+| `compactionRetries` | `natural().default(1).volatile()` (= `number().step(1).min(0)`) | `1` | integer >= 0 (`compactionRetries` `config.ts:296-298`) |
+| `maxOverflowRetries` | `number().step(1).min(0).default(1).volatile()` | `1` | integer >= 0; 0 disables overflow recovery (`maxOverflowRetries` `config.ts:299-301`) |
+| `modelPolicies` | `array(object({provider, model, + the nine policy keys})).default([]).volatile()` | `[]` | array of `{provider, model, ...policy}`; each entry an object with non-empty `provider`/`model`, no unknown keys, duplicate `provider\0model` rejected (`resolveModelPolicies` `config.ts:243-274`, `assertNonEmptyString` `config.ts:340-344`); per-entry policy fields and the entry's RESOLVED cap obey the top-level rules (`policy.maxTokens` `config.ts:83-90`) |
+| `auto` | `boolean().default(true).volatile()` | `true` | true or false (`auto` `config.ts:71-73`) |
+
+The accepted `modelPolicies` JSON, as the page's textarea and the Host both check it:
+
+```json
+[
+  { "provider": "openai", "model": "gpt-5", "thresholdRatio": 0.7 },
+  { "provider": "anthropic", "model": "claude-sonnet-4", "retainTokens": 4096, "compactionRetries": 3 }
+]
+```
+
+Exactly those eleven key names are accepted per entry (`provider`, `model`, plus the nine policy
+keys); an unknown key, a missing or empty `provider`/`model`, a duplicate pair, or an out-of-range
+entry field is refused before any write.
 
 `.volatile()` is what makes a save commit into the running fiber without a remount, and what makes
 the loader emit `loader/volatile-update` to the owning fiber
-(`vendor/loader/src/index.ts:29-34`, `vendor/loader/src/config/entry.ts:188-195`). That covers **this
+(`loader/volatile-update` `vendor/loader/src/index.ts:29-34`, `loader/volatile-update` `vendor/loader/src/config/entry.ts:188-195`). That covers **this
 tuner's own namespace**; it does not by itself guarantee that the preset rows follow — see *Live save
-behaviour*.
+behaviour*. The volatile-array field rides the same path: `equalExceptVolatile` short-circuits on
+the volatile flag before any type check (`schema?.meta?.volatile` `vendor/loader/src/config/diff.ts:18`), and
+`volatileEntries` finds the wrapper at its own path (`vendor/cosmokit/src/volatile.ts:62-76`).
 
-The tuner's own pre-write check (`tuneProblem()`, `index.js:253-270`) is coarser than the schema: it
-accepts any finite number in `(0, 1]` and any non-negative integer, so it does **not** enforce the
-`0.01` floor/step. A `0.005` or `0.155` ratio passes the page's local check and is then refused by
-the Host schema on the way to disk. See "Honest limits".
+**Why `retainRatio`, `retainTokens` and `maxTokens` carry no `.default()`.** A schemastery default is
+materialized into the running config by `resolveConfig`. If `retainRatio` had a default it would
+always be present next to an explicit `retainTokens`, the XOR could never be observed, and every token
+retention tune would refuse itself. `maxTokens` deliberately stays absent so it can derive from the
+headroom exactly like upstream. The page submits a blank optional field as an `unset` op
+(`packages/settings/settings/src/index.ts:83,86-110`); adding a `.default()` to any of the three
+silently breaks that contract, and `verify.mjs` asserts the absence.
 
-`DEFAULT_TUNE` (`index.js:108-112`) is the upstream `compaction-basic` code default set,
-`{thresholdRatio: 0.8, retainRatio: 0.16, compactionRetries: 1}`, taken from
-`packages/compaction/compaction-basic/src/config.ts:20,23,105`. It stands in for every key a preset's
-compaction child does not declare.
+The tuner's own pre-write check (`tuneProblem()`) mirrors the upstream asserts and the cross-field
+rules; it does not enforce the `0.01` floor/step, which lives in the schema above (the same split as
+upstream: `compaction-basic`'s ratios are bare `z.number()` and the bounds are asserts). A `0.005`
+retainRatio passes the page's local check and is refused by the Host schema on the way to disk; a
+`0.005` entry ratio inside `modelPolicies` is refused by the tuner's schema the same way. See "Honest
+limits".
+
+`DEFAULT_TUNE` is the eleven-key upstream code-default set derived from `OPTION_SPECS`; `TUNE_KEYS` is
+the key order; `TUNE_OPTIONS` is the public metadata (key, kind, default, default text, range). The
+install seed lives only in `cordis.patch.yml` (`0.5 / 0.15 / 2`) and has no separate constant, so the
+page note repeats it and `verify.mjs` checks the note against the patch.
 
 ## Persistence rule
 
-The three values live in the **tuner row's `config`** — `compaction-tuner` — in the active profile's
-`cordis.patch.yml`. The bundle mount patch seeds them (`cordis.patch.yml:15-21`, `0.5 / 0.15 / 2`);
-after the first save they live in the profile's own patch file, which is
+The eleven values live in the **tuner row's `config`** — `compaction-tuner` — in the active profile's
+`cordis.patch.yml`. The bundle mount patch seeds three of them — `thresholdRatio: 0.5`, `retainRatio: 0.15`,
+`compactionRetries: 2` (`cordis.patch.yml:27-30`) — and after the first save they live in the profile's own patch file, which is
 `PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:40`).
 
-The tuner then pushes the same three values into the preset rows the resolved editor reports, matching
-`entry.options.name === '@deepseek-ai/dsh-agent-preset'` (`index.js:115,417`). "Push" means a
-whole-config replacement:
+The tuner then projects the same values into the preset rows the resolved editor reports, matching
+`entry.options.name === '@deepseek-ai/dsh-agent-preset'`. "Push" means a whole-config replacement:
 
 - A patch **replaces a row's entire `config`** — the patch loop copies each override key onto the row,
-  so a `config` override is not merged (`vendor/include/src/index.ts:120-123`).
+  so a `config` override is not merged (`overrides` `vendor/include/src/index.ts:120-123`).
 - Preset **children are not addressable**: the include recursion only indexes rows where
   `entry.group && Array.isArray(entry.config)` (`vendor/include/src/index.ts:69-71`), so a nested
   `compaction-basic` row is never a patch target.
-- `withTune()` therefore returns a deep clone of the preset's config in which **only** the three owned
-  keys of the existing `compaction-basic` child change (`index.js:366-379`). Every other child row,
-  every other key of the compaction child, and every `{__jsExpr: "..."}` expression map is preserved
-  verbatim; `deepClone()` passes any value with a non-plain prototype through untouched
-  (`index.js:325-333`). On write, the editor turns single-key `{__jsExpr}` maps back into `!!js` tags
-  (`packages/boot/config-editor/src/index.ts:129-134`).
-- `withTune()` **throws** when the preset has no compaction child (`index.js:369-371`); `retune()`
-  never reaches that throw, because it skips such a row first.
+- `withTune()` therefore returns a deep clone of the preset's config in which the existing
+  `compaction-basic` child's config is replaced by `{...existing, ...projectedTune(values)}`, with both
+  retention keys deleted first so the projection can never leave `retainRatio` and `retainTokens` side
+  by side (`config.ts:292-294`). That counterpart deletion is the **only** key `withTune()` ever
+  removes. Every other child row, every other key of the compaction child, and every
+  `{__jsExpr: "..."}` expression map is preserved verbatim; `deepClone()` passes any value with a
+  non-plain prototype through untouched. On write, the editor turns single-key `{__jsExpr}` maps back
+  into `!!js` tags (`visit(document` `packages/boot/config-editor/src/index.ts:129-134`).
+- `projectedTune(values)` is the exact key set written: the live/default value of each owned key, the
+  retention pair resolved to exactly one form, and `maxTokens` resolved as
+  `liveMaxTokens ?? liveHeadroomTokens` — upstream's derivation order (`config.maxTokens ?? headroomTokens` `config.ts:76`) applied to the
+  **TUNER row's** headroom. The child's resolved cap is therefore preserved **only when the child's own
+  `headroomTokens` equals the tuner's** (always true when the child omitted both); when they differ, the
+  tuner's headroom decides the projected cap and the child's old cap is not preserved (a child with
+  `headroomTokens: 1800` under a tuner headroom of `65536` is projected `maxTokens: 65536`). This is the
+  documented projection rule, not an accident; see *Honest limits*.
+- `modelPolicies` is projected **only when the live table is non-empty** (`managesModelPolicies()`). An
+  empty live table leaves the key out of the projection, so every preset keeps its own per-model table
+  and `withTune()` neither replaces nor deletes it. There is deliberately no way to express "clear every
+  preset's table": `[]` means "no opinion".
+- `withTune()` **throws** when the preset has no compaction child; `retune()` never reaches that throw,
+  because it skips such a row first.
 
 `configEditor.edit()` re-validates the next config on the row's own fiber runtime before it writes
 anything — `resolveConfig` at `packages/boot/config-editor/src/index.ts:103-104`, atomic write at
 `:142` — so a per-field range/step violation never reaches the profile patch.
+
+### Install behaviour change (the ten projected keys)
+
+The tuner owns every `compaction-basic` option and projects its stored tune into each preset row at the
+first boot. A preset that declares a different value for any of these **ten** keys is overwritten, and
+the result is persisted into the profile's `cordis.patch.yml`; uninstalling does not revert it.
+
+| Key | Consequence for a preset that disagrees |
+| --- | --- |
+| `thresholdRatio` | set to the tuner's value (the install seed is `0.5`, not the code default `0.8`) |
+| `headroomTokens` | set to the tuner's value (`65536` when unset, so `1234 → 65536`) |
+| `retainRatio` | written when the tuner is on the ratio form; a stale `retainTokens` is deleted |
+| `retainTokens` | written when the tuner is on the token form; a stale `retainRatio` is deleted |
+| `summarizationProvider` | set to the tuner's string; `''` clears a preset's local summarizer route (`"local" → ""`) |
+| `summarizationModel` | set to the tuner's string, as the other half of the pair |
+| `maxTokens` | set to the tuner's resolved cap (`maxTokens ?? headroomTokens`) |
+| `compactionRetries` | set to the tuner's value (the install seed is `2`) |
+| `maxOverflowRetries` | set to the tuner's value (`1` when unset, so a preset's `0` is re-enabled: `0 → 1`) |
+| `auto` | set to the tuner's value (`true` when unset, so a manual-only preset is re-enabled: `false → true`) |
+
+`modelPolicies` is the deliberate exception: an empty tuner table leaves each preset's own table
+untouched (the `unmanaged` report), so per-model overrides are replaced only when the user enters a
+non-empty table. There is no expression for "clear every preset's table".
 
 ### Live save behaviour (observed)
 
@@ -125,36 +211,69 @@ Two gaps are recorded rather than papered over: **arm B (the pre-fix baseline) w
 in that round **four passes returned a non-empty result while nothing reached the patch, with no
 breakdown captured** (unknown whether they were `skipped`-only or refusals).
 
-## Host tuning rules (`retune()`, `index.js:405-440`)
+## Host tuning rules (`retune()`)
 
-`retune(editor, config, warn)` returns `{ changed: string[], skipped: string[], refused?: string }`
-and drives only an object shaped like a `ctx.configEditor` (`configuration()` + `edit(entry, change)`),
-so the mechanism is testable without a Host.
+`retune(editor, config, warn)` returns
+`{ changed: string[], skipped: string[], unmanaged: string[], refused?: string }` and drives only an
+object shaped like a `ctx.configEditor` (`configuration()` + `edit(entry, change)`), so the mechanism is
+testable without a Host. `unmanaged` names the rows whose own `modelPolicies` table was deliberately
+left alone because the live table is empty: it is a **subset of `skipped`** (or of `changed`, when
+another key differed) and exists so a live-propagation log can tell "left alone by the empty-table rule"
+apart from "already in tune".
 
-1. **Read live, then validate first.** The live tune is read from the (possibly volatile-wrapped) row
-   config at pass time. If `tuneProblem()` reports anything, the pass **writes nothing at all**, logs
-   the reason, and returns `refused`. There is never a partial profile.
+1. **Read live, then validate first.** The tune is read from the (possibly volatile-wrapped) row config
+   at pass time (`liveTune()`), and `tuneProblem()` is run on the **raw** row config — not on the
+   derived tune — because `liveTune()` fills the code default for an absent `retainRatio` and the XOR
+   rule has to see that the key was not actually set. If `tuneProblem()` reports anything, the pass
+   **writes nothing at all**, logs the reason, and returns `refused`. There is never a partial profile.
+   The rules it enforces: every per-field bound, each an integer within the SAFE range
+   (`SAFE_INTEGER_MAX` `index.js:486`, enforced by `isNonNegativeInteger` `index.js:497`) rather than merely
+   `Number.isInteger`; `retainRatio` XOR
+   `retainTokens`; `retainRatio` below `thresholdRatio`; the summarization pair; resolved
+   `maxTokens = maxTokens ?? headroomTokens` a positive safe integer; and the `modelPolicies` table rules
+   (array, non-empty unique provider/model, no unknown keys, per-entry policy fields, and each entry's
+   RESOLVED cap positive — mirroring `resolveConfig()`'s per-entry resolution (`policy.maxTokens` `config.ts:83-90`).
 2. **Compare-and-skip.** For each preset row: the effective config is `entry.options.config` when it
-   has keys, otherwise the `inherited` layer the editor supplied (`index.js:421`). A row whose
-   effective `compaction-basic` child already carries the live three values is **skipped with no
-   `edit()` call** (`index.js:425-428`), which is what keeps an unchanged profile from being rewritten
-   on every pass.
+   has keys, otherwise the `inherited` layer the editor supplied. A row whose effective
+   `compaction-basic` child, run through `projectedTune()`, already equals the live tune is **skipped
+   with no `edit()` call**, which is what keeps an unchanged profile from being rewritten on every
+   pass. A child whose stale `retainTokens` the projection would have to delete counts as out of tune.
+   An **unmanaged** `modelPolicies` is always equal (the projection omits the key), so a preset whose
+   only difference is its own per-model table is skipped *and* reported in `unmanaged` — the rule that
+   keeps the empty-table case from becoming a rewrite loop.
 3. **Out of scope, no insert.** A preset row with no `compaction-basic` child at all is also skipped
    (counted in `skipped`, no write, no warning). The tuner pushes into an existing child and never
    inserts rows into a preset.
 4. **Isolation.** A rejected `edit()` — for example an id owned by a home patch or a `--patch` overlay
-   (`packages/boot/config-editor/src/index.ts:139-141`) — is caught, logged as a warning naming the
-   entry id, and does **not** stop the remaining rows (`index.js:429-437`).
+   (`effective` `packages/boot/config-editor/src/index.ts:139-141`) — is caught, logged as a warning naming the
+   entry id, and does **not** stop the remaining rows.
 5. **Match by plugin name, never by preset id.** No shipped preset id is hardcoded, so any preset row
    in the profile is tuned, including presets a later bundle adds.
 
+### Behaviour preservation (why writing the defaults is a no-op for an untouched preset)
+
+For a preset that declares **none** of the eleven keys, `projectedTune(child)` resolves every key the
+same way `projectedTune(tunerRow)` does when the tuner carries only code defaults, so the pass skips
+it with no write. That is the executable rule the offline suite pins. The exceptions are honest and
+narrow:
+
+- `maxTokens` is derived as `tunerMaxTokens ?? tunerHeadroomTokens`. Its resolved cap is preserved
+  **only when the child's own `headroomTokens` equals the tuner's**; otherwise the tuner's headroom
+  decides it, and the child's old cap is replaced (documented, not accidental).
+- `retainTokens` is only ever projected when the tuner's own `retainTokens` is set; otherwise its
+  absence is projected, which is upstream's "retention falls back to `retainRatio`".
+- `modelPolicies` is not projected while the live table is empty, so a preset's own table is preserved.
+- The mount patch's seed (`0.5 / 0.15 / 2`) **is** different from the code defaults, so a preset that
+  omits those keys is genuinely moved onto the seed. That is the plugin working as intended, and README
+  *Install behaviour change* names every projected key and its consequence.
+
 ### Candidate-editor walk (shipped defence, not a fix)
 
-`configEditorsOf()` (`index.js:455-472`) collects every configuration-editor object the context can
+`configEditorsOf()` (`index.js:961`) collects every configuration-editor object the context can
 resolve — the guarded `ctx.configEditor` property read first, then the guarded
 `ctx.get('configEditor')` lookup — deduplicated by identity. A pass tries each candidate once, in
 order, and stops at the first `retune()` result that found anything
-(`changed.length > 0 || skipped.length > 0 || refused !== undefined`, `index.js:611-623`); a candidate
+(`result.refused` `index.js:1124`: the `result.changed`/`result.skipped`/`result.refused` predicate); a candidate
 whose call throws counts as "found nothing" and the next is tried.
 
 This exists because one context was observed handing out **different** editor objects from the property
@@ -167,36 +286,36 @@ measured rounds, exactly like the retry-only build (see *Live save behaviour*).
 
 When **every** candidate returns `changed=[]` with `skipped=[]` and no refusal, no candidate exposed an
 addressable agent-preset row — that is not "nothing to do". The pass then arms the next delay from the
-bounded, exported `RETUNE_BACKOFF = [250, 1000, 3000, 10000]` ms (`index.js:123-130`):
+bounded, exported `RETUNE_BACKOFF` (`index.js:295`, defined as `[250, 1000, 3000, 10000]` ms):
 
-- one retry per entry, in order (`retry()`, `index.js:566-587`);
-- after the last attempt is exhausted, exactly one warning (`index.js:568-569`);
+- one retry per entry, in order (`retry()`, `index.js:1071`);
+- after the last attempt is exhausted, exactly one warning (`retry()` `index.js:1071-1078`);
 - the sequence resets as soon as any candidate pass sees an addressable row (any `changed` or `skipped`
-  entry) or a definitive refusal, and on any fresh trigger (`schedule()`, `index.js:547-560`);
-- both the debounce timer and the retry timer are cleared on disposal (`index.js:648-656`).
+  entry) or a definitive refusal, and on any fresh trigger (`schedule()`, `index.js:1052`);
+- both the debounce timer and the retry timer are cleared on disposal (`clearRetry()` `index.js:1153-1161`).
 
 It is a defence, **not a fix**: it was armed throughout the measured failure and the failure persisted
 regardless (see *Live save behaviour*).
 
-### What triggers a pass (`apply()`, `index.js:505-677`)
+### What triggers a pass (`apply()`, `index.js:1010`)
 
 - `loader/volatile-update`, which the loader dispatches to the **owning fiber only**, i.e. this
   plugin's own volatile commits. A save on the Settings page is what this carries.
 - `app-boot/config-reload`, the profile-reconcile completion signal (declared at
-  `packages/boot/app-boot/src/index.ts:54`, emitted at `:411`), so a live save is followed even when
+  `packages/boot/app-boot/src/index.ts:54`, emitted by `ctx.emit` at `:411`), so a live save is followed even when
   the volatile-diff branch never reports it; the settings service consumes the same event
-  (`packages/settings/settings/src/index.ts:234`).
+  (`ctx.on` `packages/settings/settings/src/index.ts:234`).
 - `loader/entry-init` for a row whose `name` is `@deepseek-ai/dsh-agent-preset`, so a preset that
-  activates later is tuned too (`vendor/loader/src/config/entry.ts:60`).
+  activates later is tuned too (`loader/entry-init` `vendor/loader/src/config/entry.ts:60`).
 - One initial pass at mount.
 
 The pass reads its values from the fiber's own resolved config (`ctx.fiber?.config ?? config`,
-`index.js:607`) rather than the object captured at `apply()` time, because a volatile commit may land in
+`values` `index.js:1112`) rather than the object captured at `apply()` time, because a volatile commit may land in
 a different object than the one `apply()` received.
 
 Passes are debounced through a single `setTimeout(..., 0)`; one pass runs at a time and a trigger that
 arrives mid-pass coalesces into exactly one more pass afterwards. If no candidate editor resolves at
-all, the pass logs once and returns without arming a retry (`index.js:596-599`). These seams make a live
+all, the pass logs once and returns without arming a retry (`pass()` `index.js:1097-1103`). These seams make a live
 save reach a pass, but they do not make propagation to the preset rows work — see *Live save
 behaviour*.
 
@@ -206,91 +325,103 @@ on its own Settings page does **not** trigger a retune. That row is retuned only
 
 `apply()` also suppresses the auto-generated generic config form for this same row
 (`ctx.settings.configure({ auto: false }, ctx.fiber)`, guarded so a policy conflict cannot fail the
-boot — `index.js:512-519`), because the bundle ships its own page.
+boot — `settings.configure` `index.js:1019`), because the bundle ships its own page.
 
 ## Client contract
 
 Module artifact: one `window.__ModuleLoader__.load({ id: '@local/dsh-compaction-tuner', factory })`
-closure (`client.js:31-36`). The factory requests exactly one module-table entry, `react`
-(`client.js:34`), and returns `{ name, inject, apply }` with
-`inject = ['slots', 'locale', 'configForms', 'connection']` (`client.js:716`).
+closure (`__ModuleLoader__.load` `client.js:46`). The factory requests exactly one module-table entry, `react`
+(`React` `client.js:49`), and returns `{ name, inject, apply }` with
+`inject = ['slots', 'locale', 'configForms', 'connection']` (`inject` `client.js:1081`).
 
 `apply(ctx)`:
 
 1. `ctx.effect(() => ctx.locale.register('compaction-tuner', { en, zh }), ...)` registers the
-   complete English + Chinese dictionary (`client.js:725`).
-2. `const form = ctx.configForms.get('compaction-tuner')` (`client.js:726`).
-3. Resolves the restart caller lazily (`callBackend`, `client.js:728-736`): it reads
+   complete English + Chinese dictionary (`ctx.locale.register` `client.js:1090`).
+2. `const form = ctx.configForms.get('compaction-tuner')` (`ctx.configForms.get` `client.js:1091`).
+3. Resolves the restart caller lazily (`callBackend`, `client.js:1093`): it reads
    `ctx.get('connection')` on every call and rejects when the service or `connection.rpc.call` is
    absent, so a composition without the connection service still registers the page.
 4. Registers the section with a `label` function (required; an omitted label renders an empty nav row),
    `locale: 'compaction-tuner'`, and an inject face exposing `{ form, t, callBackend }`
-   (`client.js:737-745`).
+   (`ctx.slots.register` `client.js:1102`).
 
-The page (`TunerSection`, `client.js:413-712`):
+The page (`TunerSection`):
 
 - State comes from `React.useSyncExternalStore(form.subscribe, form.getSnapshot)`, with the two
-  methods memoized per form so the subscribe identity is stable (`client.js:418-420`).
+  methods memoized per form so the subscribe identity is stable.
 - `status === 'loading'` renders the localized loading text; `status === 'unavailable'` renders the
-  localized note with all inputs disabled and **never attempts a write**; `ready` renders three
-  labelled numeric inputs seeded from `snapshot.value`.
-- **One atomic write.** The draft is validated locally first (`validateDraft()`, `client.js:230-245`:
-  each ratio in `(0, 1]`, `retainRatio < thresholdRatio`, retries a non-negative integer). On failure
-  the page shows the matching localized message and calls **no** Host method. On success it calls
-  `form.mutate([...exactly the three `set` ops...], snapshot.revision)` **once** (`client.js:511-515`).
+  localized note with **all eleven controls** disabled and **never attempts a write**; `ready` renders
+  one labelled control per owned option, seeded from `snapshot.value` (`seedDraft()`): a numeric input
+  for `ratio`/`integer`, a text input for `string`, a checkbox for `auto`, and a JSON `<textarea>` for
+  `modelPolicies`. `retainRatio`, `retainTokens` and `maxTokens` render **blank** when the snapshot
+  omits them, because "unset" is a real state the Host schema does not default away.
+- The two page notes above the controls state the rule that the request is about: every field's
+  **upstream code default** is shown beside its description, and the page records that **this install
+  seeds `0.5 / 0.15 / 2`**, which is what is projected into a preset that omits the key.
+- **One atomic write.** The draft is validated locally first (`validateDraft()`): each ratio in
+  `(0, 1]`, `retainRatio` XOR `retainTokens`, the effective tail below `thresholdRatio`, the
+  summarization pair, resolved `maxTokens = maxTokens ?? headroomTokens >= 1`, both retry counts
+  non-negative integers, and the `modelPolicies` JSON parsed and checked against the upstream entry
+  rules. On failure the page shows the matching localized message and calls **no** Host method. On
+  success it calls `form.mutate(ops, snapshot.revision)` **once**, where `ops` is one op per owned
+  option in `FIELDS` order — `{ op: 'set', … }` for a value, `{ op: 'unset', path: [key] }` for a blank
+  optional field. `settings.mutate` applies `unset` by deleting the key
+  (`packages/settings/settings/src/index.ts:83,86-110`), which is what restores "unset upstream".
 - The Save action is disabled while the namespace is unwritable, while a write is in flight, and while
-  the draft equals the snapshot (`client.js:706`).
+  the draft equals the snapshot.
 - `mutate` resolving `true` shows the localized saved confirmation; resolving `false` (or rejecting)
   shows the localized refused copy in a `role="alert"`, and the draft is re-seeded from whatever the
   Host reports next — the controller performs its own recovery read
-  (`packages/client/ui-settings/src/client/config-form.ts:129-148`). The saved copy is accurate for
+  (`mutate` `packages/client/ui-settings/src/client/config-form.ts:129-148`). The saved copy is accurate for
   the tuner's own namespace only; it is not a promise that the preset rows of a running profile follow,
   and the presets pick the values up at the next Host start (see *Live save behaviour*).
-- Accessibility: real `htmlFor`/`id` pairs via `React.useId()`, `role="alert"` for failures,
-  `role="status"` for the confirmation, no colour-only signalling.
+- Accessibility: real `htmlFor`/`id` pairs via `React.useId()` (one id per field, allocated in a
+  fixed-length loop over `FIELDS`), `role="alert"` for failures, `role="status"` for the confirmation,
+  no colour-only signalling.
 - Styling is a component-local `<style>` string inside the section tree, class names namespaced
-  `dct-`, and only `--dsw-alias-*` host theme tokens (`client.js:154-185`).
+  `dct-`, and only `--dsw-alias-*` host theme tokens.
 - `close` is passed by the shell but this page never calls it.
 
 ### Restart contract (Client)
 
 - **Bold notice in every state.** The restart-required fact renders as a real `<strong>`
-  (`client.js:594`, class `dct-restart-note`) inside `restartBlock`, which is returned in the
-  `confirming`, `timeout`, and default (ready/manual/restarting) states alike (`client.js:620-640`),
-  and is also part of the `loading` return (`client.js:642-648`) and the main render
-  (`client.js:692`). The English copy is `restart.note` — "Saving stores the values, but they reach the
-  agent presets only after the DSH backend restarts." (`client.js:84`); the Chinese copy is
-  `client.js:124`.
-- **Availability probe.** On mount an effect owns an `AbortController` (`client.js:445-457`) and calls
-  `probeRestartable()` (`client.js:323-334`): `status` on `/backend-restart`, retried up to
-  `STATUS_ATTEMPTS = 3` times (`client.js:68`) at `STATUS_RETRY_MS = 1000` ms (`client.js:69`) on a
-  transport miss only. A resolved reply is judged by `statusOutcome()` (`client.js:284-288`): only
+  (`strongNote` `client.js:922`, class `dct-restart-note`) inside `restartBlock`, which is returned in the
+  `confirming`, `timeout`, and default (ready/manual/restarting) states alike (`restartBlock` `client.js:950`),
+  and is also part of the `loading` return (`loading` `client.js:970`) and the main render
+  (`dct-page` `client.js:1048`). The English copy is `restart.note` — "Saving stores the values, but they reach the
+  agent presets only after the DSH backend restarts." (`restart.note` `client.js:170`); the Chinese copy is
+  `restart.note` `client.js:258`.
+- **Availability probe.** On mount an effect owns an `AbortController` (`client.js:768`) and calls
+  `probeRestartable()` (`client.js:649`): `status` on `/backend-restart`, retried up to
+  `STATUS_ATTEMPTS` (`client.js:117`, `= 3`) times at `STATUS_RETRY_MS` (`client.js:118`, `= 1000` ms) on a
+  transport miss only. A resolved reply is judged by `statusOutcome()` (`client.js:610`): only
   `ok:true` with `value.restartable === true` yields `ready`; anything else yields `manual`, and the
-  action is disabled with the localized manual copy beside it (`restart.manual`, `client.js:86`;
-  rendered at `client.js:604-606`).
+  action is disabled with the localized manual copy beside it (`restart.manual`, `client.js:172`;
+  rendered by `manualNote` `client.js:932`).
 - **Inline confirmation.** The action opens a `role="group"` confirm block
-  (`client.js:607-615`); no native dialog is used. Cancel leaves the channel untouched
-  (`cancelRestart()`, `client.js:541-543`).
-- **Exactly one `restart` call.** Confirm (`confirmRestart()`, `client.js:565-591`) calls `restart`
+  (`confirmBlock` `client.js:935`); no native dialog is used. Cancel leaves the channel untouched
+  (`cancelRestart()`, `client.js:869`).
+- **Exactly one `restart` call.** Confirm (`confirmRestart()`, `client.js:893`) calls `restart`
   once on `/backend-restart` with the mount controller's signal.
-- **Refusals are localized, diagnostics never rendered.** `restartFailureKey()` (`client.js:270-277`)
+- **Refusals are localized, diagnostics never rendered.** `restartFailureKey()` (`client.js:596`)
   maps `backend-restart/busy`, `.../unsupported`, `.../spawn-failed` to their copy and everything else
   to a generic message; the channel's `message` field is never product text. The refusal renders in a
-  `role="alert"` (`client.js:595-597`).
+  `role="alert"` (`restartAlert` `client.js:923-925`).
 - **Transport rejection means possibly-restarting.** A rejected `restart` call enters recovery rather
-  than reporting failure (`client.js:584-589`), because the process may exit before its reply arrives —
-  the rule `dsh-backend-restart/CONTRACT.md:52` sets for that channel's own client.
-- **Bounded recovery.** `recover()` (`client.js:553-562`) runs `awaitSuccessor()` (`client.js:370-399`):
-  poll the document root (`probeRoot()`, `client.js:342-362`; GET, `cache:'no-store'`, same-origin, 5 s
+  than reporting failure (`recover` `client.js:916`), because the process may exit before its reply arrives —
+  the rule (`transport rejection` `dsh-backend-restart/CONTRACT.md:52`) sets for that channel's own client.
+- **Bounded recovery.** `recover()` (`client.js:881`) runs `awaitSuccessor()` (`client.js:696`):
+  poll the document root (`probeRoot()`, `client.js:668`; GET, `cache:'no-store'`, same-origin, 5 s
   probe timeout) until the old listener stops answering, for up to `DOWN_BUDGET_MS = 20000`
-  (`client.js:61`), then until the successor answers, for up to `UP_BUDGET_MS = 60000`
-  (`client.js:62`), at `POLL_INTERVAL_MS = 500` (`client.js:63`). `ready` calls
-  `window.location.reload()` (`client.js:546`); `timeout` renders the manual **Reload page** block
-  (`client.js:616-619`).
-- **Unmount aborts.** The mount effect's cleanup aborts the controller (`client.js:453-456`), and every
+  (`DOWN_BUDGET_MS` `client.js:110`), then until the successor answers, for up to `UP_BUDGET_MS = 60000`
+  (`UP_BUDGET_MS` `client.js:111`), at `POLL_INTERVAL_MS = 500` (`POLL_INTERVAL_MS` `client.js:112`). `ready` calls
+  `window.location.reload()` (`reloadPage` `client.js:874`); `timeout` renders the manual **Reload page** block
+  (`timeoutBlock` `client.js:944`).
+- **Unmount aborts.** The mount effect's cleanup aborts the controller (`controller.abort()` `client.js:777`), and every
   call and poll rides that signal: `delay()` and `probeRoot()` forward the abort
-  (`client.js:296-313`, `client.js:342-362`), and `recover()` ignores a result after an abort
-  (`client.js:554-555`).
+  (`delay()` `client.js:622`, `probeRoot()` `client.js:668`), and `recover()` ignores a result after an abort
+  (`signal.aborted` `client.js:883`).
 
 ## Restart action (soft dependency)
 
@@ -300,24 +431,55 @@ in that package's CONTRACT.md (`status` / `restart`). This is a **soft runtime d
 required one**: nothing is imported from that package, the host half never references it, this plugin
 loads and its page renders without it, and only the restart action degrades — to the localized manual
 copy with the action disabled. The manifest declares the connection client in `dsh.client.inject`
-(`package.json`) and the client half injects `connection` (`client.js:716`).
+(`package.json`) and the client half injects `connection` (`inject` `client.js:1081`).
 
 ## Honest limits
 
-- **The cross-field rule is not in the schema.** `retainRatio < thresholdRatio` cannot be expressed in
-  schemastery without breaking the settings form, because `volatileForm()` only descends a plain
-  object root (`packages/settings/settings/src/schema.ts:37-47`). It is enforced by the page before it
-  writes (`client.js:239`) and by the tuner before it pushes (`index.js:263-265`). A direct
-  `settings.mutate` that bypasses the page can therefore persist an inconsistent pair in the tuner's
-  own row — the Host schema validates each field in isolation. The tuner then refuses to push that
-  pair into any preset and logs the reason (`refused`).
+- **The cross-field rules are not in the schema.** `retainRatio < thresholdRatio`, `retainRatio` XOR
+  `retainTokens`, the summarization pair, the derived `maxTokens` bound and the `modelPolicies` table
+  rules cannot be expressed in schemastery without breaking the settings form, because `volatileForm()`
+  only descends a plain object root (`packages/settings/settings/src/schema.ts:37-47`). They are
+  enforced by the page before it writes and by `tuneProblem()` before the tuner pushes. A direct
+  `settings.mutate` that bypasses the page can therefore persist an inconsistent tuple in the tuner's
+  own row — the Host schema validates each field in isolation. The tuner then refuses to push it into
+  any preset and logs the reason (`refused`).
+- **The retention form is a single switch, not two knobs.** Projecting `retainTokens` deletes
+  `retainRatio` from the child (and the reverse), because upstream rejects the two together
+  (`config.ts:292-294`). A preset that declares its own `retainTokens` therefore moves to the ratio form
+  unless the tuner's `retainTokens` is set.
+- **The retention capacity rule cannot be checked before a turn.** "Resolved `retainTokens` must stay
+  below the target `thresholdTokens`" (`config.ts:198-204`) needs the routed model's context window.
+- **`modelPolicies` is unmanaged while empty and a whole-table override when not.** An empty live table
+  leaves every preset's own per-model table untouched (reported in `unmanaged`); a non-empty table
+  replaces it. There is deliberately no "clear every preset's table" expression. The page checks the
+  JSON (including each entry's resolved cap), and `tuneProblem()` re-checks it Host-side before any
+  write, mirroring `resolveConfig()`'s per-entry cap resolution (`policy.maxTokens` `config.ts:83-90`), so an accepted
+  table cannot abort compaction-basic load at the next boot (`constructor` `index.ts:137-141`) — a property that no
+  longer depends on `projectedTune()` happening to emit a top-level `maxTokens`.
+- **The integer range is narrower than upstream's.** Every integer field, and the DERIVED `maxTokens`
+  value, is checked with `Number.isSafeInteger` Host-side and page-side, so `9007199254740993` and `1e21`
+  are refused instead of being silently rounded, and the page requires decimal text (`0x10` is not read
+  as `16`). `compaction-basic` itself accepts those values and loses precision on the way to YAML/JSON.
+  `-0` is normalized to `0` only where a value is already present, so an absent optional field is never
+  materialized.
 - **The page's pre-check is coarser than the Host schema.** It accepts any ratio in `(0, 1]`, while the
   schema requires `0.01`–`1` on a `0.01` step; an out-of-step value survives the local check and is
-  refused by the Host with the generic refused copy.
+  refused by the Host with the generic refused copy. That narrowing is the tuner's own schema:
+  `compaction-basic` accepts any finite ratio in `(0, 1]` (`config.ts:358-361`), so the tuner can refuse
+  a value the upstream loader would take.
+- **The `compaction-basic` surface is complete; the sibling pruner is a recommended FOLLOW-UP.**
+  `@deepseek-ai/dsh-compaction-tool-result-pruner` (`thresholdChars`, `headChars`, `tailChars`, defaults
+  `8192` / `4096` / `1024`, with `headChars + 39-codepoint PRUNE_MARKER + tailChars <= thresholdChars`)
+  is a different plugin with its own `Config`; shipped presets already set those values
+  (`tailChars` `standard.patch.yml:78-82`), and it is a second row family. This contract never matches, reads or
+  writes a pruner row — `withTune()` targets only the `compaction-basic` child
+  (`COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`). Making it tunable is a separate change with its own
+  contract, not an omission here.
 - **Reload semantics.** New sessions get the new tune once the preset rows carry it; a session already
-  running keeps the retired revision (`TODO.md` §3.8). Because live propagation does not work, edit the
-  values and restart the backend (the page's **Restart backend** action, or your own restart): a saved
-  value is reliably in force at the next boot.
+  running keeps the retired revision, because `compaction-basic` resolves its policy once at mount and
+  has no runtime override. Because live propagation does not work, edit the values and restart the
+  backend (the page's **Restart backend** action, or your own restart): a saved value is reliably in
+  force at the next boot.
 - **The restart path has not been exercised end to end.** The element tree, the channel calls, the
   recovery sequencing and the abort contract are pinned by the hermetic stub suite, but no real browser
   render, no real process restart and no real `location.reload()` have been exercised on a live profile.
@@ -327,29 +489,29 @@ copy with the action disabled. The manifest declares the connection client in `d
   probe disagree about rows that are demonstrably present; the plugin cannot address that from its side
   and the cause is unidentified. Nothing in this interface promises that a live save reaches the preset
   rows.
-- **Neither shipped defence is a fix.** The candidate-editor walk (`configEditorsOf()`,
-  `index.js:455-472`) and the empty-pass retry (`RETUNE_BACKOFF`, `index.js:123-130`) are armed and run,
-  but the retry-only build propagated 0 of 1 measured rounds and the candidate-walk build 0 of 1; the
-  pre-fix baseline arm was never measured, so no rate change is claimed in either direction.
+- **Neither shipped defence is a fix.** The candidate-editor walk (`configEditorsOf()`) and the
+  empty-pass retry (`RETUNE_BACKOFF`) are armed and run, but the retry-only build propagated 0 of 1
+  measured rounds and the candidate-walk build 0 of 1; the pre-fix baseline arm was never measured, so
+  no rate change is claimed in either direction.
 - **Two measurement gaps.** Arm B (the pre-fix baseline) was never measured because the A/B stopped on
   the first arm-A failure; and in the measured round four passes returned a non-empty result while
   nothing reached the patch, with no breakdown captured of whether they were `skipped`-only or
   refusals.
 - **No live override of a mounted `compaction-basic`.** The plugin can only re-project the preset
   declarations; it cannot change the policy of a preset already running.
-- **No `node_modules`.** If `@deepseek-ai/schemastery` resolves from none of the three anchors
-  (`index.js:78-95`), `Config` is `undefined`: the loader skips validation, there is no settings
-  namespace, the page renders the unavailable note, and `apply()` still pushes raw values.
+- **No `node_modules`.** If `@deepseek-ai/schemastery` resolves from none of the three anchors,
+  `Config` is `undefined`: the loader skips validation, there is no settings namespace, the page renders
+  the unavailable note, and `apply()` still pushes raw values.
 - **Confirmed at runtime.** Isolated instances confirmed the settings write (`ok:true`,
   `applies:"live"`, values persisted into the profile patch and reported by the tuner's own namespace),
   reliable idempotent boot-time propagation, and name-based coverage of a third-party preset brought in
-  by a `--patch` overlay.
+  by a `--patch` overlay. The multi-option projection itself is offline-verified only.
 - **Still unconfirmed.** A reliable live-save path (no cause identified); arm B (never measured); the
   breakdown of the four non-empty passes; the browser/GUI path (real DOM render, nav row, page-driven
-  save round-trip); a real process restart and a real `location.reload()` on a live profile; `TODO.md`
-  §7 question 8 (HMR for a `link:`ed client bundle); question 2's live-session case; and question 5.
-  The hermetic `verify.mjs` suite is green (71/71) but is stub-driven and starts no Host, so it says
-  nothing about the live path or a real browser; see `README.md` → Verify.
+  save round-trip, including the new JSON textarea and checkbox); a real process restart and a real
+  `location.reload()` on a live profile; HMR for a `link:`ed client bundle;
+  question 2's live-session case; and question 5. The hermetic `verify.mjs` suite is stub-driven and
+  starts no Host, so it says nothing about the live path or a real browser; see `README.md` → Verify.
 
 ## Build rules
 

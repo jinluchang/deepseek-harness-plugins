@@ -334,17 +334,82 @@ function renderedText(tree) {
   return text
 }
 
+/**
+ * The eleven owned keys in the order both halves render and write them. The
+ * client `FIELDS` table cannot be imported (separate closure), so this is the
+ * order the parity checks below assert the page renders.
+ */
+const TUNE_ORDER = [
+  'thresholdRatio', 'headroomTokens', 'retainRatio', 'retainTokens',
+  'summarizationProvider', 'summarizationModel', 'maxTokens',
+  'compactionRetries', 'maxOverflowRetries', 'modelPolicies', 'auto',
+]
+
+/**
+ * The upstream `compaction-basic` code defaults, spelled out here so a change to
+ * the host table cannot silently drift from `config.ts`.
+ */
+const UPSTREAM_DEFAULTS = {
+  thresholdRatio: 0.8,
+  headroomTokens: 65_536,
+  retainRatio: 0.16,
+  retainTokens: undefined,
+  summarizationProvider: '',
+  summarizationModel: '',
+  maxTokens: undefined,
+  compactionRetries: 1,
+  maxOverflowRetries: 1,
+  modelPolicies: [],
+  auto: true,
+}
+
+/** The install seed `cordis.patch.yml` commits into the tuner row. */
+const MOUNT_SEED = { thresholdRatio: 0.5, retainRatio: 0.15, compactionRetries: 2 }
+
+/**
+ * One realistic stored snapshot value: the mount seed for the three seeded keys
+ * plus the code defaults, with `retainTokens` and `maxTokens` genuinely unset
+ * (the tuner's schema gives them no default).
+ */
+function storedValue(overrides = {}) {
+  return {
+    thresholdRatio: MOUNT_SEED.thresholdRatio,
+    headroomTokens: UPSTREAM_DEFAULTS.headroomTokens,
+    retainRatio: MOUNT_SEED.retainRatio,
+    summarizationProvider: '',
+    summarizationModel: '',
+    compactionRetries: MOUNT_SEED.compactionRetries,
+    maxOverflowRetries: UPSTREAM_DEFAULTS.maxOverflowRetries,
+    modelPolicies: [],
+    auto: true,
+    ...overrides,
+  }
+}
+
 /** A ready snapshot with the given revision and values. */
-function readySnapshot(revision, values = { thresholdRatio: 0.8, retainRatio: 0.16, compactionRetries: 1 }) {
+function readySnapshot(revision, values = storedValue()) {
   return { status: 'ready', value: values, base: {}, user: values, revision, writable: true }
 }
 
 /** Await the microtask queue plus the next macrotask, so a `mutate()` settles. */
 const flush = () => new Promise(resolve => { setImmediate(resolve) })
 
-/** Type text into the nth rendered input. */
-function typeInto(ui, index, text) {
-  findAll(ui.tree(), node => node.type === 'input')[index].props.onChange({ target: { value: text } })
+/** Every rendered control, in FIELDS order (inputs and the JSON textarea). */
+function controlsOf(ui) {
+  return findAll(ui.tree(), node => node.type === 'input' || node.type === 'textarea')
+}
+
+/** The rendered control for one owned key. */
+function controlOf(ui, key) {
+  return controlsOf(ui)[TUNE_ORDER.indexOf(key)]
+}
+
+/** Type text into one field by key; a checkbox takes `'true'`/`'false'`. */
+function setField(ui, key, text) {
+  const control = controlOf(ui, key)
+  if (control === undefined) throw new Error(`no rendered control for "${key}"`)
+  if (control.props.type === 'checkbox') control.props.onChange({ target: { checked: text === 'true' } })
+  else control.props.onChange({ target: { value: text } })
 }
 
 /** Click the Save action and let its promise settle. */
@@ -447,7 +512,7 @@ function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl } = 
     cancelButton: () => buttonWithText(inst.tree, ['restart.cancel']),
     confirmButton: () => buttonWithText(inst.tree, ['restart.confirmAction']),
     reloadButton: () => buttonWithText(inst.tree, ['restart.reload']),
-    inputs: () => findAll(inst.tree, node => node.type === 'input'),
+    controls: () => findAll(inst.tree, node => node.type === 'input' || node.type === 'textarea'),
     alerts: () => findAll(inst.tree, node => node.props?.role === 'alert'),
     subscribeCalls: () => react.useSyncExternalStoreCalls.slice(start),
   }
@@ -502,10 +567,22 @@ await check('the bundle patch mounts exactly one row with the frozen entry id an
   assert.equal((patch.match(/- id:/g) ?? []).length, 1, 'the patch must declare exactly one row id')
 })
 
-await check('the mount patch starts from the committed preset tune (0.5 / 0.15 / 2)', () => {
+await check('the mount patch seeds the install values 0.5 / 0.15 / 2 and no other option', () => {
   for (const [key, value] of [['thresholdRatio', '0.5'], ['retainRatio', '0.15'], ['compactionRetries', '2']]) {
-    assert.match(patch, new RegExp(`^\\s+${key}:\\s+${value}\\s*$`, 'm'), `the mount patch does not start ${key} at ${value}`)
+    assert.match(patch, new RegExp(`^\\s+${key}:\\s+${value}\\s*$`, 'm'), `the mount patch does not seed ${key} at ${value}`)
   }
+  // The seed is an install choice that differs from the code defaults and is
+  // projected into every preset that omits the key; the other eight options are
+  // deliberately not seeded, so they fall back to their code defaults.
+  for (const key of TUNE_ORDER) {
+    if (key in MOUNT_SEED) continue
+    assert.doesNotMatch(
+      patch,
+      new RegExp(`^\\s+${key}:`, 'm'),
+      `the mount patch seeds ${key}, which would make an unverified install choice reach every preset`,
+    )
+  }
+  assert.ok(!/commits\s+thresholdRatio|standard\.patch\.yml currently commits/i.test(patch), 'the false provenance comment is still in the mount patch')
 })
 
 await check('the client module id is the exact package name', () => {
@@ -525,9 +602,9 @@ await check('the client artifact requests only react from the baseline module ta
 await check('the host half has no default export and exposes the frozen named surface', () => {
   assert.equal('default' in host, false, 'index.js must not have a default export')
   for (const name of [
-    'name', 'inject', 'Config', 'schemaLibrary', 'DEFAULT_TUNE', 'TARGET_PRESET_PLUGIN', 'COMPACTION_ROW_ID',
-    'COMPACTION_PLUGIN', 'volatileValue', 'liveTune', 'tuneProblem', 'findCompactionRow', 'readTune', 'withTune',
-    'retune', 'apply',
+    'name', 'inject', 'Config', 'schemaLibrary', 'DEFAULT_TUNE', 'TUNE_KEYS', 'TUNE_OPTIONS', 'TARGET_PRESET_PLUGIN',
+    'COMPACTION_ROW_ID', 'COMPACTION_PLUGIN', 'volatileValue', 'rawTune', 'liveTune', 'projectedTune', 'tuneProblem',
+    'findCompactionRow', 'readTune', 'withTune', 'retune', 'apply',
   ]) {
     assert.ok(name in host, `index.js is missing the export "${name}"`)
   }
@@ -536,7 +613,34 @@ await check('the host half has no default export and exposes the frozen named su
   assert.equal(host.TARGET_PRESET_PLUGIN, '@deepseek-ai/dsh-agent-preset', 'TARGET_PRESET_PLUGIN drifted')
   assert.equal(host.COMPACTION_ROW_ID, 'compaction-basic', 'COMPACTION_ROW_ID drifted')
   assert.equal(host.COMPACTION_PLUGIN, '@deepseek-ai/dsh-compaction-basic', 'COMPACTION_PLUGIN drifted')
-  assert.deepEqual({ ...host.DEFAULT_TUNE }, { thresholdRatio: 0.8, retainRatio: 0.16, compactionRetries: 1 }, 'DEFAULT_TUNE drifted')
+})
+
+await check('DEFAULT_TUNE is exactly the eleven upstream code defaults', () => {
+  assert.deepEqual([...host.TUNE_KEYS], TUNE_ORDER, `TUNE_KEYS drifted: ${JSON.stringify([...host.TUNE_KEYS])}`)
+  assert.equal(Object.isFrozen(host.DEFAULT_TUNE), true, 'DEFAULT_TUNE must stay frozen')
+  assert.deepEqual(
+    Object.keys(host.DEFAULT_TUNE).sort(),
+    [...TUNE_ORDER].sort(),
+    `DEFAULT_TUNE does not carry exactly the owned keys: ${JSON.stringify(Object.keys(host.DEFAULT_TUNE))}`,
+  )
+  for (const key of TUNE_ORDER) {
+    assert.deepEqual(
+      host.DEFAULT_TUNE[key],
+      UPSTREAM_DEFAULTS[key],
+      `DEFAULT_TUNE.${key} drifted: ${JSON.stringify(host.DEFAULT_TUNE[key])} vs upstream ${JSON.stringify(UPSTREAM_DEFAULTS[key])}`,
+    )
+  }
+})
+
+await check('TUNE_OPTIONS states a default text and an allowed range for every key', () => {
+  assert.deepEqual(host.TUNE_OPTIONS.map(option => option.key), TUNE_ORDER, 'TUNE_OPTIONS is not one entry per owned key, in order')
+  for (const option of host.TUNE_OPTIONS) {
+    assert.ok(['ratio', 'nonNegativeInteger', 'positiveInteger', 'string', 'boolean', 'modelPolicies'].includes(option.kind), `${option.key} has the unknown kind ${String(option.kind)}`)
+    assert.ok(typeof option.defaultText === 'string' && option.defaultText.length > 0, `${option.key} has no defaultText`)
+    assert.ok(typeof option.range === 'string' && option.range.length > 0, `${option.key} has no range text`)
+    assert.ok(option.range.includes('>=') || option.range.includes('(0, 1]') || option.range.includes('true or false') || option.range.includes('string') || option.range.includes('array'), `${option.key} range text advertises nothing: ${option.range}`)
+    assert.deepEqual(option.default, UPSTREAM_DEFAULTS[option.key], `${option.key} default drifted from upstream`)
+  }
 })
 
 await check('the entry id, settings namespace, locale NS, and both halves agree', () => {
@@ -547,6 +651,267 @@ await check('the entry id, settings namespace, locale NS, and both halves agree'
   assert.equal(clientContext.state.dictionaries[0]?.ns, 'compaction-tuner', `the client dictionary NS drifted to ${String(clientContext.state.dictionaries[0]?.ns)}`)
   assert.equal(options?.id, host.name, 'the settings section id and index.js name disagree')
   assert.equal(options?.locale, patchRow[1], 'the locale NS and the loader entry id disagree')
+})
+
+/* ══ 2b. docs, and the volatile-array seam the page depends on ════════════ */
+
+await check('README and CONTRACT document all eleven options, the code defaults, and the seed', () => {
+  const readme = read('README.md')
+  const contract = read('CONTRACT.md')
+  for (const option of host.TUNE_OPTIONS) {
+    assert.ok(readme.includes(`\`${option.key}\``), `README does not name the option ${option.key}`)
+    assert.ok(contract.includes(`\`${option.key}\``), `CONTRACT does not name the option ${option.key}`)
+  }
+  for (const [file, text] of [['README.md', readme], ['CONTRACT.md', contract]]) {
+    assert.ok(text.includes('0.5 / 0.15 / 2'), `${file} does not name the install seed 0.5 / 0.15 / 2`)
+    assert.ok(/code default/i.test(text), `${file} does not distinguish the upstream code default`)
+    // The disproved provenance claim must be gone: no shipped preset patch
+    // commits any compaction option (only snapshot fixtures set them).
+    assert.ok(!/standard\.patch\.yml[^\n]{0,80}commits/i.test(text), `${file} still claims a preset patch commits the seed`)
+  }
+})
+
+await check('the volatile modelPolicies array survives volatileForm (the settings-page projection)', () => {
+  // Faithful copy of `volatileForm()`/`plainSchema()`
+  // (packages/settings/settings/src/schema.ts:18-47), the seam that decides
+  // whether a Config field reaches a settings page at all. The check exists
+  // because "an array of objects cannot be tuned through a volatile form" was a
+  // live objection: a volatile ARRAY field short-circuits before any type check.
+  const z = host.schemaLibrary
+  const plainSchema = schema => {
+    const result = new z(schema.toJSON())
+    const walk = node => {
+      delete node.meta.volatile
+      for (const child of Object.values(node.dict ?? {})) walk(child)
+      if (node.inner) walk(node.inner)
+      for (const child of node.list ?? []) walk(child)
+    }
+    walk(result)
+    return result
+  }
+  const volatileForm = schema => {
+    if (schema.meta.volatile) return plainSchema(schema)
+    if (schema.type === 'object') {
+      const dict = Object.fromEntries(Object.entries(schema.dict ?? {}).flatMap(([key, child]) => {
+        const field = volatileForm(child)
+        return field === undefined ? [] : [[key, field]]
+      }))
+      return Object.keys(dict).length === 0 ? undefined : z.object(dict)
+    }
+    return undefined
+  }
+  const form = volatileForm(host.Config)
+  assert.ok(form !== undefined, 'volatileForm(Config) is undefined: the settings page would disappear')
+  assert.deepEqual(Object.keys(form.dict).sort(), [...TUNE_ORDER].sort(), `the settings form is missing options: ${JSON.stringify(Object.keys(form.dict))}`)
+  assert.equal(form.dict.modelPolicies.type, 'array', 'modelPolicies must project into the form as an array field')
+  assert.equal(host.Config.dict.modelPolicies.meta.volatile, true, 'the modelPolicies array must be volatile: equalExceptVolatile short-circuits on that flag before any type check (vendor/loader/src/config/diff.ts:14)')
+  // `settings.write()` refuses any op path that is not volatile
+  // (packages/settings/settings/src/index.ts:387-389), so the same seam decides
+  // whether a one-op modelPolicies write is accepted. Faithful copy of
+  // isVolatilePath() from that package's schema.ts.
+  const isVolatilePath = (schema, path) => {
+    if (schema.meta.volatile) return true
+    const [key, ...rest] = path
+    const child = key === undefined ? undefined : schema.dict?.[key]
+    return child !== undefined && isVolatilePath(child, rest)
+  }
+  for (const key of TUNE_ORDER) {
+    assert.equal(isVolatilePath(host.Config, [key]), true, `a settings write to ${key} would be refused as non-volatile`)
+  }
+  assert.equal(isVolatilePath(host.Config, ['modelPolicies', '0', 'provider']), true, 'a nested array path must also resolve through the volatile array node')
+})
+
+/* ══ 2b. docs: citations, tables, and the install-change section ══════════ */
+
+/**
+ * Markdown table rows whose header line contains `headerNeedle`, keyed by the
+ * header cell text.
+ * @param markdown - the document.
+ * @param headerNeedle - a substring of the target table's header row.
+ * @returns the header cells plus one object per body row.
+ */
+function markdownTable(markdown, headerNeedle) {
+  const lines = markdown.split('\n')
+  // The prose above a table also names its columns, so the header is the first
+  // PIPE-LEADING line that carries the needle.
+  const start = lines.findIndex(line => line.trim().startsWith('|') && line.includes(headerNeedle))
+  assert.ok(start >= 0, `no markdown table whose header contains "${headerNeedle}"`)
+  const header = lines[start].split('|').map(cell => cell.trim()).filter(cell => cell.length > 0)
+  const rows = []
+  for (let index = start + 2; index < lines.length && lines[index].trim().startsWith('|'); index += 1) {
+    const cells = lines[index].split('|').map(cell => cell.trim()).slice(1, -1)
+    const row = {}
+    header.forEach((name, position) => { row[name] = cells[position] ?? '' })
+    rows.push(row)
+  }
+  return { header, rows }
+}
+
+/** Strip markdown emphasis so a cell can be compared against plain metadata text. */
+function plainCell(text) {
+  return text.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Boundary-aware containment: `0.8` must not match inside `0.85`, and a symbol
+ * must not match inside a longer identifier. Non-word edges (brackets, quotes,
+ * spaces) fall back to a plain substring test.
+ * @param text - the haystack.
+ * @param needle - the literal to find.
+ * @returns whether `needle` occurs as a whole token.
+ */
+function containsToken(text, needle) {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // A leading/trailing dot is deliberately NOT a boundary: `config.maxTokens`
+  // legitimately contains the member name `maxTokens`, and `window.__load`
+  // contains `__load`. Digit/word adjacency is what must not be crossed, so
+  // `0.8` still cannot match inside `0.85` or `10.8`.
+  const left = /^[A-Za-z0-9_]/.test(needle) ? '(?<![A-Za-z0-9_])' : ''
+  const right = /[A-Za-z0-9_]$/.test(needle) ? '(?![A-Za-z0-9_])' : ''
+  return new RegExp(left + escaped + right).test(text)
+}
+
+/**
+ * Every `file:line` citation target the docs may use, resolved explicitly. A
+ * bare basename is a doc shorthand and is pinned here, so a new target fails
+ * loudly instead of silently resolving to the wrong file. Paths with a `/` are
+ * checkout-relative, except the sibling bundle under this workspace.
+ */
+function citationTarget(target) {
+  const checkout = process.env.DSH_HARNESS_CHECKOUT ?? ''
+  const local = {
+    'index.js': join(here, 'index.js'),
+    'client.js': join(here, 'client.js'),
+    'verify.mjs': join(here, 'verify.mjs'),
+    'cordis.patch.yml': join(here, 'cordis.patch.yml'),
+    'README.md': join(here, 'README.md'),
+    'CONTRACT.md': join(here, 'CONTRACT.md'),
+    'package.json': join(here, 'package.json'),
+    'dsh-backend-restart/CONTRACT.md': join(here, '..', 'dsh-backend-restart', 'CONTRACT.md'),
+    // Doc shorthands: a bare basename always means the compaction-basic source.
+    'config.ts': join(checkout, 'packages/compaction/compaction-basic/src/config.ts'),
+    'index.ts': join(checkout, 'packages/compaction/compaction-basic/src/index.ts'),
+    'standard.patch.yml': join(checkout, 'packages/bundle/web-app/presets/standard.patch.yml'),
+  }
+  if (local[target] !== undefined) return local[target]
+  if (target.includes('/')) return join(checkout, target)
+  return undefined
+}
+
+/** A source line that is only a comment cannot vouch for a symbol. */
+function isCommentLine(line) {
+  const trimmed = line.trim()
+  return trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')
+    || trimmed.startsWith('#') || trimmed.startsWith('<!--') || trimmed.startsWith('-->')
+}
+
+await check('every code citation in the docs points at the symbol it names', () => {
+  const checkout = process.env.DSH_HARNESS_CHECKOUT
+  assert.ok(checkout, 'DSH_HARNESS_CHECKOUT is unset: the checkout citations cannot be resolved')
+  let citations = 0
+  for (const doc of ['README.md', 'CONTRACT.md']) {
+    const text = read(doc)
+    // `file:12`, `file:12-14` and `file:12,14,105` are all citations; the anchor
+    // is the backticked span that ends immediately before the citation.
+    for (const match of text.matchAll(/`([^`\n]+?):(\d+(?:,\d+)*)(?:-(\d+))?`/g)) {
+      citations += 1
+      const [, target, firstText, lastText] = match
+      const lines = firstText.split(',').map(Number)
+      const first = lines[0]
+      const last = lastText === undefined ? lines[lines.length - 1] : Number(lastText)
+      const before = text.slice(Math.max(0, match.index - 400), match.index)
+      const close = before.lastIndexOf('`')
+      const open = close === -1 ? -1 : before.lastIndexOf('`', close - 1)
+      assert.ok(open !== -1 && close > open, `${doc}:${match[0]} has no backticked symbol anchor before it`)
+      const anchor = before.slice(open + 1, close)
+      assert.ok(!/:[0-9]/.test(anchor) || !anchor.includes('/'), `${doc}:${match[0]} is anchored to another citation, not a symbol (${anchor})`)
+      const needle = anchor.replace(/\(\)$/, '').trim()
+      assert.ok(
+        needle.length >= 2 && needle.length <= 90 && !needle.includes('\n'),
+        `${doc}:${match[0]} is anchored to "${anchor}", which is not a single symbol`,
+      )
+      const path = citationTarget(target)
+      assert.ok(path !== undefined, `${doc}:${match[0]} uses the unregistered citation target "${target}"; register it in citationTarget()`)
+      assert.ok(existsSync(path), `${doc}:${match[0]} resolves to ${path}, which does not exist`)
+      const fileLines = readFileSync(path, 'utf8').split('\n')
+      assert.ok(first >= 1 && last <= fileLines.length, `${doc}:${match[0]} is outside ${target} (${fileLines.length} lines)`)
+      const body = fileLines.slice(first - 1, last).filter(line => line.trim() !== '' && !isCommentLine(line)).join('\n')
+      assert.ok(
+        containsToken(body, needle),
+        `${doc}:${match[0]} does not contain the anchor symbol "${needle}" on a non-comment line (checked ${target} lines ${first}-${last})`,
+      )
+    }
+  }
+  assert.ok(citations >= 100, `expected the full citation set across both docs, found ${citations}`)
+})
+
+await check('the README and CONTRACT option tables carry the host defaults and ranges', () => {
+  const tables = [
+    ['README.md', markdownTable(read('README.md'), 'Code default'), 'Code default', 'Accepts'],
+    ['CONTRACT.md', markdownTable(read('CONTRACT.md'), 'Code default'), 'Code default', 'Range (enforced by)'],
+  ]
+  for (const [file, table, defaultColumn, rangeColumn] of tables) {
+    assert.ok(table.rows.length >= host.TUNE_OPTIONS.length, `${file}: only ${table.rows.length} option rows`)
+    for (const option of host.TUNE_OPTIONS) {
+      const keyColumn = Object.keys(table.header)[0]
+      const row = table.rows.find(candidate => plainCell(candidate[table.header[0]] ?? '') === option.key)
+      assert.ok(row !== undefined, `${file} has no option-table row for ${option.key} (looked for a row whose first cell is the key; columns ${String(keyColumn)})`)
+      const defaultCell = plainCell(row[defaultColumn] ?? '')
+      assert.ok(
+        containsToken(defaultCell, option.defaultText),
+        `${file} default cell for ${option.key} does not carry the host defaultText "${option.defaultText}" as a whole value: ${defaultCell}`,
+      )
+      const rangeCell = plainCell(row[rangeColumn] ?? '')
+      if (option.kind === 'modelPolicies') {
+        assert.ok(/array/i.test(rangeCell), `${file} range cell for ${option.key} is not an array range: ${rangeCell}`)
+      } else {
+        const coreRange = plainCell(option.range.split(';')[0].replace(/\s*\(.*\)$/, ''))
+        assert.ok(
+          containsToken(rangeCell, coreRange),
+          `${file} range cell for ${option.key} does not carry "${coreRange}": ${rangeCell}`,
+        )
+      }
+      // A row that names a number the host does not use is the failure mode this
+      // check exists for: the row must not contradict the metadata.
+      for (const number of option.range.match(/\d+(?:\.\d+)?/g) ?? []) {
+        assert.ok(
+          containsToken(rangeCell, number) || containsToken(defaultCell, number),
+          `${file} row for ${option.key} never mentions the host range number ${number} as a whole value: ${rangeCell}`,
+        )
+      }
+    }
+  }
+})
+
+await check('the install behaviour change section names every always-projected key', () => {
+  const readme = read('README.md')
+  const contract = read('CONTRACT.md')
+  assert.ok(readme.includes('Install behaviour change'), 'README has no "Install behaviour change" section')
+  assert.ok(contract.includes('Install behaviour change'), 'CONTRACT has no "Install behaviour change" section')
+  const readmeStart = readme.indexOf('## Install behaviour change')
+  const readmeEnd = readme.indexOf('\n## ', readmeStart + 1)
+  const contractStart = contract.indexOf('### Install behaviour change')
+  const contractEnd = contract.indexOf('\n### ', contractStart + 1)
+  for (const [file, section] of [
+    ['README.md', readme.slice(readmeStart, readmeEnd === -1 ? undefined : readmeEnd)],
+    ['CONTRACT.md', contract.slice(contractStart, contractEnd === -1 ? undefined : contractEnd)],
+  ]) {
+    assert.ok(section.length > 0, `${file}: no install-behaviour section`)
+    for (const key of host.TUNE_KEYS) {
+      if (key === 'modelPolicies') continue
+      assert.ok(section.includes(key), `${file}: the install-behaviour section does not name the projected key ${key}`)
+    }
+    assert.ok(section.includes('modelPolicies'), `${file}: the install-behaviour section does not state the modelPolicies exception`)
+  }
+})
+
+await check('no shipped doc or comment cites the removed TODO.md', () => {
+  // The needle is built at runtime so this suite's own diagnostic text cannot
+  // satisfy it; verify.mjs is excluded because it is the check, not a citation.
+  const needle = 'TODO' + '.md'
+  for (const file of ['README.md', 'CONTRACT.md', 'client.js', 'index.js', 'locale/en.json', 'locale/zh.json', 'cordis.patch.yml']) {
+    assert.ok(!read(file).includes(needle), `${file} still cites ${needle}, which does not exist in this repository`)
+  }
 })
 
 /* ══ 3. host half against the REAL schemastery ═════════════════════════════ */
@@ -563,32 +928,61 @@ await check('Config is a real schemastery object root, not a transform, refine, 
   assert.equal(host.Config['~standard']?.vendor, 'schemastery', `the schema vendor is ${String(host.Config['~standard']?.vendor)}`)
   assert.deepEqual(
     Object.keys(host.Config.dict ?? {}).sort(),
-    ['compactionRetries', 'retainRatio', 'thresholdRatio'],
-    'Config.dict is not exactly the three tuner fields',
+    [...TUNE_ORDER].sort(),
+    `Config.dict is not exactly the eleven owned options: ${JSON.stringify(Object.keys(host.Config.dict ?? {}))}`,
   )
 })
 
-await check('Config declares exactly three volatile fields with the frozen ranges and defaults', () => {
+await check('Config declares all eleven options as volatile fields with the frozen shapes', () => {
   const expected = {
     thresholdRatio: { step: 0.01, min: 0.01, max: 1, default: 0.8 },
-    retainRatio: { step: 0.01, min: 0.01, max: 1, default: 0.16 },
+    headroomTokens: { step: 1, min: 0, default: 65_536 },
+    retainRatio: { step: 0.01, min: 0.01, max: 1 },
+    retainTokens: { step: 1, min: 0 },
+    summarizationProvider: { default: '' },
+    summarizationModel: { default: '' },
+    maxTokens: { step: 1, min: 1 },
     compactionRetries: { step: 1, min: 0, default: 1 },
+    maxOverflowRetries: { step: 1, min: 0, default: 1 },
+    modelPolicies: { type: 'array' },
+    auto: { default: true },
   }
-  for (const [field, shape] of Object.entries(expected)) {
+  for (const field of TUNE_ORDER) {
     const node = host.Config.dict[field]
+    const shape = expected[field]
     assert.ok(node !== undefined, `Config has no "${field}" field`)
+    assert.ok(shape !== undefined, `the suite has no expected shape for "${field}"`)
     assert.equal(node.meta?.volatile, true, `${field} is not .volatile(), so a settings edit would remount the row`)
     for (const [key, value] of Object.entries(shape)) {
+      if (key === 'type') {
+        assert.equal(node.type, value, `${field} is a ${String(node.type)} field, expected ${String(value)}`)
+        continue
+      }
       assert.equal(node.meta?.[key], value, `${field}.${key} drifted: expected ${String(value)}, got ${String(node.meta?.[key])}`)
     }
   }
+  // The three optional keys carry NO schema default on purpose: a schemastery
+  // default is materialized into the running config, which would make the
+  // retainRatio XOR retainTokens rule undetectable.
+  for (const field of ['retainRatio', 'retainTokens', 'maxTokens']) {
+    assert.equal(host.Config.dict[field].meta?.default, undefined, `${field} must not carry a schema default`)
+  }
 })
 
-await check('Config({thresholdRatio: 0.5}) fills the other two code defaults', () => {
+await check('Config({thresholdRatio: 0.5}) fills the code defaults and leaves the unset keys unset', () => {
   const parsed = host.Config({ thresholdRatio: 0.5 })
   assert.equal(host.volatileValue(parsed.thresholdRatio), 0.5, 'thresholdRatio was not parsed to 0.5')
-  assert.equal(host.volatileValue(parsed.retainRatio), 0.16, `retainRatio default drifted to ${String(host.volatileValue(parsed.retainRatio))}`)
+  assert.equal(host.volatileValue(parsed.headroomTokens), 65_536, 'headroomTokens default drifted')
   assert.equal(host.volatileValue(parsed.compactionRetries), 1, `compactionRetries default drifted to ${String(host.volatileValue(parsed.compactionRetries))}`)
+  assert.equal(host.volatileValue(parsed.maxOverflowRetries), 1, 'maxOverflowRetries default drifted')
+  assert.equal(host.volatileValue(parsed.summarizationProvider), '', 'summarizationProvider default drifted')
+  assert.equal(host.volatileValue(parsed.summarizationModel), '', 'summarizationModel default drifted')
+  assert.deepEqual(host.volatileValue(parsed.modelPolicies), [], 'modelPolicies default drifted')
+  assert.equal(host.volatileValue(parsed.auto), true, 'auto default drifted')
+  assert.equal(host.volatileValue(parsed.retainRatio), undefined, 'retainRatio must stay unset: a default would break the retention XOR')
+  assert.equal(host.volatileValue(parsed.retainTokens), undefined, 'retainTokens must stay unset')
+  assert.equal(host.volatileValue(parsed.maxTokens), undefined, 'maxTokens must stay unset so it can derive from headroomTokens')
+  assert.deepEqual(host.liveTune(parsed), { ...host.DEFAULT_TUNE, thresholdRatio: 0.5 }, 'liveTune did not resolve the unset keys to the code defaults')
 })
 
 await check('the schema refuses every out-of-shape per-field value before the profile patch can change', () => {
@@ -596,8 +990,16 @@ await check('the schema refuses every out-of-shape per-field value before the pr
     ['thresholdRatio: 0', { thresholdRatio: 0 }],
     ['thresholdRatio: 1.2', { thresholdRatio: 1.2 }],
     ['retainRatio: 0.005', { thresholdRatio: 0.8, retainRatio: 0.005 }],
+    ['headroomTokens: -1', { headroomTokens: -1 }],
+    ['headroomTokens: 1.5', { headroomTokens: 1.5 }],
+    ['retainTokens: 1.5', { retainTokens: 1.5 }],
+    ['maxTokens: 0', { maxTokens: 0 }],
     ['compactionRetries: -1', { compactionRetries: -1 }],
     ['compactionRetries: 1.5', { compactionRetries: 1.5 }],
+    ['maxOverflowRetries: -1', { maxOverflowRetries: -1 }],
+    ['auto: "yes"', { auto: 'yes' }],
+    ['modelPolicies: {}', { modelPolicies: {} }],
+    ['modelPolicies entry without a provider', { modelPolicies: [{ model: 'gpt-5' }] }],
   ]
   for (const [label, input] of cases) {
     assert.throws(() => host.Config(input), `Config({${label}}) must throw but was accepted`)
@@ -616,16 +1018,157 @@ await check('the schema cannot express retainRatio < thresholdRatio, and tunePro
   assert.match(String(host.tuneProblem(pair)), /smaller than thresholdRatio/, 'tuneProblem must refuse the cross-field pair the schema cannot')
 })
 
-await check('tuneProblem is the only guard for the cross-field rule the schema cannot express', () => {
+await check('tuneProblem refuses every cross-field rule the schema cannot express', () => {
+  assert.equal(host.tuneProblem({}), undefined, 'the code defaults must be a usable tune')
   assert.equal(host.tuneProblem({ thresholdRatio: 0.6, retainRatio: 0.2, compactionRetries: 3 }), undefined, 'a usable tune must not be refused')
+  assert.equal(host.tuneProblem({ thresholdRatio: 0.6, retainTokens: 1024 }), undefined, 'the token retention form must be usable')
+  assert.equal(host.tuneProblem({ thresholdRatio: 0.6, maxTokens: 2048, headroomTokens: 0 }), undefined, 'an explicit maxTokens must make a zero headroom usable')
   for (const [label, input, pattern] of [
     ['retainRatio above thresholdRatio', { thresholdRatio: 0.2, retainRatio: 0.3, compactionRetries: 1 }, /smaller than thresholdRatio/],
     ['retainRatio equal to thresholdRatio', { thresholdRatio: 0.2, retainRatio: 0.2, compactionRetries: 1 }, /smaller than thresholdRatio/],
     ['thresholdRatio out of range', { thresholdRatio: 0, retainRatio: 0, compactionRetries: 1 }, /thresholdRatio must be/],
     ['compactionRetries fractional', { thresholdRatio: 0.6, retainRatio: 0.2, compactionRetries: 1.5 }, /compactionRetries must be a non-negative integer/],
+    ['retainRatio and retainTokens together', { thresholdRatio: 0.6, retainRatio: 0.2, retainTokens: 1024 }, /mutually exclusive/],
+    ['headroomTokens negative', { headroomTokens: -1 }, /headroomTokens must be a non-negative integer/],
+    ['retainTokens fractional', { retainTokens: 1.5 }, /retainTokens must be a non-negative integer/],
+    ['headroomTokens 0 with no maxTokens', { headroomTokens: 0 }, /maxTokens must resolve to a positive integer/],
+    ['maxOverflowRetries fractional', { maxOverflowRetries: 0.5 }, /maxOverflowRetries must be a non-negative integer/],
+    ['summarizationProvider without its model', { summarizationProvider: 'openai' }, /must be set together/],
+    ['summarizationModel without its provider', { summarizationModel: 'gpt-5' }, /must be set together/],
+    ['auto not a boolean', { auto: 'yes' }, /auto must be a boolean/],
+    ['modelPolicies not an array', { modelPolicies: {} }, /modelPolicies must be an array/],
+    ['modelPolicies entry without a provider', { modelPolicies: [{ model: 'gpt-5' }] }, /provider must be a non-empty string/],
+    ['modelPolicies entry without a model', { modelPolicies: [{ provider: 'openai' }] }, /model must be a non-empty string/],
+    ['duplicate modelPolicies target', { modelPolicies: [{ provider: 'openai', model: 'gpt-5' }, { provider: 'openai', model: 'gpt-5' }] }, /duplicate model policy/],
+    ['unknown modelPolicies key', { modelPolicies: [{ provider: 'openai', model: 'gpt-5', bogus: 1 }] }, /unknown key "bogus"/],
+    ['modelPolicies entry retainRatio above its threshold', { modelPolicies: [{ provider: 'openai', model: 'gpt-5', thresholdRatio: 0.2, retainRatio: 0.4 }] }, /smaller than the resolved thresholdRatio/],
+    ['modelPolicies entry with both retention forms', { modelPolicies: [{ provider: 'openai', model: 'gpt-5', retainRatio: 0.2, retainTokens: 100 }] }, /mutually exclusive/],
+    ['modelPolicies entry maxTokens 0', { modelPolicies: [{ provider: 'openai', model: 'gpt-5', maxTokens: 0 }] }, /maxTokens must be a positive integer/],
   ]) {
     assert.match(String(host.tuneProblem(input)), pattern, `tuneProblem missed: ${label}`)
   }
+})
+
+await check('tuneProblem refuses integers outside the safe range at every layer, and normalizes -0', () => {
+  // Silent rounding is worse than a refusal: 9007199254740993 is already
+  // 9007199254740992 as a JS number, and 1e21 loses precision entirely.
+  for (const [label, input] of [
+    ['headroomTokens 1e21', { headroomTokens: 1e21 }],
+    ['headroomTokens 9007199254740993', { headroomTokens: 9_007_199_254_740_993 }],
+    ['retainTokens 1e21', { retainTokens: 1e21 }],
+    ['compactionRetries 1e21 with a valid headroom', { headroomTokens: 100, compactionRetries: 1e21 }],
+    ['maxOverflowRetries 1e21 with a valid headroom', { headroomTokens: 100, maxOverflowRetries: 1e21 }],
+    ['modelPolicies entry headroomTokens 1e21', { headroomTokens: 100, modelPolicies: [{ provider: 'o', model: 'm', headroomTokens: 1e21 }] }],
+    ['derived maxTokens 1e21 (headroom only)', { headroomTokens: 1e21 }],
+  ]) {
+    assert.equal(typeof host.tuneProblem(input), 'string', `tuneProblem accepted an unsafe integer: ${label}`)
+  }
+  assert.equal(host.tuneProblem({ headroomTokens: 9_007_199_254_740_991 }), undefined, 'the largest safe integer must be accepted')
+  // -0 is the same number as 0 but serializes oddly; the projection must emit +0.
+  const negativeZero = host.projectedTune({ headroomTokens: -0, maxTokens: 5 })
+  assert.equal(Object.is(negativeZero.headroomTokens, -0), false, 'projectedTune emitted -0 for headroomTokens')
+  assert.equal(negativeZero.headroomTokens, 0, 'projectedTune did not normalize -0 to 0')
+  // An ABSENT optional field must never be materialized by that normalization.
+  assert.equal(Object.hasOwn(host.projectedTune({}), 'retainTokens'), false, '-0 normalization materialized an absent retainTokens')
+  assert.equal(Object.hasOwn(host.projectedTune({}), 'retainRatio'), true, 'the ratio form must still be projected')
+  assert.match(String(host.tuneProblem({ headroomTokens: -0 })), /maxTokens must resolve to a positive integer.*got -0/, 'a -0 headroom with no cap must be refused and rendered as -0, matching upstream')
+})
+
+await check('tuneProblem validates each modelPolicies entry RESOLVED cap (config.ts:83-90)', () => {
+  // Upstream mutates an entry's cap to its own headroomTokens when the TOP LEVEL
+  // leaves maxTokens unset, so an entry with headroomTokens 0 throws at load.
+  // The tuner must refuse it rather than rely on projectedTune happening to emit
+  // a top-level maxTokens.
+  const entry = { provider: 'openai', model: 'gpt-5', headroomTokens: 0 }
+  assert.match(
+    String(host.tuneProblem({ modelPolicies: [entry] })),
+    /modelPolicies\[0\]\.maxTokens must resolve to a positive integer/,
+    'an entry with a zero headroom and no cap must be refused',
+  )
+  assert.equal(
+    host.tuneProblem({ maxTokens: 4096, modelPolicies: [entry] }),
+    undefined,
+    'an explicit top-level maxTokens makes the same entry usable, exactly like upstream',
+  )
+  assert.equal(
+    host.tuneProblem({ modelPolicies: [{ ...entry, maxTokens: 1 }] }),
+    undefined,
+    'an explicit entry cap makes the entry usable',
+  )
+  assert.equal(
+    host.tuneProblem({ modelPolicies: [{ provider: 'openai', model: 'gpt-5', headroomTokens: 100 }] }),
+    undefined,
+    'a positive entry headroom is the entry cap when the top level leaves maxTokens unset',
+  )
+})
+
+await check('an empty modelPolicies table is unmanaged in both directions', async () => {
+  const ownTable = [{ provider: 'openai', model: 'gpt-5', thresholdRatio: 0.4 }]
+  const withTable = {
+    plugins: [{
+      id: host.COMPACTION_ROW_ID,
+      name: host.COMPACTION_PLUGIN,
+      config: {
+        thresholdRatio: 0.8, headroomTokens: 65_536, retainRatio: 0.16, summarizationProvider: '',
+        summarizationModel: '', maxTokens: 65_536, compactionRetries: 1, maxOverflowRetries: 1,
+        auto: true, modelPolicies: ownTable,
+      },
+    }],
+  }
+  // (a) empty tuner table: the preset's own table must survive, and the row must
+  // be reported in `unmanaged` rather than silently looking like a no-op skip.
+  const untouched = createEditor([{ id: 'preset-own', name: host.TARGET_PRESET_PLUGIN, config: withTable }])
+  const first = await host.retune(untouched, {}, () => {})
+  assert.deepEqual(first.changed, [], `an empty tuner table changed a preset: ${JSON.stringify(first.changed)}`)
+  assert.deepEqual(first.unmanaged, ['preset-own'], `the row was not reported as unmanaged: ${JSON.stringify(first.unmanaged)}`)
+  assert.deepEqual(first.skipped, ['preset-own'], 'the row must also be reported as skipped')
+  assert.equal(untouched.edits.length, 0, 'an empty tuner table wrote a preset')
+  // (c) the same pass repeated: the unmanaged key must never become a difference,
+  // or an already-tuned preset would be rewritten on every pass.
+  const second = await host.retune(untouched, {}, () => {})
+  assert.equal(untouched.edits.length, 0, `the unmanaged key caused a rewrite loop: ${untouched.edits.length} edit(s)`)
+  assert.deepEqual(second.unmanaged, ['preset-own'], 'the unmanaged report did not repeat')
+  // (b) non-empty tuner table: it replaces the preset's table.
+  const replaced = createEditor([{ id: 'preset-own', name: host.TARGET_PRESET_PLUGIN, config: JSON.parse(JSON.stringify(withTable)) }])
+  const replacement = [{ provider: 'anthropic', model: 'claude-sonnet-4' }]
+  const third = await host.retune(replaced, { modelPolicies: replacement }, () => {})
+  assert.deepEqual(third.changed, ['preset-own'], 'a non-empty tuner table must replace the preset table')
+  assert.deepEqual(third.unmanaged, [], 'a managed table must not be reported as unmanaged')
+  const child = host.findCompactionRow(replaced.edits[0].next)
+  assert.deepEqual(child.config.modelPolicies, replacement, 'the non-empty table did not replace the preset table')
+})
+
+await check('projectedTune projects the derived maxTokens and exactly one retention form', () => {
+  const defaults = host.projectedTune({})
+  assert.deepEqual(defaults, {
+    thresholdRatio: 0.8,
+    headroomTokens: 65_536,
+    summarizationProvider: '',
+    summarizationModel: '',
+    maxTokens: 65_536,
+    compactionRetries: 1,
+    maxOverflowRetries: 1,
+    auto: true,
+    retainRatio: 0.16,
+  }, `the default projection drifted: ${JSON.stringify(defaults)}`)
+  assert.equal(Object.hasOwn(defaults, 'modelPolicies'), false, 'an empty modelPolicies table must NOT be projected (it is unmanaged)')
+  assert.equal(host.managesModelPolicies({}), false, 'an empty table must read as unmanaged')
+  assert.equal(host.managesModelPolicies({ modelPolicies: [{ provider: 'o', model: 'm' }] }), true, 'a non-empty table must read as managed')
+  assert.deepEqual(host.projectedTune({ modelPolicies: [{ provider: 'o', model: 'm' }] }).modelPolicies, [{ provider: 'o', model: 'm' }], 'a non-empty table must be projected')
+  const lowerHeadroom = host.projectedTune({ headroomTokens: 32_768 })
+  assert.equal(lowerHeadroom.maxTokens, 32_768, 'an unset maxTokens must follow the effective headroomTokens, exactly like upstream `maxTokens ?? headroomTokens`')
+  assert.equal(host.projectedTune({ maxTokens: 4096, headroomTokens: 32_768 }).maxTokens, 4096, 'an explicit maxTokens must win over the headroom')
+  const tokenForm = host.projectedTune({ retainTokens: 1024 })
+  assert.equal(tokenForm.retainTokens, 1024, 'the token retention form was not projected')
+  assert.equal(Object.hasOwn(tokenForm, 'retainRatio'), false, 'both retention keys were projected, which upstream rejects')
+  assert.equal(Object.hasOwn(defaults, 'retainTokens'), false, 'the ratio retention form must not carry retainTokens')
+})
+
+await check('readTune separates "no child" from "child with undeclared keys", and withTune refuses a childless preset', () => {
+  const childWithNoKeys = { plugins: [{ id: host.COMPACTION_ROW_ID, name: host.COMPACTION_PLUGIN, config: {} }] }
+  assert.deepEqual(host.readTune(childWithNoKeys), { ...host.DEFAULT_TUNE }, 'a child declaring no keys must read as DEFAULT_TUNE')
+  assert.equal(host.readTune({ plugins: [{ id: 'persona', name: '@deepseek-ai/dsh-persona' }] }), undefined, 'a preset with no compaction child must read undefined')
+  assert.throws(() => host.withTune({ plugins: [{ id: 'persona' }] }, host.DEFAULT_TUNE), /no "compaction-basic" child/, 'withTune must throw for a childless preset')
 })
 
 await check('readTune separates "no child" from "child with undeclared keys", and withTune refuses a childless preset', () => {
@@ -776,7 +1319,7 @@ await check('a preset already carrying the live tune is skipped without any writ
   assert.ok(!editor.edits.some(edit => edit.id === 'preset-cordis'), 'the already-tuned preset was rewritten')
 })
 
-await check('a second identical pass performs NO edit at all (compare-and-skip, TODO.md 3.6)', async () => {
+await check('a second identical pass performs NO edit at all (compare-and-skip)', async () => {
   const before = editor.edits.length
   const second = await host.retune(editor, LIVE, message => warnings.push(message))
   assert.deepEqual(second.changed, [], `the second pass rewrote ${JSON.stringify(second.changed)}`)
@@ -830,6 +1373,40 @@ await check('one rejected edit is logged and does not stop the remaining presets
   assert.match(conflictWarnings[0], /home patch|--patch overlay/, `the conflict warning drifted: ${conflictWarnings[0]}`)
   assert.ok(!conflictEditor.edits.some(edit => edit.id === 'preset-conflicted'), 'the conflicted preset was edited')
   assert.deepEqual(result.changed, ['preset-standard', 'preset-minimal', 'preset-inherited'], `the rejection stopped the other presets: ${JSON.stringify(result.changed)}`)
+})
+
+await check('withTune deletes the retention counterpart instead of leaving the pair side by side', () => {
+  const ratioTune = host.withTune(presetConfig({ retainTokens: 4096, thresholdRatio: 0.5 }), { thresholdRatio: 0.5 })
+  const ratioChild = host.findCompactionRow(ratioTune).config
+  assert.equal(ratioChild.retainRatio, 0.16, 'the ratio form did not write retainRatio')
+  assert.equal(Object.hasOwn(ratioChild, 'retainTokens'), false, 'withTune left retainTokens next to retainRatio, which compaction-basic rejects at load (config.ts:292-294)')
+  const tokenTune = host.withTune(presetConfig({ retainRatio: 0.15, thresholdRatio: 0.5 }), { thresholdRatio: 0.5, retainTokens: 4096 })
+  const tokenChild = host.findCompactionRow(tokenTune).config
+  assert.equal(tokenChild.retainTokens, 4096, 'the token form did not write retainTokens')
+  assert.equal(Object.hasOwn(tokenChild, 'retainRatio'), false, 'withTune left retainRatio next to retainTokens')
+})
+
+await check('behaviour preservation: a preset that omits every option is NOT rewritten on the code defaults', async () => {
+  // This is the executable form of the behaviour-preservation rule: with the
+  // tuner on its code defaults, a preset whose compaction child declares none of
+  // the eleven keys already runs them, so the pass must skip it with no write.
+  const untouched = presetConfig({})
+  const untouchedEditor = createEditor([{ id: 'preset-untouched', name: host.TARGET_PRESET_PLUGIN, config: untouched }])
+  const result = await host.retune(untouchedEditor, {}, () => {})
+  assert.deepEqual(result.changed, [], `a preset that omits every option was rewritten: ${JSON.stringify(result.changed)}`)
+  assert.deepEqual(result.skipped, ['preset-untouched'], 'the untouched preset must be reported as skipped')
+  assert.equal(untouchedEditor.edits.length, 0, 'writing the code defaults changed a preset that already ran them')
+})
+
+await check('the install seed is projected into a preset that omits the seeded keys', async () => {
+  const untouched = presetConfig({})
+  const seededEditor = createEditor([{ id: 'preset-untouched', name: host.TARGET_PRESET_PLUGIN, config: untouched }])
+  const result = await host.retune(seededEditor, MOUNT_SEED, () => {})
+  assert.deepEqual(result.changed, ['preset-untouched'], 'the seeded keys must reach a preset that omits them')
+  const child = host.findCompactionRow(seededEditor.edits[0].next).config
+  assert.equal(child.thresholdRatio, 0.5, 'the seeded thresholdRatio was not projected')
+  assert.equal(child.retainRatio, 0.15, 'the seeded retainRatio was not projected')
+  assert.equal(child.compactionRetries, 2, 'the seeded compactionRetries was not projected')
 })
 
 /* ══ 5. apply(): the three triggers and the fiber read ═════════════════════ */
@@ -1056,9 +1633,38 @@ await check('apply registers one dictionary under the entry id carrying both en 
   for (const key of Object.keys(en)) {
     assert.ok(typeof zh[key] === 'string' && zh[key].length > 0, `zh is missing the key "${key}"`)
   }
-  for (const key of ['nav', 'title', 'action.save', 'action.saving', 'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved', 'error.refused', 'error.retainOrder', 'error.thresholdRange', 'error.retainRange', 'error.retriesInteger']) {
+  for (const key of [
+    'nav', 'title', 'intro', 'note.defaults', 'note.seed',
+    'action.save', 'action.saving', 'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved',
+    'error.refused', 'error.retainOrder', 'error.thresholdRange', 'error.retainRange', 'error.compactionRetries',
+    'error.modelPoliciesCap',
+    'error.headroomTokens', 'error.retainTokens', 'error.retentionExclusive', 'error.maxTokens',
+    'error.maxTokensResolved', 'error.overflowRetries', 'error.summarizationPair', 'error.modelPoliciesJson',
+    'error.modelPolicies',
+  ]) {
     assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing the key "${key}"`)
   }
+})
+
+await check('the en and zh dictionaries agree, and no English copy carries CJK text', () => {
+  const record = clientContext.state.dictionaries[0]
+  const en = record.dictionary.en
+  const zh = record.dictionary.zh
+  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key sets')
+  // The exact bug this check exists for: a translated sentence pasted into the
+  // English table renders on the English Settings page.
+  const cjk = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
+  for (const [key, value] of Object.entries(en)) {
+    assert.ok(!cjk.test(value), `the English dictionary value for "${key}" contains CJK text: ${value}`)
+  }
+  assert.ok(
+    en['field.modelPolicies.description'].includes('Leave the table empty'),
+    'the en modelPolicies copy lost the empty-table rule',
+  )
+  assert.ok(
+    cjk.test(zh['field.modelPolicies.description']) && zh['field.modelPolicies.description'].includes('\u7559\u7a7a'),
+    `the zh modelPolicies copy does not carry the empty-table translation: ${zh['field.modelPolicies.description']}`,
+  )
 })
 
 await check('the nav label re-resolves through the locale face instead of freezing one string', () => {
@@ -1078,18 +1684,78 @@ await check('the section injects the shared config form and its translator', () 
   assert.deepEqual(clientContext.state.formRequests, ['compaction-tuner'], `configForms.get() was called as ${JSON.stringify(clientContext.state.formRequests)}`)
 })
 
-await check('a ready snapshot renders three labelled inputs seeded from the snapshot', () => {
-  const ui = mountSection(readySnapshot(7))
-  const inputs = ui.inputs()
-  assert.equal(inputs.length, 3, `expected 3 inputs for a ready snapshot, rendered ${inputs.length}`)
-  assert.deepEqual(inputs.map(input => input.props.value), ['0.8', '0.16', '1'], `input seeding drifted: ${JSON.stringify(inputs.map(input => input.props.value))}`)
-  const labels = findAll(ui.tree(), node => node.type === 'label')
-  for (const input of inputs) {
-    assert.equal(input.props.type, 'number', `the ${String(input.props.id)} input is not numeric`)
-    assert.ok(typeof input.props.id === 'string' && input.props.id.length > 0, 'an input has no id for its label to point at')
-    assert.ok(labels.some(label => label.props.htmlFor === input.props.id), `no <label for> points at input ${String(input.props.id)}`)
-    assert.equal(input.props.disabled, false, 'a writable ready snapshot must not disable its inputs')
+await check('the dictionary carries the code default and the allowed range for every owned key', () => {
+  const en = clientContext.state.dictionaries[0].dictionary.en
+  const zh = clientContext.state.dictionaries[0].dictionary.zh
+  for (const option of host.TUNE_OPTIONS) {
+    for (const suffix of ['label', 'description', 'unit', 'default']) {
+      const key = `field.${option.key}.${suffix}`
+      assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing "${key}"`)
+      assert.ok(typeof zh[key] === 'string' && zh[key].length > 0, `zh is missing "${key}"`)
+    }
+    assert.ok(
+      en[`field.${option.key}.default`].includes(option.defaultText),
+      `the en default copy for ${option.key} does not name the host defaultText "${option.defaultText}": ${en[`field.${option.key}.default`]}`,
+    )
+    // zh is translated, so only the literals of the default text have to survive
+    // it; the numbers/booleans/array are what could drift.
+    for (const literal of option.defaultText.match(/\d+(?:\.\d+)?|true|false|\[\]|''/g) ?? []) {
+      assert.ok(
+        zh[`field.${option.key}.default`].includes(literal),
+        `the zh default copy for ${option.key} is missing the literal ${literal}: ${zh[`field.${option.key}.default`]}`,
+      )
+    }
+    // The unit copy carries the core allowed range; the trailing parenthetical of
+    // the metadata is a UI detail, so only the leading range clause is compared.
+    // The modelPolicies entry schema is long, so its unit is a one-line summary.
+    if (option.kind === 'modelPolicies') {
+      assert.ok(/array/i.test(en[`field.${option.key}.unit`]), `the en unit for ${option.key} must say it is an array: ${en[`field.${option.key}.unit`]}`)
+    } else {
+      const coreRange = option.range.split(';')[0].replace(/\s*\(.*\)$/, '')
+      assert.ok(
+        en[`field.${option.key}.unit`].includes(coreRange),
+        `the en range copy for ${option.key} does not match the host range "${option.range}": ${en[`field.${option.key}.unit`]}`,
+      )
+    }
   }
+  // The install seed has to be labelled as such in the page copy, and its
+  // numbers have to be the ones the mount patch actually commits.
+  const seeded = [...`${en['note.seed']} ${zh['note.seed']}`.matchAll(/\d+(?:\.\d+)?/g)].map(match => Number(match[0]))
+  for (const value of Object.values(MOUNT_SEED)) {
+    assert.ok(seeded.includes(value), `the seed note does not name the seeded value ${String(value)}: ${en['note.seed']}`)
+  }
+  assert.ok(en['note.defaults'].includes('code default'), 'the page must distinguish the upstream code default from the install seed')
+})
+
+await check('a ready snapshot renders one labelled control per owned option, in TUNE_KEYS order', () => {
+  const ui = mountSection(readySnapshot(7))
+  const controls = controlsOf(ui)
+  assert.equal(controls.length, TUNE_ORDER.length, `expected ${TUNE_ORDER.length} controls, rendered ${controls.length}`)
+  const labels = findAll(ui.tree(), node => node.type === 'label')
+  const en = clientContext.state.dictionaries[0].dictionary.en
+  controls.forEach((control, index) => {
+    const key = TUNE_ORDER[index]
+    assert.ok(typeof control.props.id === 'string' && control.props.id.length > 0, `the ${key} control has no id for its label to point at`)
+    const label = labels.find(candidate => candidate.props.htmlFor === control.props.id)
+    assert.ok(label !== undefined, `no <label for> points at the ${key} control`)
+    assert.equal(directText(label), en[`field.${key}.label`], `control ${index} is not the ${key} field`)
+    assert.equal(control.props.disabled, false, `a writable ready snapshot must not disable the ${key} control`)
+  })
+  // Seeding: the stored seed for the three seeded options, the code defaults for
+  // the materialized ones, and blank for the three deliberately unset ones.
+  assert.equal(controlOf(ui, 'thresholdRatio').props.value, '0.5', 'thresholdRatio did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'headroomTokens').props.value, '65536', 'headroomTokens did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'retainRatio').props.value, '0.15', 'retainRatio did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'retainTokens').props.value, '', 'an unset retainTokens must render blank')
+  assert.equal(controlOf(ui, 'summarizationProvider').props.value, '', 'summarizationProvider did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'summarizationModel').props.value, '', 'summarizationModel did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'maxTokens').props.value, '', 'an unset maxTokens must render blank')
+  assert.equal(controlOf(ui, 'compactionRetries').props.value, '2', 'compactionRetries did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'maxOverflowRetries').props.value, '1', 'maxOverflowRetries did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'modelPolicies').props.value, '[]', 'modelPolicies did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'auto').props.checked, true, 'auto did not seed from the snapshot')
+  assert.equal(controlOf(ui, 'auto').props.type, 'checkbox', 'auto must render as a checkbox')
+  assert.equal(controlOf(ui, 'modelPolicies').type, 'textarea', 'modelPolicies must render as a JSON textarea')
   assert.equal(ui.saveButton().props.disabled, true, 'Save must be disabled while the draft equals the snapshot')
   assert.equal(renderedText(ui.tree()).includes('«missing:'), false, `the page rendered a missing dictionary key: ${renderedText(ui.tree())}`)
 })
@@ -1098,7 +1764,7 @@ await check('useSyncExternalStore gets one stable useCallback-wrapped bound pair
   const ui = mountSection(readySnapshot(7))
   const bare = ui.form.subscribe
   assert.throws(() => bare(() => {}), TypeError, 'the form double must prove the controller methods need their receiver')
-  typeInto(ui, 1, '0.1')
+  setField(ui, 'retainRatio', '0.1')
   const calls = ui.subscribeCalls()
   assert.ok(calls.length >= 2, `expected a re-render to add a uSES call, saw ${calls.length}`)
   assert.notEqual(calls[0].subscribe, BoundForm.prototype.subscribe, 'uSES was handed the bare prototype method')
@@ -1107,9 +1773,9 @@ await check('useSyncExternalStore gets one stable useCallback-wrapped bound pair
   assert.ok(calls.every(call => call.getSnapshot === calls[0].getSnapshot), 'the getSnapshot identity changed between renders')
 })
 
-await check('a valid draft issues exactly ONE mutate with the three set ops and the snapshot revision', async () => {
+await check('a valid draft issues exactly ONE mutate with one op per option and the snapshot revision', async () => {
   const ui = mountSection(readySnapshot(7))
-  typeInto(ui, 1, '0.1')
+  setField(ui, 'retainRatio', '0.1')
   assert.equal(ui.saveButton().props.disabled, false, 'Save must enable once the draft differs from the snapshot')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 1, `expected exactly one mutate call, got ${ui.form.writes.length}`)
@@ -1117,62 +1783,154 @@ await check('a valid draft issues exactly ONE mutate with the three set ops and 
   // The ops come from the vm realm, so compare normalized JSON rather than
   // across two Object prototypes.
   assert.deepEqual(JSON.parse(JSON.stringify(write.ops)), [
-    { op: 'set', path: ['thresholdRatio'], value: 0.8 },
+    { op: 'set', path: ['thresholdRatio'], value: 0.5 },
+    { op: 'set', path: ['headroomTokens'], value: 65_536 },
     { op: 'set', path: ['retainRatio'], value: 0.1 },
-    { op: 'set', path: ['compactionRetries'], value: 1 },
+    { op: 'unset', path: ['retainTokens'] },
+    { op: 'set', path: ['summarizationProvider'], value: '' },
+    { op: 'set', path: ['summarizationModel'], value: '' },
+    { op: 'unset', path: ['maxTokens'] },
+    { op: 'set', path: ['compactionRetries'], value: 2 },
+    { op: 'set', path: ['maxOverflowRetries'], value: 1 },
+    { op: 'unset', path: ['modelPolicies'] },
+    { op: 'set', path: ['auto'], value: true },
   ], `the atomic write ops drifted: ${JSON.stringify(write.ops)}`)
   assert.equal(write.revision, 7, `the mutate revision is ${String(write.revision)}, expected the snapshot revision 7`)
   assert.ok(renderedText(ui.tree()).includes(clientContext.state.dictionaries[0].dictionary.en['status.saved']), `the saved confirmation is not rendered: ${renderedText(ui.tree())}`)
 })
 
-await check('an inconsistent draft is refused locally with the matching copy and NO mutate', async () => {
+await check('the token retention form clears the ratio, and a blank optional field is an unset op', async () => {
   const ui = mountSection(readySnapshot(7))
-  typeInto(ui, 1, '0.9')
+  setField(ui, 'retainRatio', '')
+  setField(ui, 'retainTokens', '4096')
+  setField(ui, 'maxTokens', '2048')
   await clickSave(ui)
-  assert.equal(ui.form.writes.length, 0, `a locally invalid draft reached the Host: ${JSON.stringify(ui.form.writes)}`)
-  const alerts = ui.alerts()
-  assert.equal(alerts.length, 1, `expected one role="alert" node, got ${alerts.length}`)
-  assert.equal(directText(alerts[0]), clientContext.state.dictionaries[0].dictionary.en['error.retainOrder'], `the refusal copy drifted: ${directText(alerts[0])}`)
+  assert.equal(ui.form.writes.length, 1, 'the token-form draft was not writable')
+  const ops = JSON.parse(JSON.stringify(ui.form.writes[0].ops))
+  const byPath = Object.fromEntries(ops.map(op => [op.path[0], op]))
+  assert.deepEqual(byPath.retainRatio, { op: 'unset', path: ['retainRatio'] }, 'the ratio side of the retention pair must be unset')
+  assert.deepEqual(byPath.retainTokens, { op: 'set', path: ['retainTokens'], value: 4096 }, 'the token side of the retention pair must be set')
+  assert.deepEqual(byPath.maxTokens, { op: 'set', path: ['maxTokens'], value: 2048 }, 'an explicit maxTokens must be set, not derived')
+})
+
+await check('a valid modelPolicies JSON entry is submitted as one array op', async () => {
+  const ui = mountSection(readySnapshot(7))
+  const policy = { provider: 'openai', model: 'gpt-5', thresholdRatio: 0.4 }
+  setField(ui, 'modelPolicies', JSON.stringify([policy]))
+  await clickSave(ui)
+  assert.equal(ui.form.writes.length, 1, 'a valid modelPolicies table was refused locally')
+  const op = JSON.parse(JSON.stringify(ui.form.writes[0].ops)).find(candidate => candidate.path[0] === 'modelPolicies')
+  assert.deepEqual(op, { op: 'set', path: ['modelPolicies'], value: [policy] }, `the modelPolicies op drifted: ${JSON.stringify(op)}`)
+  // An `auto: false` toggle must ride the same atomic write as a boolean.
+  const ui2 = mountSection(readySnapshot(7))
+  setField(ui2, 'auto', 'false')
+  await clickSave(ui2)
+  const autoOp = JSON.parse(JSON.stringify(ui2.form.writes[0].ops)).find(candidate => candidate.path[0] === 'auto')
+  assert.deepEqual(autoOp, { op: 'set', path: ['auto'], value: false }, `the auto toggle op drifted: ${JSON.stringify(autoOp)}`)
+})
+
+await check('every client-side cross-field refusal mirrors the Host rule, and NO mutate is sent', async () => {
+  const en = clientContext.state.dictionaries[0].dictionary.en
+  const cases = [
+    ['retainRatio at or above the threshold', { retainRatio: '0.9' }, 'error.retainOrder'],
+    ['retainRatio outside (0, 1]', { retainRatio: '1.5' }, 'error.retainRange'],
+    ['both retention forms', { retainRatio: '0.15', retainTokens: '1000' }, 'error.retentionExclusive'],
+    ['retainTokens fractional', { retainTokens: '1.5' }, 'error.retainTokens'],
+    ['headroomTokens fractional', { headroomTokens: '1.5' }, 'error.headroomTokens'],
+    ['headroomTokens 0 with no maxTokens', { headroomTokens: '0' }, 'error.maxTokensResolved'],
+    ['maxTokens 0', { maxTokens: '0' }, 'error.maxTokens'],
+    ['compactionRetries fractional', { compactionRetries: '1.5' }, 'error.compactionRetries'],
+    ['maxOverflowRetries negative', { maxOverflowRetries: '-1' }, 'error.overflowRetries'],
+    ['summary provider without its model', { summarizationProvider: 'openai' }, 'error.summarizationPair'],
+    ['malformed modelPolicies JSON', { modelPolicies: '[{' }, 'error.modelPoliciesJson'],
+    ['modelPolicies not an array', { modelPolicies: '{"provider":"openai"}' }, 'error.modelPolicies'],
+    ['modelPolicies duplicate target', { modelPolicies: '[{"provider":"o","model":"m"},{"provider":"o","model":"m"}]' }, 'error.modelPolicies'],
+    ['modelPolicies entry with a bogus key', { modelPolicies: '[{"provider":"o","model":"m","bogus":1}]' }, 'error.modelPolicies'],
+    ['thresholdRatio 1.2', { thresholdRatio: '1.2' }, 'error.thresholdRange'],
+    ['headroomTokens unsafe integer', { headroomTokens: '9007199254740993' }, 'error.headroomTokens'],
+    ['headroomTokens exponent overflow', { headroomTokens: '1e21' }, 'error.headroomTokens'],
+    ['headroomTokens hexadecimal', { headroomTokens: '0x10' }, 'error.headroomTokens'],
+    ['compactionRetries hexadecimal', { compactionRetries: '0x2' }, 'error.compactionRetries'],
+    ['retainTokens unsafe integer', { retainTokens: '1e21' }, 'error.retainTokens'],
+    ['maxTokens unsafe integer', { maxTokens: '9007199254740993' }, 'error.maxTokens'],
+    ['modelPolicies entry with a zero resolved cap', { modelPolicies: '[{"provider":"o","model":"m","headroomTokens":0}]' }, 'error.modelPoliciesCap'],
+  ]
+  for (const [label, fields, errorKey] of cases) {
+    const ui = mountSection(readySnapshot(7))
+    for (const [key, text] of Object.entries(fields)) setField(ui, key, text)
+    await clickSave(ui)
+    assert.equal(ui.form.writes.length, 0, `${label}: a locally invalid draft reached the Host: ${JSON.stringify(ui.form.writes)}`)
+    const alerts = ui.alerts()
+    assert.equal(alerts.length, 1, `${label}: expected one role="alert" node, got ${alerts.length}`)
+    assert.equal(directText(alerts[0]), en[errorKey], `${label}: the refusal copy drifted: ${directText(alerts[0])}`)
+  }
+})
+
+await check('the client mirrors the entry-cap rule and the unmanaged-table note', async () => {
+  const en = clientContext.state.dictionaries[0].dictionary.en
+  // The same entry is accepted once an explicit top-level cap exists, exactly
+  // like upstream's per-entry resolution.
+  const accepted = mountSection(readySnapshot(7))
+  setField(accepted, 'maxTokens', '4096')
+  setField(accepted, 'modelPolicies', '[{"provider":"o","model":"m","headroomTokens":0}]')
+  await clickSave(accepted)
+  assert.equal(accepted.form.writes.length, 1, 'an explicit top-level cap must make the zero-headroom entry writable')
+  // An empty table renders the "your presets keep their own table" note and is
+  // submitted as `unset`, so the row never carries an explicit empty table.
+  const empty = mountSection(readySnapshot(7))
+  assert.ok(renderedText(empty.tree()).includes(en['note.modelPolicies']), 'the unmanaged-table note is not rendered while the table is empty')
+  setField(empty, 'retainRatio', '0.1')
+  await clickSave(empty)
+  const policiesOp = JSON.parse(JSON.stringify(empty.form.writes[0].ops)).find(op => op.path[0] === 'modelPolicies')
+  assert.deepEqual(policiesOp, { op: 'unset', path: ['modelPolicies'] }, `an empty table must be submitted as unset: ${JSON.stringify(policiesOp)}`)
+  // A non-empty table must NOT show the note.
+  const managed = mountSection(readySnapshot(7, storedValue({ modelPolicies: [{ provider: 'o', model: 'm' }] })))
+  assert.equal(renderedText(managed.tree()).includes(en['note.modelPolicies']), false, 'the unmanaged-table note must not render for a non-empty table')
 })
 
 await check('a Host refusal (mutate false) surfaces error.refused, then the recovery snapshot re-seeds the inputs', async () => {
   const ui = mountSection(readySnapshot(7), { nextResult: false })
-  typeInto(ui, 1, '0.1')
+  setField(ui, 'retainRatio', '0.1')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 1, 'the refused write was never attempted')
   const alerts = ui.alerts()
   assert.equal(alerts.length, 1, `expected one role="alert" node after a refusal, got ${alerts.length}`)
   assert.equal(directText(alerts[0]), clientContext.state.dictionaries[0].dictionary.en['error.refused'], `the refusal copy drifted: ${directText(alerts[0])}`)
-  ui.form.push(readySnapshot(8, { thresholdRatio: 0.9, retainRatio: 0.3, compactionRetries: 4 }))
-  assert.deepEqual(ui.inputs().map(input => input.props.value), ['0.9', '0.3', '4'], 'the inputs did not re-seed from the recovery snapshot')
+  ui.form.push(readySnapshot(8, storedValue({ thresholdRatio: 0.9, retainRatio: 0.3, compactionRetries: 4 })))
+  assert.equal(controlOf(ui, 'thresholdRatio').props.value, '0.9', 'the threshold did not re-seed from the recovery snapshot')
+  assert.equal(controlOf(ui, 'retainRatio').props.value, '0.3', 'the retained tail did not re-seed from the recovery snapshot')
+  assert.equal(controlOf(ui, 'compactionRetries').props.value, '4', 'the retries did not re-seed from the recovery snapshot')
+  assert.equal(controlOf(ui, 'headroomTokens').props.value, '65536', 'the headroom did not re-seed from the recovery snapshot')
 })
 
 await check('a locally-valid but sub-step ratio passes the page and surfaces the Host refusal', async () => {
   const ui = mountSection(readySnapshot(7), { nextResult: false })
-  typeInto(ui, 1, '0.005')
+  setField(ui, 'retainRatio', '0.005')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 1, 'the page refused 0.005 locally; the host schema step(0.01) is the intended guard')
-  assert.equal(ui.form.writes[0].ops[1].value, 0.005, `the submitted retainRatio drifted to ${String(ui.form.writes[0].ops[1].value)}`)
+  const ratioOp = ui.form.writes[0].ops.find(op => op.path[0] === 'retainRatio')
+  assert.equal(ratioOp.value, 0.005, `the submitted retainRatio drifted to ${String(ratioOp.value)}`)
   assert.equal(directText(ui.alerts()[0]), clientContext.state.dictionaries[0].dictionary.en['error.refused'], 'the Host refusal was not surfaced for a sub-step ratio')
 })
 
-await check('a non-writable snapshot disables every input and Save and writes nothing', async () => {
+await check('a non-writable snapshot disables every control and Save and writes nothing', async () => {
   const snapshot = readySnapshot(7)
   snapshot.writable = false
   const ui = mountSection(snapshot)
-  for (const input of ui.inputs()) assert.equal(input.props.disabled, true, 'a read-only snapshot must disable its inputs')
+  for (const control of controlsOf(ui)) assert.equal(control.props.disabled, true, 'a read-only snapshot must disable its controls')
   assert.equal(ui.saveButton().props.disabled, true, 'a read-only snapshot must disable Save')
-  typeInto(ui, 1, '0.1')
+  setField(ui, 'retainRatio', '0.1')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 0, 'a read-only snapshot performed a write')
   assert.ok(renderedText(ui.tree()).includes(clientContext.state.dictionaries[0].dictionary.en['status.readOnly']), 'the read-only note is not rendered')
 })
 
-await check('an unavailable namespace renders its note, disables the inputs, and never writes', async () => {
+await check('an unavailable namespace renders its note, disables the controls, and never writes', async () => {
   const ui = mountSection({ status: 'unavailable', value: undefined, revision: 0, writable: false })
   assert.ok(renderedText(ui.tree()).includes(clientContext.state.dictionaries[0].dictionary.en['status.unavailable']), 'the unavailable note is not rendered')
-  assert.equal(ui.inputs().length, 3, 'the unavailable page should still render its three disabled inputs')
-  typeInto(ui, 1, '0.1')
+  assert.equal(controlsOf(ui).length, TUNE_ORDER.length, `the unavailable page should still render its ${TUNE_ORDER.length} disabled controls`)
+  for (const control of controlsOf(ui)) assert.equal(control.props.disabled, true, 'an unavailable namespace must disable its controls')
+  setField(ui, 'retainRatio', '0.1')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 0, 'an unavailable namespace performed a write')
 })
@@ -1183,9 +1941,9 @@ await check('no rendered copy is missing from the dictionary in any state', asyn
   const ready = mountSection(readySnapshot(7))
   const invalid = mountSection(readySnapshot(7))
   const refused = mountSection(readySnapshot(7), { nextResult: false })
-  typeInto(invalid, 1, '0.9')
+  setField(invalid, 'retainRatio', '0.9')
   await clickSave(invalid)
-  typeInto(refused, 1, '0.1')
+  setField(refused, 'retainRatio', '0.1')
   await clickSave(refused)
   for (const [label, ui] of [['loading', loading], ['unavailable', unavailable], ['ready', ready], ['invalid', invalid], ['refused', refused]]) {
     const text = renderedText(ui.tree())
