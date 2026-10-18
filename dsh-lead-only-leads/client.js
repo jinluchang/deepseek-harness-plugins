@@ -1,36 +1,36 @@
 /**
- * Client half of @local/dsh-lead-leads: one settings PAGE that toggles which
+ * Client half of @local/dsh-lead-only-leads: one settings PAGE that toggles which
  * tools a non-blocking Lead may use.
  *
  * Plain browser bundle (no build step): it self-registers with the page's
  * module loader and requests React, the only module-table entry it needs.
- * State lives in the Host's `configForms` namespace for the `lead-leads`
+ * State lives in the Host's `configForms` namespace for the `lead-only-leads`
  * profile row; each toggle is one dictionary-key write
  * (`{ op: 'set', path: ['tools', <name>], value: <bool> }`), the shipped
  * tested dict-edit path. The page only registers while the Host serves that
  * namespace (`configForms.whileServed`), so a composition without the plugin
  * shows no trace of it.
  *
- * `LEAD_TOOL_CATALOG` mirrors the host half (`dsh-lead-leads/index.js`)
+ * `LEAD_TOOL_CATALOG` mirrors the host half (`dsh-lead-only-leads/index.js`)
  * one-to-one — same names, same order, same `{ name, klass, def }` — and is
  * exposed on the object this factory returns so the bundle's offline suite can
  * deep-compare the two catalogs.
  *
- * @module @local/dsh-lead-leads/client
+ * @module @local/dsh-lead-only-leads/client
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-lead-leads',
+  id: '@local/dsh-lead-only-leads',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
     const { useCallback, useState } = React;
 
     /** Settings namespace: the Host profile row id that carries the `tools` map. */
-    const HOST_NS = 'lead-leads';
+    const HOST_NS = 'lead-only-leads';
     /** Locale dictionary namespace. */
-    const NS = 'lead-leads';
+    const NS = 'lead-only-leads';
     /** Settings section key (drives the shell's `only` filtering). */
-    const SECTION_ID = 'lead-leads-tools';
+    const SECTION_ID = 'lead-only-leads-tools';
     /** Nav position: after Models (20), keeping the deployment-shaping pages together. */
     const SECTION_ORDER = 30;
 
@@ -431,7 +431,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      name: '@local/dsh-lead-leads',
+      name: '@local/dsh-lead-only-leads',
       inject: ['slots', 'locale', 'configForms'],
       /** Shared catalog; verify.mjs deep-compares it against the host half. */
       LEAD_TOOL_CATALOG,
@@ -440,10 +440,10 @@ window.__ModuleLoader__.load({
        * @param ctx - client root context.
        */
       apply(ctx) {
-        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-lead-leads: dictionaries');
+        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-lead-only-leads: dictionaries');
         const form = ctx.configForms.get(HOST_NS);
         const store = createFormStore(form);
-        ctx.effect(() => () => store.dispose(), '@local/dsh-lead-leads: form state');
+        ctx.effect(() => () => store.dispose(), '@local/dsh-lead-only-leads: form state');
         ctx.effect(() => ctx.configForms.whileServed([HOST_NS], () => ctx.slots.inject('settings.section',
           () => ctx.slots.register({
             name: 'settings.section',
@@ -455,7 +455,7 @@ window.__ModuleLoader__.load({
               hooks: { leadTools: store },
               setTool: (name, next) => form.mutate([{ op: 'set', path: ['tools', name], value: next }]),
             }),
-          }, LeadToolsPage))), '@local/dsh-lead-leads: tools page');
+          }, LeadToolsPage))), '@local/dsh-lead-only-leads: tools page');
       },
     };
   },

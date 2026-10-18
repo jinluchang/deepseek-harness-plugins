@@ -1,7 +1,7 @@
 /**
- * Host half of `dsh-lead-leads`: keep a Team Lead non-blocking.
+ * Host half of `dsh-lead-only-leads`: keep a Team Lead non-blocking.
  *
- * The `lead-leads` preset (inserted by this bundle's patch) carries the full
+ * The `lead-only-leads` preset (inserted by this bundle's patch) carries the full
  * standard environment, because a teammate spawned by a Team Lead joins the
  * Lead's exact preset generation — a narrower preset would narrow the teammates
  * too, and teammates must stay ordinary agents that may block on each other.
@@ -36,7 +36,7 @@
  * Teams policy section and stating plainly that the generic rule to wait for
  * teammates does not apply in this preset.
  *
- * @module @local/dsh-lead-leads
+ * @module @local/dsh-lead-only-leads
  */
 
 import { createRequire } from 'node:module'
@@ -97,7 +97,7 @@ function resolveSchemaLibrary() {
 export const schemaLibrary = resolveSchemaLibrary()
 
 /** Preset that selects a non-blocking Lead. Must match the patch's preset id. */
-const PRESET_ID = 'lead-leads'
+const PRESET_ID = 'lead-only-leads'
 
 /**
  * Tools a Lead keeps from the preset surface, in the order they are listed for
@@ -222,7 +222,7 @@ export const Config = z === undefined ? undefined : z.object({
 })
 
 /** Section name and placement: after `TEAM_POLICY` (600), before `PTC_ONLY` (800). */
-const SECTION_NAME = 'lead-leads:contract'
+const SECTION_NAME = 'lead-only-leads:contract'
 const SECTION_ORDER = 650
 
 /** Denial text per denied tool; the model reads this instead of a result. */
@@ -240,7 +240,7 @@ const DENIALS = Object.freeze({
 const RESTRICT_ATTEMPTS = 8
 
 /** Plugin name reported to the Host loader. */
-export const name = 'lead-leads'
+export const name = 'lead-only-leads'
 
 /** Services this plugin needs mounted before it can shrink a Lead. */
 export const inject = ['agents', 'tools', 'systemPrompt']
@@ -618,7 +618,7 @@ function constrain(agent, config, ctx) {
  * Apply the non-blocking Lead contract to every Lead of the configured preset.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
  * @param {object} [config] - row config.
- * @param {string} [config.preset] - presets that keep a non-blocking Lead, default `lead-leads`.
+ * @param {string} [config.preset] - presets that keep a non-blocking Lead, default `lead-only-leads`.
  * @param {string[]} [config.leadTools] - legacy explicit keep list; wins wholesale over the catalog.
  * @param {string[]} [config.denyTools] - legacy explicit deny list; wins wholesale over the catalog.
  * @param {Record<string, boolean>} [config.tools] - volatile per-tool toggles; absent key = catalog default.

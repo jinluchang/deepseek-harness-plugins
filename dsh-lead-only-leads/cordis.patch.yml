@@ -1,20 +1,20 @@
-# Bundle patch for dsh-lead-leads.
+# Bundle patch for dsh-lead-only-leads.
 #
 # Two rows, both mounted in the Host composition:
-#   - `lead-leads` enforces the non-blocking contract per Agent scope (see index.js).
-#   - `preset-lead-leads` declares the "Lead leads" preset. Its plugin list is the
+#   - `lead-only-leads` enforces the non-blocking contract per Agent scope (see index.js).
+#   - `preset-lead-only-leads` declares the "Lead only leads" preset. Its plugin list is the
 #     standard environment on purpose: a teammate spawned by the Lead inherits the
 #     Lead's preset generation, so a narrower list would make teammates non-standard.
 # Edits saved from the Web editor override the preset row's `config.plugins` by id
 # from the profile patch.
 - insert:
-    - id: lead-leads
-      name: '@local/dsh-lead-leads'
-    - id: preset-lead-leads
+    - id: lead-only-leads
+      name: '@local/dsh-lead-only-leads'
+    - id: preset-lead-only-leads
       name: '@deepseek-ai/dsh-agent-preset'
       config:
-        id: lead-leads
-        name: Lead leads
+        id: lead-only-leads
+        name: Lead only leads
         description: Team Lead that delegates every job and never waits on a teammate
         order: 5
         plugins:

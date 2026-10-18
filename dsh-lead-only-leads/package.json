@@ -1,9 +1,9 @@
 {
-  "name": "@local/dsh-lead-leads",
+  "name": "@local/dsh-lead-only-leads",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Lead leads: a preset whose Team Lead delegates every job and never waits on a teammate, plus the host plugin that enforces that contract.",
+  "description": "Lead only leads: a preset whose Team Lead delegates every job and never waits on a teammate, plus the host plugin that enforces that contract.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
