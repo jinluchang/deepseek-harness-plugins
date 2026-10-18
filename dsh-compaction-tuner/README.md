@@ -20,30 +20,34 @@ Every option is documented and rendered with **both** facts the request asks for
   lives solely in `assertRatio`, and the tuner's schema carries its own bounds and its checks mirror
   the asserts.
 
-Three values are additionally **seeded by this bundle** (see *Initial values*): the seed is an
-install-time choice that differs from the code defaults and is projected into every preset that omits
-the key, so for those presets the seed is the effective value. **The seed is not the only behaviour
-change** — see *Install behaviour change* below, which names all ten projected keys.
+**Nothing is seeded.** The bundle inserts the tuner row with no stored values, so the tuner's own
+defaults **are** the upstream `compaction-basic` code defaults and a fresh install changes no preset on
+its own: a preset whose `compaction-basic` child already omits the eleven keys already runs them, and the
+first retune pass skips it with no write. The tune changes only when the user edits a value on the page;
+see *Initial values* and *Install behaviour change* below.
 
 The wire format shared by the two halves is frozen in [CONTRACT.md](CONTRACT.md).
 
 ## Install behaviour change (read before installing)
 
 The tuner owns **every** `compaction-basic` option and projects its stored tune into each preset row at
-the first boot. A preset that declares a different value for any of these **ten** keys is overwritten,
-and the result is written into the profile's `cordis.patch.yml`: uninstalling the plugin does not revert
-it, and reverting it means hand-editing the profile.
+the first boot. On a fresh install that tune is the upstream code defaults, and a preset that declares a
+**different** value for any of these **ten** keys is overwritten, and the result is written into the
+profile's `cordis.patch.yml`: uninstalling the plugin does not revert it, and reverting it means
+hand-editing the profile. (A preset that already omits the keys is skipped: the install is a no-op for
+it. A profile installed before the seed was removed keeps its stored `0.5 / 0.15 / 2` — see *Initial
+values*.)
 
 | Key | What the first pass does to a preset that disagrees |
 | --- | --- |
-| `thresholdRatio` | set to the tuner's value (the install seed is `0.5`, not the code default `0.8`) |
+| `thresholdRatio` | set to the tuner's value (the code default is `0.8` on a fresh install) |
 | `headroomTokens` | set to the tuner's value (`65536` when unset, so `1234 → 65536`) |
 | `retainRatio` | written when the tuner is on the ratio form; a stale `retainTokens` is deleted |
 | `retainTokens` | written when the tuner is on the token form; a stale `retainRatio` is deleted |
 | `summarizationProvider` | set to the tuner's string; `''` clears a preset's local summarizer route (`"local" → ""`) |
 | `summarizationModel` | set to the tuner's string, as the other half of the pair |
 | `maxTokens` | set to the tuner's resolved cap (`maxTokens ?? headroomTokens`) |
-| `compactionRetries` | set to the tuner's value (the install seed is `2`) |
+| `compactionRetries` | set to the tuner's value (the code default is `1` on a fresh install) |
 | `maxOverflowRetries` | set to the tuner's value (`1` when unset, so a preset's `0` is re-enabled: `0 → 1`) |
 | `auto` | set to the tuner's value (`true` when unset, so a manual-only preset is re-enabled: `false → true`) |
 
@@ -78,26 +82,35 @@ Open Settings (the account menu at the bottom of the sidebar, then **Settings**)
 **Compaction tuner**, the last nav row. The page shows one control per owned option, in this order.
 The *Accepts* column is the allowed range the Host enforces (or that `compaction-basic` enforces at
 load, marked *upstream*); the *Code default* column is the upstream `compaction-basic` resolution
-fallback. **This install's seeded value** is the third fact: the bundle's `cordis.patch.yml` seeds
-`0.5 / 0.15 / 2` for the threshold, the retained-tail ratio, and compaction retries, and because the
-tuner projects its stored values into every preset that omits a key, those presets run the seed, not
-the code default. The remaining eight options are not seeded and do fall back to their code defaults.
+fallback. **That code default is also what this install runs**: the bundle seeds nothing, so the tuner's
+stored tune starts at these defaults and the page shows them until a value is edited and saved.
 
-| Option | Meaning | Accepts | Code default | This install's seeded value |
-| --- | --- | --- | --- | --- |
-| `thresholdRatio` | Share of the context budget at which compaction triggers. | ratio in (0, 1], step 0.01; upstream accepts any finite `(0, 1]` ratio, the tuner schema admits only 0.01-multiples | `0.8` | `0.5` |
-| `headroomTokens` | Extra token headroom beyond the routed output reservation before pressure is measured. | integer >= 0 | `65536` | — (not seeded) |
-| `retainRatio` | Share of the message budget kept as the verbatim tail. | ratio in (0, 1], step 0.01; must stay below `thresholdRatio`; mutually exclusive with `retainTokens` | `0.16` | `0.15` |
-| `retainTokens` | Absolute verbatim-tail token budget. | integer >= 0; mutually exclusive with `retainRatio`; the resolved value must stay below the target `thresholdTokens` (upstream, capacity-dependent) | unset (the retainRatio default 0.16 governs) | — (not seeded, so unset) |
-| `summarizationProvider` | Provider that writes the summary. | any string; must be set together with `summarizationModel` as an empty or non-empty pair | `''` (inherit the routed target) | — (not seeded) |
-| `summarizationModel` | Model that writes the summary. | any string; same pair rule with `summarizationProvider` | `''` (inherit the routed target) | — (not seeded) |
-| `maxTokens` | Provider generation cap for the summarization request. | integer >= 1; when unset it resolves to the effective `headroomTokens` | unset (derives from headroomTokens: 65536) — the TUNER's headroom, or an explicit tuner cap | — (not seeded, so derived) |
-| `compactionRetries` | Extra attempts after the first compaction while pressure stays above the threshold. | integer >= 0 | `1` | `2` |
-| `maxOverflowRetries` | Attempts after a canonical context overflow; `0` disables overflow recovery. | integer >= 0; `0` disables overflow recovery | `1` | — (not seeded) |
-| `modelPolicies` | Exact-target override table (JSON textarea on the page). | array of `{provider, model, ...policy}`; `provider` and `model` non-empty and unique per entry; per-entry policy fields obey the same rules as the top level; per-entry cap obeys the resolved-cap rule | `[]` | — (not seeded) |
-| `auto` | Automatic step-boundary pressure and overflow-recovery listeners. | true or false | `true` | — (not seeded) |
+| Option | Meaning | Accepts | Code default |
+| --- | --- | --- | --- |
+| `thresholdRatio` | Share of the context budget at which compaction triggers. | ratio in (0, 1], step 0.01; upstream accepts any finite `(0, 1]` ratio, the tuner schema admits only 0.01-multiples | `0.8` |
+| `headroomTokens` | Extra token headroom beyond the routed output reservation before pressure is measured. | integer >= 0 | `65536` |
+| `retainRatio` | Share of the message budget kept as the verbatim tail. | ratio in (0, 1], step 0.01; must stay below `thresholdRatio`; mutually exclusive with `retainTokens` | `0.16` |
+| `retainTokens` | Absolute verbatim-tail token budget. | integer >= 0; mutually exclusive with `retainRatio`; the resolved value must stay below the target `thresholdTokens` (upstream, capacity-dependent) | unset (the retainRatio default 0.16 governs) |
+| `summarizationProvider` | Provider that writes the summary. | any string; must be set together with `summarizationModel` as an empty or non-empty pair | `''` (inherit the routed target) |
+| `summarizationModel` | Model that writes the summary. | any string; same pair rule with `summarizationProvider` | `''` (inherit the routed target) |
+| `maxTokens` | Provider generation cap for the summarization request. | integer >= 1; when unset it resolves to the effective `headroomTokens` | unset (derives from headroomTokens: 65536) — the TUNER's headroom, or an explicit tuner cap |
+| `compactionRetries` | Extra attempts after the first compaction while pressure stays above the threshold. | integer >= 0 | `1` |
+| `maxOverflowRetries` | Attempts after a canonical context overflow; `0` disables overflow recovery. | integer >= 0; `0` disables overflow recovery | `1` |
+| `modelPolicies` | Exact-target override table (provider/model picker on the page). | array of `{provider, model, ...policy}`; `provider` and `model` non-empty and unique per entry; per-entry policy fields obey the same rules as the top level; per-entry cap obeys the resolved-cap rule | `[]` |
+| `auto` | Automatic step-boundary pressure and overflow-recovery listeners. | true or false | `true` |
 
-`modelPolicies` is the one structured option, so its accepted JSON shape is worth spelling out:
+`modelPolicies` is the one structured option, and the page edits it without any JSON: the **provider**
+and **model** selects are populated from the deployment's own model catalog (read through the client
+`remote` service, `ctx.remote.session.modelCatalog()` — no provider or model id is hardcoded), **Add
+override** appends the selected pair, and each override card carries one labelled box for each of the
+nine policy keys —
+
+```
+thresholdRatio, headroomTokens, retainRatio, retainTokens, summarizationProvider,
+summarizationModel, maxTokens, compactionRetries, maxOverflowRetries
+```
+
+— so the entry the page submits is exactly
 
 ```json
 [
@@ -106,23 +119,29 @@ the code default. The remaining eight options are not seeded and do fall back to
 ]
 ```
 
-Each entry requires a non-empty `provider` and `model`, may carry any of `thresholdRatio`,
-`headroomTokens`, `retainRatio`, `retainTokens`, `summarizationProvider`, `summarizationModel`,
-`maxTokens`, `compactionRetries`, `maxOverflowRetries`, may not carry any other key, and may not repeat
-a `provider`/`model` pair. The page refuses malformed JSON, a non-array, an entry missing or repeating
-a target, an unknown key, and an out-of-range entry field with its own localized message, and the Host
-re-checks all of it before any preset is written, so an accepted table cannot abort
-`compaction-basic`'s own load at runtime.
+Each entry requires a non-empty `provider` and `model`, may carry any of the nine keys above, may not
+carry any other key, and may not repeat a `provider`/`model` pair. The picker cannot add a pair that
+already has an override (Add disables), and a saved override whose pair is not in the current catalog
+stays listed, is marked *not in the current catalog*, and remains editable and removable. An override
+whose nine boxes are all empty changes nothing and is **dropped when you save**; if that leaves no
+override, the page submits `unset` for `modelPolicies`. The page refuses an out-of-range box
+(a fractional token budget, a ratio at or above the threshold, both retention forms in one entry, a
+zero resolved cap) with its own localized message, and the Host re-checks all of it before any preset
+is written, so an accepted table cannot abort `compaction-basic`'s own load at runtime.
+
+If the deployment does not expose the model catalog, the page says so (and distinguishes "not
+available" from "the read failed") while any saved override keeps working; the rest of the page is
+unaffected.
 
 Edit any field and choose **Save**. The page validates the draft locally first (an out-of-range ratio,
-a retained tail at or above the threshold, both retention forms at once, a malformed `modelPolicies`
-blob, or a fractional retry count is refused with a localized message and no Host call), then submits
+a retained tail at or above the threshold, both retention forms at once, an out-of-range per-model box,
+or a fractional retry count is refused with a localized message and no Host call), then submits
 **one op per option** as **one atomic write** with the revision the page last read. A blank *optional*
 field (`retainRatio`, `retainTokens`, `maxTokens`) is submitted as an `unset` op — see *Optional fields
 and the retention XOR*. **Save** stays disabled while nothing has changed, while a write is in flight,
-and when the deployment reports the namespace read-only. A successful save shows a confirmation that
-the values are stored; that copy is accurate for the tuner's own namespace, but it is **not** a promise
-that the preset rows of a running profile re-tune — see *Save and reload semantics*. A refusal by the
+and when the deployment reports the namespace read-only. A successful save shows **no separate
+confirmation line** — the restart-required notice below the Save button is the post-save message. The
+stored values are accurate for the tuner's own namespace, but they are **not** a promise that the preset rows of a running profile re-tune — see *Save and reload semantics*. A refusal by the
 Host shows a localized alert and the fields re-seed from whatever the Host reports next. If the
 deployment does not serve the `compaction-tuner` namespace, the page says so and disables the fields
 instead of pretending to write.
@@ -153,7 +172,9 @@ table is empty (the default), the projection omits the key entirely: every prese
 per-model overrides, and `retune()` reports those rows in a separate `unmanaged` list so a skip caused
 by this rule is not confused with "already in tune". Entering a non-empty table replaces every preset's
 table with it. An explicit "clear every preset's table" is deliberately **not** offered — the empty
-table already means "no opinion", and adding a second empty meaning would be ambiguous.
+table already means "no opinion", and adding a second empty meaning would be ambiguous. Removing the
+last override card on the page therefore returns to the default "no opinion" state, not to "clear the
+presets".
 
 The background-token budget is validated against the safe-integer range at every layer
 (`Number.isSafeInteger`), which makes the tuner **narrower than upstream**: `compaction-basic` accepts
@@ -207,11 +228,11 @@ The full client contract is frozen in [CONTRACT.md](CONTRACT.md).
 
 ## Initial values
 
-The bundle's mount patch seeds the tuner row with `thresholdRatio: 0.5`, `retainRatio: 0.15`,
-`compactionRetries: 2` (`cordis.patch.yml:27-30`), and nothing else. Those are an **install-time
-choice**, deliberately different from the upstream code defaults (`DEFAULT_THRESHOLD_RATIO` `config.ts:20`, `DEFAULT_RETAIN_RATIO` `config.ts:23`, `compactionRetries` `config.ts:105`).
+The bundle's mount patch seeds **nothing**: it inserts the tuner row with no `config`, so the tuner's
+own defaults are the upstream `compaction-basic` code defaults (`DEFAULT_THRESHOLD_RATIO` `config.ts:20`, `DEFAULT_RETAIN_RATIO` `config.ts:23`, `compactionRetries` `config.ts:105`), recorded once in `index.js` `OPTION_SPECS` and documented with their ranges in the *Use* table above. De-seeding was a
+deliberate change: the request was to use the system defaults rather than an install-time choice.
 
-They are **not** carried over from a shipped preset patch. An earlier revision of this file claimed
+They were never carried over from a shipped preset patch. An earlier revision of this file claimed
 `packages/bundle/web-app/presets/standard.patch.yml` committed those numbers; that was false. The
 standard preset declares its `compaction-basic` child with **no** config of its own
 (`compaction-basic` `standard.patch.yml:73-74`), and a grep of every `*.yml`/`*.yaml` in the checkout finds no preset or
@@ -221,24 +242,66 @@ presets, e.g. `tailChars` `standard.patch.yml:78-82`; this tuner does not touch 
 
 The consequence is a real behaviour statement, not a formality: because `retune()` reads this row's
 live values and `withTune()` projects them into every preset's `compaction-basic` child, a preset that
-omits these keys **runs the seeded value, not the code default**. The other eight options are not
-seeded, so a preset that omits them runs their code defaults. The seed is therefore **not** the only
-install behaviour change: see *Install behaviour change* for the ten projected keys.
+declares none of these keys is already in tune and is **skipped with no write**. A preset that declares
+a different value for one of the ten always-projected keys is still overwritten with the tuner's value
+(the code default on a fresh install); see *Install behaviour change*.
 
 Comparison is **whole-projection, not per-key**: `sameTune()` compares every key the tune manages, and
 a pass writes nothing only when all of them already match. When any one differs, `withTune()` writes
 the entire projected set — including keys whose value already equals the default — so a preset with one
 stale key gets all ten rewritten (with equal values for the rest).
 
-The tuner's own schema defaults are the upstream code defaults (`OPTION_SPECS` in `index.js`), so a row
-installed without this mount patch would project `0.8 / 0.16 / 1`. The page states both facts: each
-field shows its upstream code default, and a note above the fields records that this install seeds
-`0.5 / 0.15 / 2`.
+The page states that rule: each field shows its upstream code default beside its description, and the
+note above the fields says the bundle seeds nothing, so those defaults are what a fresh install runs
+until a value is edited. `retainRatio` carries **no** schema default — so "unset" stays expressible for
+the retention XOR — and its empty input shows the effective code default `0.16` as a placeholder.
+
+**No automatic migration.** A profile that installed an earlier revision of this bundle stored
+`thresholdRatio: 0.5`, `retainRatio: 0.15`, `compactionRetries: 2` in its own `cordis.patch.yml` (or a
+`--patch` overlay), and already-projected preset children hold those values. Removing the seed does not
+rewrite either: the stored row keeps its values and the tuner keeps projecting them, so such a profile
+only moves onto the system defaults when the user clears it — uninstalling does not revert the written
+profile patch either, and nothing runs on boot.
+
+### Reset to system defaults (the explicit, manual route)
+
+The page has a secondary **Reset to system defaults** action next to **Save** (same enabled/disabled
+rule as Save: not ready or not writable, or a write in flight). Choosing it:
+
+1. replaces the whole draft with the **unset** state — every one of the eleven managed fields blank and
+   the per-model override table empty — and **writes nothing**;
+2. lets the user review it, then **Save** issues the same one atomic mutate, now with an `unset` op for
+   **all eleven** managed keys. That is the part that matters: the page otherwise always sets the eight
+   materialized code defaults, and those explicit values are exactly what keeps an old row alive. The
+   settings layer resolves each `unset` against the `inherited` layer and applies either the deletion
+   or a set of the inherited value (`packages/settings/settings/src/index.ts:372-373`); when the
+   resulting config deep-equals that inherited layer, the config editor removes the row's `config` from
+   the profile patch — and deletes the row itself when only `id`/`name` remain (the `next` it derives at
+   `packages/boot/config-editor/src/index.ts:99-100,120-126`). With this bundle's seedless mount patch
+   the inherited config is `{}`, so a reset leaves no explicit override at all;
+3. the retune pass then resolves the code defaults (`liveTune` on an empty row) and rewrites every
+   preset child it manages that still holds other values — this is what moves the stale
+   `0.5 / 0.15 / 2` children onto `0.8 / 0.16 / 1`. It still writes explicit code-default keys, so the
+   profile patch is **not pristine**: the behaviour becomes the defaults; the file is not emptied.
+
+**Adoption point.** The save itself does not reliably propagate to the preset rows live (see *Save and
+reload semantics*); the reliable adoption point is the next boot/recompose. The retune pass **is**
+scheduled by the save — the plugin listens to the form's `loader/volatile-update` and to
+`app-boot/config-reload` — so the Reset action is not cosmetic; what is unreliable in measured runs is
+the live delivery to the preset rows, not the scheduling. HMR watches only the profile
+patch, the home patch and the profile `package.json` (`packages/boot/hmr/src/index.ts:384-385,406-407`), so
+bundle-code changes are re-read only on a recompose. After pressing Reset and Save, restart the backend
+(the page's **Restart backend** action, or your own restart).
+
+**Back up first.** The profile patch is outside version control and has no automatic backup, and the
+reset is irreversible from the UI: copy `~/.dsh/profiles/<profile>/cordis.patch.yml` before pressing it.
+The action is deliberately explicit and manual — there is **no** automatic migration and no heuristic
+that guesses whether stored values were the old seed or a deliberate choice.
 
 The other three shipped presets (`ptc`, `minimal`, `cordis`) commit no compaction config, so the first
-pass moves them onto the seed's three values plus the code defaults for the rest. That is the point of
-the plugin — one tune for every preset — but it is a real behaviour change for those presets, not a
-no-op install; see Limitations.
+pass is a **no-op** for them: their `compaction-basic` children already omit the eleven keys, which is
+exactly the tuner's own state on a fresh install. That is the point of the plugin — one tune for every
+preset — and with the seed gone the install itself no longer moves them.
 
 ## Scope
 
@@ -322,31 +385,39 @@ suite is hermetic — `node:assert/strict`, fake Context doubles, no network, no
 the **real** schemastery through `$DSH_HARNESS_CHECKOUT`, so set that variable or the schema checks
 cannot run.
 
-**Observed run — green, and still a regression gate.** With the full eleven-option change in place,
-the command above printed `92 passed, 0 failed, 0 skipped (92 checks)` and exited `0` (about 280 ms wall in
-my measurement, including Node startup). Two consecutive runs in one shell call produced
-byte-identical output. The suite grew from 71 to 92 checks: the rewritten and new ones pin the option
+**Observed run — green, and still a regression gate.** With the per-model picker and the Reset action
+in place, the command above printed `97 passed, 0 failed, 0 skipped (97 checks)` and exited `0` (about
+280 ms wall in my measurement, including Node startup). Two consecutive runs in one shell call produced
+byte-identical output. The suite grew from 71 to 97 checks: the rewritten and new ones pin the option
 table (`Config.dict` is exactly the eleven keys, every field `.volatile()`, the three optional keys
 carry no `.default()`), `DEFAULT_TUNE` against the upstream literals, `TUNE_OPTIONS` metadata, the
 projection (`maxTokens` derived as `maxTokens ?? headroomTokens`, exactly one retention form, the
 counterpart deleted), behaviour preservation (a preset that omits every option is skipped on the code
-defaults), the full `tuneProblem()` rule set, the mount patch's seed and its corrected provenance, the
+defaults), the full `tuneProblem()` rule set, the mount patch's **seedless** shape and its corrected
+provenance, the page's fresh-install render (code defaults, blank optional fields, the `retainRatio`
+placeholder, and `unset` ops for the untouched blanks), the
 `volatileForm()` seam that admits the `modelPolicies` array, the unmanaged-`modelPolicies` rules in
-both directions, the safe-integer and per-entry-cap rules on both halves, a **citation check over
+both directions, the safe-integer and per-entry-cap rules on both halves, the **per-model picker**
+(catalog read through the injected `remote` service with refusal/rejection/missing/empty handling, the
+provider-group selects, Add/Remove, duplicate prevention, the all-empty-entry drop, and an
+out-of-catalog override surviving a save), the **Reset to system defaults** action (present and disabled
+with the same rule as Save, the blanked draft with the per-model table cleared, and the exact one-atomic
+`unset` op list for all eleven keys) and its host half (a cleared tuner row re-tunes a stale
+`0.5 / 0.15 / 2` preset child onto the code defaults), a **citation check over
 README.md and CONTRACT.md that requires every `file:line` reference — including the checkout
 targets — to carry the symbol named beside it on a non-comment line of the cited range**, a **table
 check that parses the README/CONTRACT option tables and compares each cell against the host metadata
 by whole-value equality**, a **locale check that the en and zh dictionaries share a key set, that no
 English value contains CJK text, and that the zh modelPolicies copy carries the empty-table
 translation**, and the
-client half's eleven controls, its en+zh copy parity (each field naming its code default and range), its
-local refusals, and its `set`/`unset` op mix. An earlier revision of this document published a `71 passed, 0 failed` run for
+client half's eleven top-level fields, its en+zh copy parity (each field naming its code default and
+range), its local refusals, and its `set`/`unset` op mix. An earlier revision of this document published a `71 passed, 0 failed` run for
 the three-option version, and a `40 passed, 16 failed` run before that; all 16 of those failures were
 defects in an intermediate draft of the suite. `verify.mjs` deliberately pins no file digests (it
 ships as `scripts.verify`), so this file names no digest for the new revision either.
 
 It covers: the manifest; a drift guard that the package name, the client module id, the
-`cordis.patch.yml` row name and seed, the loader entry id / namespace, the locale namespace, and
+`cordis.patch.yml` row name and seedless shape, the loader entry id / namespace, the locale namespace, and
 `index.js`'s `name` all agree; a **table check that parses the README and CONTRACT option tables** and
 asserts every row's code-default cell carries the host's `defaultText` and its range cell the host's
 range clause (so a wrong default or a wrong range in either table fails, not just a missing key); a
@@ -359,10 +430,10 @@ table leaves a preset's table intact and is reported in `unmanaged`; a non-empty
 idempotence when the only difference is the unmanaged key; the `retune()` mechanism through a fake
 editor, including the candidate-editor walk and the empty-pass retry sequence with its
 `RETUNE_BACKOFF` order; the client half evaluated in `node:vm` (exact module id, the
-`settings.section` registration, the en+zh dictionary, one labelled control per option in `TUNE_KEYS`
-order, local refusal of every inconsistent draft with no `mutate` call including hexadecimal and
-unsafe-integer input, and exactly one `mutate` with one `set`/`unset` op per option and the snapshot
-revision); the restart contract (the `<strong>` notice present in the ready, unavailable and loading
+`settings.section` registration, the en+zh dictionary, one labelled top-level control per option in
+`TUNE_KEYS` order with the per-model picker in its place, local refusal of every inconsistent draft
+with no `mutate` call including hexadecimal and unsafe-integer input, and exactly one `mutate` with one
+`set`/`unset` op per option and the snapshot revision); the restart contract (the `<strong>` notice present in the ready, unavailable and loading
 states, the probe and its degrade-to-manual path, the inline confirm issuing exactly one
 `/backend-restart` call, the down-then-up recovery and reload, the timeout fallback, the unmount abort,
 and per-code localized failure copy with no diagnostic text); and a textual check that `client.js`
@@ -382,21 +453,34 @@ exercised on a live profile.
 | --- | --- |
 | `index.js` | Host half: `OPTION_SPECS` declares all eleven options once (key, kind, code default, allowed range, schemastery field); owns them, finds every agent-preset row, and projects the tune into its `compaction-basic` child. |
 | `client.js` | Browser half: the **Compaction tuner** Settings section, one control per option, its single atomic save, and the bold restart-required notice plus **Restart backend** action (soft dependency on `@local/dsh-backend-restart`). |
-| `cordis.patch.yml` | Bundle patch that inserts the tuner row with the install seed `0.5 / 0.15 / 2`. |
+| `cordis.patch.yml` | Bundle patch that inserts the tuner row with **no seed**, so the tuner runs the upstream code defaults. |
 | `locale/en.json`, `locale/zh.json` | Plugin display metadata for the Plugin Manager and Settings inventory. |
-| `package.json` | Bundle manifest (`dsh.bundle.patch`, `dsh.client` with the `connection` inject, `exports`, `files`). |
+| `package.json` | Bundle manifest (`dsh.bundle.patch`, `dsh.client` with the `connection` and model-catalog injects, `exports`, `files`). |
 | `verify.mjs` | Hermetic self-check for the manifest, both halves, the option table, the tuning rules, and the restart contract. |
 | `CONTRACT.md` | Frozen interface: identity, fields, persistence, tuning rules, limits. |
 
 ## Limitations
 
-- **The install changes what every preset runs.** The mount patch seeds `0.5 / 0.15 / 2` and the tuner
-  projects all ten managed keys into every preset row, so a preset that omits them runs the seed and the
-  code defaults, and a preset that declares different values is overwritten. *Install behaviour change*
-  names each key and its concrete consequence; `auto: false → true`, `summarizationProvider: "local" →
-  ""`, `maxOverflowRetries: 0 → 1`, `headroomTokens: 1234 → 65536`, and a deleted `retainTokens` are the
-  fixtures the suite pins. Uninstalling does not revert the written profile patch. Moving the seed to the
-  code defaults is a separate, deliberate change.
+- **A fresh install is a no-op; a differing preset is still overwritten.** The mount patch seeds nothing,
+  so the tuner projects the upstream code defaults, and a preset whose `compaction-basic` child already
+  omits the keys is skipped with no write. A preset that declares a **different** value for one of the ten
+  always-projected keys is overwritten with the tuner's value. *Install behaviour change* names each key
+  and its concrete consequence; `auto: false → true`, `summarizationProvider: "local" → ""`,
+  `maxOverflowRetries: 0 → 1`, `headroomTokens: 1234 → 65536`, and a deleted `retainTokens` are the
+  fixtures the suite pins. Uninstalling does not revert the written profile patch.
+- **No automatic migration for a profile that already stored the old seed.** A profile installed before
+  the seed was removed still carries `0.5 / 0.15 / 2` in its own `cordis.patch.yml`, and
+  already-projected preset children hold those values; a composed profile may also carry previously
+  seeded or projected values from other bundles. This plugin does not retroactively rewrite its own
+  stored row and nothing runs on boot, so those profiles keep running the stored values until the user
+  clears them with the explicit **Reset to system defaults** action (see *Reset to system defaults*).
+  Removing the seed changed the install default only; it deliberately did not touch existing data. The
+  reset is irreversible from the UI, the profile patch has no version control or automatic backup, and
+  the retune pass still materializes explicit code-default keys, so the file is not pristine after it.
+- **Adopting a reset needs a restart/recompose.** HMR watches only the profile patch, the home patch and
+  the profile `package.json` (`packages/boot/hmr/src/index.ts:384-385,406-407`); bundle-code changes are
+  re-read only on a recompose, and live propagation of a save to the preset rows does not work in
+  measured runs. Restart the backend after Reset + Save to be sure the presets moved.
 - **The cross-field rules are not in the schema.** `retainRatio < thresholdRatio`, `retainRatio` XOR
   `retainTokens`, the summarization pair, the derived `maxTokens` bound and the `modelPolicies` table
   rules cannot be expressed in schemastery without breaking the settings form, because `volatileForm()`
@@ -416,10 +500,10 @@ exercised on a live profile.
   table means "no opinion": every preset keeps its own per-model overrides, and `retune()` reports those
   rows in `unmanaged` (a subset of `skipped` unless another key changed the row). A **non-empty** tuner
   table replaces every preset's table. The deliberate trade is that there is no way to express "clear
-  every preset's table": `[]` already means "leave them alone". The page validates the JSON against the
-  upstream rules (array, non-empty unique provider/model, no unknown keys, in-range per-entry fields,
-  and each entry's resolved cap) before writing, and the Host refuses an invalid table before any preset
-  is touched.
+  every preset's table": `[]` already means "leave them alone". The page validates the picker's values
+  against the upstream rules (non-empty unique provider/model, no unknown keys, in-range per-entry
+  fields, and each entry's resolved cap) before writing, and the Host refuses an invalid table before
+  any preset is touched.
 - **The tuner's integer range is narrower than upstream's.** `Number.isSafeInteger` is enforced in the
   page and in `tuneProblem()`, and on the derived `maxTokens` too, so `9007199254740993` and `1e21` are
   refused instead of silently rounded, and decimal-only text is required (`0x10` is not accepted as

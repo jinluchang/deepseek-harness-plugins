@@ -30,13 +30,13 @@ symbol is authoritative, and `verify.mjs` pins behaviour rather than line number
 | Settings namespace | `compaction-tuner` — the same id, read with `ctx.configForms.get('compaction-tuner')` |
 | Locale namespace | `compaction-tuner` |
 | Host `name` export | `compaction-tuner` (`name` `index.js:315`) |
-| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`__ModuleLoader__.load` `client.js:46`) |
-| Client plugin `name` | `@local/dsh-compaction-tuner` (`name` `client.js:1080`) |
+| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`__ModuleLoader__.load` `client.js:54`) |
+| Client plugin `name` | `@local/dsh-compaction-tuner` (`name` `client.js:1447`) |
 | Host ↔ Client wire | **No RPC channel of its own.** The tuner's values travel over the ui-settings form mirror: `configForms.get('compaction-tuner')` whose `mutate()` calls the Host's `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:134`). The restart action separately calls a sibling-owned channel — see *Restart action (soft dependency)*. |
 | Host `inject` | `['configEditor', 'loader']` (`inject` `index.js:318`) |
-| Client `inject` | `['slots', 'locale', 'configForms', 'connection']` (`inject` `client.js:1081`) |
+| Client `inject` | `['slots', 'locale', 'configForms', 'connection', 'remote']` (`inject` `client.js:1448`) |
 | Restart channel | `/backend-restart`, owned by `@local/dsh-backend-restart`, called through `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
-| Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`ctx.slots.register` `client.js:1102`) |
+| Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`ctx.slots.register` `client.js:1492`) |
 
 The two halves never import each other's values. The Host owns the numbers; the Client reads and
 writes them only through the config-form service.
@@ -55,7 +55,8 @@ The *Code default* column is the upstream `compaction-basic` resolution fallback
 **no `.max()`** and leaves the two ratio nodes bare `z.number()`
 (`packages/compaction/compaction-basic/src/index.ts:81,83,117,119`), so the `(0, 1]` ratio bound lives
 ONLY in `assertRatio`; the token/count nodes do carry `.min(0)`/`.min(1)` (`index.ts:82,84,87-89`).
-**This install's seed** is what `cordis.patch.yml` commits for three of the keys.
+**Nothing is seeded.** `cordis.patch.yml` inserts the row with no `config`, so the *Code default* column
+is also the value a fresh install runs, and a preset that omits the keys is already in tune.
 
 | Field | Schemastery shape | Code default | Range (enforced by) |
 | --- | --- | --- | --- |
@@ -71,7 +72,7 @@ ONLY in `assertRatio`; the token/count nodes do carry `.min(0)`/`.min(1)` (`inde
 | `modelPolicies` | `array(object({provider, model, + the nine policy keys})).default([]).volatile()` | `[]` | array of `{provider, model, ...policy}`; each entry an object with non-empty `provider`/`model`, no unknown keys, duplicate `provider\0model` rejected (`resolveModelPolicies` `config.ts:243-274`, `assertNonEmptyString` `config.ts:340-344`); per-entry policy fields and the entry's RESOLVED cap obey the top-level rules (`policy.maxTokens` `config.ts:83-90`) |
 | `auto` | `boolean().default(true).volatile()` | `true` | true or false (`auto` `config.ts:71-73`) |
 
-The accepted `modelPolicies` JSON, as the page's textarea and the Host both check it:
+The accepted `modelPolicies` table, as the page's picker and the Host both check it:
 
 ```json
 [
@@ -80,9 +81,13 @@ The accepted `modelPolicies` JSON, as the page's textarea and the Host both chec
 ]
 ```
 
-Exactly those eleven key names are accepted per entry (`provider`, `model`, plus the nine policy
-keys); an unknown key, a missing or empty `provider`/`model`, a duplicate pair, or an out-of-range
-entry field is refused before any write.
+The page never accepts or emits JSON text: the provider and model come from `<select>` elements
+populated by the deployment's own model catalog, and each override card carries one labelled input per
+policy key. Exactly those eleven key names are accepted per entry (`provider`, `model`, plus the nine
+policy keys); an unknown key, a missing or empty `provider`/`model`, a duplicate pair, or an
+out-of-range entry field is refused before any write. An override whose nine boxes are all empty is
+**dropped on save** (a provider/model-only entry would make the table managed while changing nothing),
+so a table with no filled override is submitted as `unset`.
 
 `.volatile()` is what makes a save commit into the running fiber without a remount, and what makes
 the loader emit `loader/volatile-update` to the owning fiber
@@ -98,7 +103,9 @@ always be present next to an explicit `retainTokens`, the XOR could never be obs
 retention tune would refuse itself. `maxTokens` deliberately stays absent so it can derive from the
 headroom exactly like upstream. The page submits a blank optional field as an `unset` op
 (`packages/settings/settings/src/index.ts:83,86-110`); adding a `.default()` to any of the three
-silently breaks that contract, and `verify.mjs` asserts the absence.
+silently breaks that contract, and `verify.mjs` asserts the absence. Because `retainRatio` is therefore
+blank while its effective value is `0.16`, the page shows `0.16` as the input's placeholder; the blank
+value still submits `unset`.
 
 The tuner's own pre-write check (`tuneProblem()`) mirrors the upstream asserts and the cross-field
 rules; it does not enforce the `0.01` floor/step, which lives in the schema above (the same split as
@@ -109,15 +116,39 @@ limits".
 
 `DEFAULT_TUNE` is the eleven-key upstream code-default set derived from `OPTION_SPECS`; `TUNE_KEYS` is
 the key order; `TUNE_OPTIONS` is the public metadata (key, kind, default, default text, range). The
-install seed lives only in `cordis.patch.yml` (`0.5 / 0.15 / 2`) and has no separate constant, so the
-page note repeats it and `verify.mjs` checks the note against the patch.
+mount patch seeds nothing, so the page note states that a fresh install runs the code defaults rather
+than repeating a seed; `verify.mjs` checks the note against that rule.
 
 ## Persistence rule
 
 The eleven values live in the **tuner row's `config`** — `compaction-tuner` — in the active profile's
-`cordis.patch.yml`. The bundle mount patch seeds three of them — `thresholdRatio: 0.5`, `retainRatio: 0.15`,
-`compactionRetries: 2` (`cordis.patch.yml:27-30`) — and after the first save they live in the profile's own patch file, which is
-`PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:40`).
+`cordis.patch.yml`. The bundle mount patch seeds nothing, so a fresh install stores no values and the
+tuner runs the upstream code defaults; the first save writes the edited values into the profile's own
+patch file, which is `PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:40`).
+A profile that installed an earlier revision still stores the legacy seed `0.5 / 0.15 / 2` in its own
+patch file, and there is **no automatic migration** (see *Install behaviour change* and *Reset to system
+defaults*).
+
+### Reset to system defaults (explicit, manual)
+
+The page's secondary **Reset to system defaults** action clears the row explicitly, and only on the
+user's Save. It blanks the whole draft (all eleven keys, per-model table included) and writes nothing
+itself; Save then emits the same one atomic mutate with an **`unset` op for all eleven managed keys**.
+That is required because the page otherwise always sets the eight materialized code defaults, which is
+what keeps a legacy row alive. `settings.mutate` resolves each unset against the `inherited` layer and
+applies either the deletion or a set of the inherited value
+(`packages/settings/settings/src/index.ts:372-373`); the write then calls `configEditor.edit`
+(`packages/settings/settings/src/index.ts:390-398`). When the resulting config deep-equals that
+inherited layer, the config editor removes the row's `config` from the profile patch — and deletes the
+row itself when only `id`/`name` remain (the `next` it derives at
+`packages/boot/config-editor/src/index.ts:99-100,120-126`). The retune pass then resolves the code defaults
+(`liveTune` on an empty row) and rewrites every managed preset child that holds other values, while a
+child that already omits the keys stays skipped. It still writes explicit code-default keys, so the
+profile patch is **not pristine** after a reset. The retune pass **is** scheduled by the save itself
+(`index.js` subscribes to `loader/volatile-update` and `app-boot/config-reload`), so the action is not
+cosmetic; only the live delivery to the preset rows is unreliable in measured runs, and the next
+boot/recompose does it reliably. Nothing runs on load or boot: there is no automatic
+migration and no seed heuristic.
 
 The tuner then projects the same values into the preset rows the resolved editor reports, matching
 `entry.options.name === '@deepseek-ai/dsh-agent-preset'`. "Push" means a whole-config replacement:
@@ -157,21 +188,32 @@ anything — `resolveConfig` at `packages/boot/config-editor/src/index.ts:103-10
 ### Install behaviour change (the ten projected keys)
 
 The tuner owns every `compaction-basic` option and projects its stored tune into each preset row at the
-first boot. A preset that declares a different value for any of these **ten** keys is overwritten, and
-the result is persisted into the profile's `cordis.patch.yml`; uninstalling does not revert it.
+first boot. On a fresh install that stored tune **is** the upstream code defaults, so the install is a
+no-op for a preset that already omits the eleven keys; a preset that declares any **other** value is
+still overwritten, and the result is persisted into the profile's `cordis.patch.yml`; uninstalling does
+not revert it.
 
 | Key | Consequence for a preset that disagrees |
 | --- | --- |
-| `thresholdRatio` | set to the tuner's value (the install seed is `0.5`, not the code default `0.8`) |
+| `thresholdRatio` | set to the tuner's value (the code default is `0.8` on a fresh install) |
 | `headroomTokens` | set to the tuner's value (`65536` when unset, so `1234 → 65536`) |
 | `retainRatio` | written when the tuner is on the ratio form; a stale `retainTokens` is deleted |
 | `retainTokens` | written when the tuner is on the token form; a stale `retainRatio` is deleted |
 | `summarizationProvider` | set to the tuner's string; `''` clears a preset's local summarizer route (`"local" → ""`) |
 | `summarizationModel` | set to the tuner's string, as the other half of the pair |
 | `maxTokens` | set to the tuner's resolved cap (`maxTokens ?? headroomTokens`) |
-| `compactionRetries` | set to the tuner's value (the install seed is `2`) |
+| `compactionRetries` | set to the tuner's value (the code default is `1` on a fresh install) |
 | `maxOverflowRetries` | set to the tuner's value (`1` when unset, so a preset's `0` is re-enabled: `0 → 1`) |
 | `auto` | set to the tuner's value (`true` when unset, so a manual-only preset is re-enabled: `false → true`) |
+
+**Legacy seed, no migration.** A profile that installed an earlier revision of this bundle stored
+`thresholdRatio: 0.5`, `retainRatio: 0.15`, `compactionRetries: 2` in its own `cordis.patch.yml` (or a
+`--patch` overlay), and already-projected preset children carry those values. Removing the seed from the
+mount patch does **not** rewrite either: the stored row keeps its values, the tuner keeps projecting
+them, and `sameTune()` therefore still treats the preset children as in tune. Such a profile moves onto
+the code defaults only when the user clears it with the explicit **Reset to system defaults** action
+(which unsets all eleven keys; see *Reset to system defaults*); uninstalling does not revert
+the written profile patch either.
 
 `modelPolicies` is the deliberate exception: an empty tuner table leaves each preset's own table
 untouched (the `unmanaged` report), so per-model overrides are replaced only when the user enters a
@@ -263,9 +305,10 @@ narrow:
 - `retainTokens` is only ever projected when the tuner's own `retainTokens` is set; otherwise its
   absence is projected, which is upstream's "retention falls back to `retainRatio`".
 - `modelPolicies` is not projected while the live table is empty, so a preset's own table is preserved.
-- The mount patch's seed (`0.5 / 0.15 / 2`) **is** different from the code defaults, so a preset that
-  omits those keys is genuinely moved onto the seed. That is the plugin working as intended, and README
-  *Install behaviour change* names every projected key and its consequence.
+- The mount patch seeds nothing, so a preset that omits every key is genuinely skipped with no write —
+  the rule the offline suite pins. A **legacy** profile that still stores the old seed is the one
+  exception: its row keeps `0.5 / 0.15 / 2` and the tuner keeps projecting those stored values, with no
+  automatic migration. README *Install behaviour change* names every projected key and its consequence.
 
 ### Candidate-editor walk (shipped defence, not a fix)
 
@@ -330,55 +373,80 @@ boot — `settings.configure` `index.js:1019`), because the bundle ships its own
 ## Client contract
 
 Module artifact: one `window.__ModuleLoader__.load({ id: '@local/dsh-compaction-tuner', factory })`
-closure (`__ModuleLoader__.load` `client.js:46`). The factory requests exactly one module-table entry, `react`
-(`React` `client.js:49`), and returns `{ name, inject, apply }` with
-`inject = ['slots', 'locale', 'configForms', 'connection']` (`inject` `client.js:1081`).
+closure (`__ModuleLoader__.load` `client.js:54`). The factory requests exactly one module-table entry, `react`
+(`React` `client.js:57`), and returns `{ name, inject, apply }` with
+`inject = ['slots', 'locale', 'configForms', 'connection', 'remote']` (`inject` `client.js:1448`).
+`remote` is the client Remote service; the plugin reads only `ctx.remote.session.modelCatalog()` from it.
 
 `apply(ctx)`:
 
 1. `ctx.effect(() => ctx.locale.register('compaction-tuner', { en, zh }), ...)` registers the
-   complete English + Chinese dictionary (`ctx.locale.register` `client.js:1090`).
-2. `const form = ctx.configForms.get('compaction-tuner')` (`ctx.configForms.get` `client.js:1091`).
-3. Resolves the restart caller lazily (`callBackend`, `client.js:1093`): it reads
+   complete English + Chinese dictionary (`ctx.locale.register` `client.js:1457`).
+2. `const form = ctx.configForms.get('compaction-tuner')` (`ctx.configForms.get` `client.js:1458`).
+3. Resolves the restart caller lazily (`callBackend`, `client.js:1460`): it reads
    `ctx.get('connection')` on every call and rejects when the service or `connection.rpc.call` is
    absent, so a composition without the connection service still registers the page.
-4. Registers the section with a `label` function (required; an omitted label renders an empty nav row),
-   `locale: 'compaction-tuner'`, and an inject face exposing `{ form, t, callBackend }`
-   (`ctx.slots.register` `client.js:1102`).
+4. Wraps the model-catalog read lazily (`readCatalog`, `client.js:1476`): it reads `ctx.get('remote')`
+   and resolves a refusal envelope when `remote.session.modelCatalog` is absent, so a composition
+   without the Remote service still registers the page and renders the "catalog not available" note.
+5. Registers the section with a `label` function (required; an omitted label renders an empty nav row),
+   `locale: 'compaction-tuner'`, and an inject face exposing `{ form, t, callBackend, readCatalog }`
+   (`ctx.slots.register` `client.js:1492`).
 
 The page (`TunerSection`):
 
 - State comes from `React.useSyncExternalStore(form.subscribe, form.getSnapshot)`, with the two
   methods memoized per form so the subscribe identity is stable.
 - `status === 'loading'` renders the localized loading text; `status === 'unavailable'` renders the
-  localized note with **all eleven controls** disabled and **never attempts a write**; `ready` renders
+  localized note with **all eleven fields** disabled and **never attempts a write**; `ready` renders
   one labelled control per owned option, seeded from `snapshot.value` (`seedDraft()`): a numeric input
-  for `ratio`/`integer`, a text input for `string`, a checkbox for `auto`, and a JSON `<textarea>` for
-  `modelPolicies`. `retainRatio`, `retainTokens` and `maxTokens` render **blank** when the snapshot
-  omits them, because "unset" is a real state the Host schema does not default away.
-- The two page notes above the controls state the rule that the request is about: every field's
-  **upstream code default** is shown beside its description, and the page records that **this install
-  seeds `0.5 / 0.15 / 2`**, which is what is projected into a preset that omits the key.
+  for `ratio`/`integer`, a text input for `string`, a checkbox for `auto`, and the composite per-model
+  editor for `modelPolicies` (a provider/model picker plus one labelled input per policy key of each
+  override card). `retainRatio`, `retainTokens` and `maxTokens` render **blank** when the snapshot
+  omits them, because "unset" is a real state the Host schema does not default away. `retainRatio`
+  additionally carries its effective code default (`0.16`) as the input's `placeholder`, so the empty
+  field and the value in force are both visible without materializing the key into the config.
+- The per-model editor reads the catalog once per mount through the injected Remote caller
+  (`readCatalog`) and renders the result: a ready catalog renders the provider-group selects and Add;
+  a refused reply, a rejection and a missing Remote service each render their own localized note (the
+  missing service a distinct "not available" one); an empty catalog renders its note. A saved override
+  whose pair is not in the catalog stays listed, marked as out of catalog, and removable; Add is
+  disabled for a pair that already has an override.
+- The page note above the controls states the rule that the request is about: every field's **upstream
+  code default** is shown beside its description, and the bundle seeds nothing, so those code defaults
+  are what a fresh install runs until the user edits a value.
 - **One atomic write.** The draft is validated locally first (`validateDraft()`): each ratio in
   `(0, 1]`, `retainRatio` XOR `retainTokens`, the effective tail below `thresholdRatio`, the
   summarization pair, resolved `maxTokens = maxTokens ?? headroomTokens >= 1`, both retry counts
-  non-negative integers, and the `modelPolicies` JSON parsed and checked against the upstream entry
-  rules. On failure the page shows the matching localized message and calls **no** Host method. On
+  non-negative integers, and each `modelPolicies` entry's raw box text normalized (decimal-only
+  numbers, safe integers) and checked against the upstream entry rules — an all-empty entry dropped
+  first, an unknown stored key preserved so it is still refused. On failure the page shows the matching
+  localized message and calls **no** Host method. On
   success it calls `form.mutate(ops, snapshot.revision)` **once**, where `ops` is one op per owned
   option in `FIELDS` order — `{ op: 'set', … }` for a value, `{ op: 'unset', path: [key] }` for a blank
   optional field. `settings.mutate` applies `unset` by deleting the key
   (`packages/settings/settings/src/index.ts:83,86-110`), which is what restores "unset upstream".
 - The Save action is disabled while the namespace is unwritable, while a write is in flight, and while
   the draft equals the snapshot.
-- `mutate` resolving `true` shows the localized saved confirmation; resolving `false` (or rejecting)
-  shows the localized refused copy in a `role="alert"`, and the draft is re-seeded from whatever the
-  Host reports next — the controller performs its own recovery read
-  (`mutate` `packages/client/ui-settings/src/client/config-form.ts:129-148`). The saved copy is accurate for
-  the tuner's own namespace only; it is not a promise that the preset rows of a running profile follow,
-  and the presets pick the values up at the next Host start (see *Live save behaviour*).
+- **Reset to system defaults** is a secondary `.dct-outline` button in the same `.dct-actions` row,
+  disabled on exactly the Save rule (not-ready/not-writable or a write in flight) and never on
+  `!dirty`. Its click stages a blank text for every `FIELDS` entry (`'[]'` for `modelPolicies`) and
+  records the snapshot it was staged against; it calls **no** Host method. The reset mode is scoped to
+  that snapshot, so a recovery read drops it. While it is active, `validateDraft(draft, true)` accepts a
+  blank field of ANY key as `unset` (the cross-field checks resolve a blank threshold/headroom to the
+  code defaults `0.8`/`65536`), and Save emits one atomic mutate with `{ op: 'unset', path: [key] }` for
+  all eleven `FIELDS` in order. The i18n'd `note.resetDefaults` beside the action states that it writes
+  nothing until Save, that presets follow on the next pass, and that there is no automatic migration and
+  no undo from the page.
+- `mutate` resolving `true` shows no separate confirmation line: the restart-required notice below the
+  Save button IS the post-save message. Resolving `false` (or rejecting) shows the localized refused copy
+  in a `role="alert"`, and the draft is re-seeded from whatever the Host reports next — the controller
+  performs its own recovery read (`mutate` `packages/client/ui-settings/src/client/config-form.ts:129-148`).
+  The stored values are accurate for the tuner's own namespace only; they are not a promise that the
+  preset rows of a running profile follow, and the presets pick the values up at the next Host start (see *Live save behaviour*).
 - Accessibility: real `htmlFor`/`id` pairs via `React.useId()` (one id per field, allocated in a
-  fixed-length loop over `FIELDS`), `role="alert"` for failures, `role="status"` for the confirmation,
-  no colour-only signalling.
+  fixed-length loop over `FIELDS`), `role="alert"` for failures, no colour-only signalling; no
+  `role="status"` node remains, because a successful save adds no separate confirmation line.
 - Styling is a component-local `<style>` string inside the section tree, class names namespaced
   `dct-`, and only `--dsw-alias-*` host theme tokens.
 - `close` is passed by the shell but this page never calls it.
@@ -386,42 +454,42 @@ The page (`TunerSection`):
 ### Restart contract (Client)
 
 - **Bold notice in every state.** The restart-required fact renders as a real `<strong>`
-  (`strongNote` `client.js:922`, class `dct-restart-note`) inside `restartBlock`, which is returned in the
-  `confirming`, `timeout`, and default (ready/manual/restarting) states alike (`restartBlock` `client.js:950`),
-  and is also part of the `loading` return (`loading` `client.js:970`) and the main render
-  (`dct-page` `client.js:1048`). The English copy is `restart.note` — "Saving stores the values, but they reach the
-  agent presets only after the DSH backend restarts." (`restart.note` `client.js:170`); the Chinese copy is
-  `restart.note` `client.js:258`.
-- **Availability probe.** On mount an effect owns an `AbortController` (`client.js:768`) and calls
-  `probeRestartable()` (`client.js:649`): `status` on `/backend-restart`, retried up to
-  `STATUS_ATTEMPTS` (`client.js:117`, `= 3`) times at `STATUS_RETRY_MS` (`client.js:118`, `= 1000` ms) on a
-  transport miss only. A resolved reply is judged by `statusOutcome()` (`client.js:610`): only
+  (`strongNote` `client.js:1182`, class `dct-restart-note`) inside `restartBlock`, returned in the
+  `confirming`, `timeout`, and default (ready/manual/restarting) states alike (`restartBlock` `client.js:1210`),
+  part of the `loading` return (`loading` `client.js:1230`), and — in the main render — the last child of
+  `dct-page` (`dct-page` `client.js:1410`), directly below the Save button; a successful save adds no
+  separate confirmation line, so this notice is the post-save message. The English copy is `restart.note` —
+  "Saving stores the values, but they reach the agent presets only after the DSH backend restarts." (`restart.note` `client.js:225`); the Chinese copy is `restart.note` `client.js:326`.
+- **Availability probe.** On mount an effect owns an `AbortController` (`client.js:918`) and calls
+  `probeRestartable()` (`client.js:798`): `status` on `/backend-restart`, retried up to
+  `STATUS_ATTEMPTS` (`client.js:173`, `= 3`) times at `STATUS_RETRY_MS` (`client.js:174`, `= 1000` ms) on a
+  transport miss only. A resolved reply is judged by `statusOutcome()` (`client.js:759`): only
   `ok:true` with `value.restartable === true` yields `ready`; anything else yields `manual`, and the
-  action is disabled with the localized manual copy beside it (`restart.manual`, `client.js:172`;
-  rendered by `manualNote` `client.js:932`).
+  action is disabled with the localized manual copy beside it (`restart.manual`, `client.js:227`;
+  rendered by `manualNote` `client.js:1192`).
 - **Inline confirmation.** The action opens a `role="group"` confirm block
-  (`confirmBlock` `client.js:935`); no native dialog is used. Cancel leaves the channel untouched
-  (`cancelRestart()`, `client.js:869`).
-- **Exactly one `restart` call.** Confirm (`confirmRestart()`, `client.js:893`) calls `restart`
+  (`confirmBlock` `client.js:1195`); no native dialog is used. Cancel leaves the channel untouched
+  (`cancelRestart()`, `client.js:1129`).
+- **Exactly one `restart` call.** Confirm (`confirmRestart()`, `client.js:1153`) calls `restart`
   once on `/backend-restart` with the mount controller's signal.
-- **Refusals are localized, diagnostics never rendered.** `restartFailureKey()` (`client.js:596`)
+- **Refusals are localized, diagnostics never rendered.** `restartFailureKey()` (`client.js:745`)
   maps `backend-restart/busy`, `.../unsupported`, `.../spawn-failed` to their copy and everything else
   to a generic message; the channel's `message` field is never product text. The refusal renders in a
-  `role="alert"` (`restartAlert` `client.js:923-925`).
+  `role="alert"` (`restartAlert` `client.js:1183-1185`).
 - **Transport rejection means possibly-restarting.** A rejected `restart` call enters recovery rather
-  than reporting failure (`recover` `client.js:916`), because the process may exit before its reply arrives —
+  than reporting failure (`recover` `client.js:1176`), because the process may exit before its reply arrives —
   the rule (`transport rejection` `dsh-backend-restart/CONTRACT.md:52`) sets for that channel's own client.
-- **Bounded recovery.** `recover()` (`client.js:881`) runs `awaitSuccessor()` (`client.js:696`):
-  poll the document root (`probeRoot()`, `client.js:668`; GET, `cache:'no-store'`, same-origin, 5 s
+- **Bounded recovery.** `recover()` (`client.js:1141`) runs `awaitSuccessor()` (`client.js:845`):
+  poll the document root (`probeRoot()`, `client.js:817`; GET, `cache:'no-store'`, same-origin, 5 s
   probe timeout) until the old listener stops answering, for up to `DOWN_BUDGET_MS = 20000`
-  (`DOWN_BUDGET_MS` `client.js:110`), then until the successor answers, for up to `UP_BUDGET_MS = 60000`
-  (`UP_BUDGET_MS` `client.js:111`), at `POLL_INTERVAL_MS = 500` (`POLL_INTERVAL_MS` `client.js:112`). `ready` calls
-  `window.location.reload()` (`reloadPage` `client.js:874`); `timeout` renders the manual **Reload page** block
-  (`timeoutBlock` `client.js:944`).
-- **Unmount aborts.** The mount effect's cleanup aborts the controller (`controller.abort()` `client.js:777`), and every
+  (`DOWN_BUDGET_MS` `client.js:166`), then until the successor answers, for up to `UP_BUDGET_MS = 60000`
+  (`UP_BUDGET_MS` `client.js:167`), at `POLL_INTERVAL_MS = 500` (`POLL_INTERVAL_MS` `client.js:168`). `ready` calls
+  `window.location.reload()` (`reloadPage` `client.js:1134`); `timeout` renders the manual **Reload page** block
+  (`timeoutBlock` `client.js:1204`).
+- **Unmount aborts.** The mount effect's cleanup aborts the controller (`controller.abort()` `client.js:927`), and every
   call and poll rides that signal: `delay()` and `probeRoot()` forward the abort
-  (`delay()` `client.js:622`, `probeRoot()` `client.js:668`), and `recover()` ignores a result after an abort
-  (`signal.aborted` `client.js:883`).
+  (`delay()` `client.js:771`, `probeRoot()` `client.js:817`), and `recover()` ignores a result after an abort
+  (`signal.aborted` `client.js:1143`).
 
 ## Restart action (soft dependency)
 
@@ -431,7 +499,7 @@ in that package's CONTRACT.md (`status` / `restart`). This is a **soft runtime d
 required one**: nothing is imported from that package, the host half never references it, this plugin
 loads and its page renders without it, and only the restart action degrades — to the localized manual
 copy with the action disabled. The manifest declares the connection client in `dsh.client.inject`
-(`package.json`) and the client half injects `connection` (`inject` `client.js:1081`).
+(`package.json`) and the client half injects `connection` (`inject` `client.js:1448`).
 
 ## Honest limits
 
@@ -452,7 +520,7 @@ copy with the action disabled. The manifest declares the connection client in `d
 - **`modelPolicies` is unmanaged while empty and a whole-table override when not.** An empty live table
   leaves every preset's own per-model table untouched (reported in `unmanaged`); a non-empty table
   replaces it. There is deliberately no "clear every preset's table" expression. The page checks the
-  JSON (including each entry's resolved cap), and `tuneProblem()` re-checks it Host-side before any
+  picker's box values (including each entry's resolved cap), and `tuneProblem()` re-checks it Host-side before any
   write, mirroring `resolveConfig()`'s per-entry cap resolution (`policy.maxTokens` `config.ts:83-90`), so an accepted
   table cannot abort compaction-basic load at the next boot (`constructor` `index.ts:137-141`) — a property that no
   longer depends on `projectedTune()` happening to emit a top-level `maxTokens`.
@@ -475,6 +543,15 @@ copy with the action disabled. The manifest declares the connection client in `d
   writes a pruner row — `withTune()` targets only the `compaction-basic` child
   (`COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`). Making it tunable is a separate change with its own
   contract, not an omission here.
+- **The reset is explicit, irreversible from the page, and leaves the preset files materialized.** The
+  **Reset to system defaults** action is the only migration path: no heuristic runs, nothing happens on
+  load or boot, and the click writes nothing until Save. Once saved, the tuner row's `config` is deleted,
+  but the retune pass still writes explicit code-default keys into every preset child it manages, so the
+  profile patch is not pristine. The page offers no undo, and the profile patch
+  (`~/.dsh/profiles/<profile>/cordis.patch.yml`) is outside version control with no automatic backup:
+  copy it before pressing Reset. Adoption is a restart/recompose — HMR watches only the profile patch,
+  the home patch and the profile `package.json` (`packages/boot/hmr/src/index.ts:384-385,406-407`), and live
+  propagation of a save to the preset rows does not work in measured runs.
 - **Reload semantics.** New sessions get the new tune once the preset rows carry it; a session already
   running keeps the retired revision, because `compaction-basic` resolves its policy once at mount and
   has no runtime override. Because live propagation does not work, edit the values and restart the
@@ -508,7 +585,8 @@ copy with the action disabled. The manifest declares the connection client in `d
   by a `--patch` overlay. The multi-option projection itself is offline-verified only.
 - **Still unconfirmed.** A reliable live-save path (no cause identified); arm B (never measured); the
   breakdown of the four non-empty passes; the browser/GUI path (real DOM render, nav row, page-driven
-  save round-trip, including the new JSON textarea and checkbox); a real process restart and a real
+  save round-trip, including the new per-model picker, its catalog read and the checkbox); a real
+  process restart and a real
   `location.reload()` on a live profile; HMR for a `link:`ed client bundle;
   question 2's live-session case; and question 5. The hermetic `verify.mjs` suite is stub-driven and
   starts no Host, so it says nothing about the live path or a real browser; see `README.md` → Verify.

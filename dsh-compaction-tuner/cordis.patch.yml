@@ -5,17 +5,13 @@
 # is the source of truth, and each retune pass pushes the values into every
 # `@deepseek-ai/dsh-agent-preset` row of the active profile.
 #
-# The three seeded values below are an INSTALL-TIME choice, deliberately
-# different from the upstream compaction-basic code defaults (0.8 / 0.16 / 1).
-# They are NOT carried over from any shipped preset patch: a grep of every
-# *.yml/*.yaml in the checkout finds no preset or bundle row that sets any
-# compaction-BASIC option (only snapshot fixtures under snapshots/ set them; the
-# sibling pruner's thresholdChars/headChars/tailChars ARE set by shipped
-# presets, but this tuner never touches that plugin). Because
-# the tuner projects this row's live values into every preset that omits a key,
-# a preset without its own tune runs THESE values, not the code defaults. The
-# other eight options are NOT seeded here, so they fall back to their code
-# defaults (see index.js `OPTION_SPECS` and README "Initial values").
+# This patch seeds NOTHING: the inserted row carries no `config`, so the tuner
+# runs the upstream compaction-basic code defaults (0.8 / 0.16 / 1) — the same
+# values index.js `OPTION_SPECS` records and README "Initial values" documents.
+# A fresh install therefore changes no preset by itself: `retune()` compares the
+# projected tune, so a preset whose `compaction-basic` child declares none of
+# the eleven keys already runs those defaults and is skipped with no write.
+# Nothing reaches the profile patch until the user edits a value on the page.
 #
 # The row itself is persisted the same way as any other profile row: the
 # settings page writes the active profile's `cordis.patch.yml` (the profile's
@@ -24,7 +20,3 @@
 - insert:
     - id: compaction-tuner
       name: '@local/dsh-compaction-tuner'
-      config:
-        thresholdRatio: 0.5
-        retainRatio: 0.15
-        compactionRetries: 2

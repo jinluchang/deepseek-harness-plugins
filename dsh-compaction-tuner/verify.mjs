@@ -257,12 +257,14 @@ function fakeClientContext() {
     injections: [],
     formRequests: [],
     connection: undefined,
+    remote: undefined,
+    catalogCalls: 0,
   }
   const form = new BoundForm()
   const ctx = {
     state,
     form,
-    get: name => (name === 'connection' ? state.connection : undefined),
+    get: name => (name === 'connection' ? state.connection : name === 'remote' ? state.remote : undefined),
     effect(callback, label) {
       state.effects.push(label)
       const disposer = callback()
@@ -363,22 +365,27 @@ const UPSTREAM_DEFAULTS = {
   auto: true,
 }
 
-/** The install seed `cordis.patch.yml` commits into the tuner row. */
-const MOUNT_SEED = { thresholdRatio: 0.5, retainRatio: 0.15, compactionRetries: 2 }
+/**
+ * The historical install seed `cordis.patch.yml` used to commit. The mount patch
+ * now seeds nothing, so this is a REGRESSION FIXTURE: profiles installed before
+ * the seed was removed still store `0.5 / 0.15 / 2`, and those stored values must
+ * keep being projected exactly as before.
+ */
+const LEGACY_SEED = { thresholdRatio: 0.5, retainRatio: 0.15, compactionRetries: 2 }
 
 /**
- * One realistic stored snapshot value: the mount seed for the three seeded keys
- * plus the code defaults, with `retainTokens` and `maxTokens` genuinely unset
- * (the tuner's schema gives them no default).
+ * One realistic stored snapshot value: the legacy install seed for the three keys
+ * it used to seed plus the code defaults, with `retainTokens` and `maxTokens`
+ * genuinely unset (the tuner's schema gives them no default).
  */
 function storedValue(overrides = {}) {
   return {
-    thresholdRatio: MOUNT_SEED.thresholdRatio,
+    thresholdRatio: LEGACY_SEED.thresholdRatio,
     headroomTokens: UPSTREAM_DEFAULTS.headroomTokens,
-    retainRatio: MOUNT_SEED.retainRatio,
+    retainRatio: LEGACY_SEED.retainRatio,
     summarizationProvider: '',
     summarizationModel: '',
-    compactionRetries: MOUNT_SEED.compactionRetries,
+    compactionRetries: LEGACY_SEED.compactionRetries,
     maxOverflowRetries: UPSTREAM_DEFAULTS.maxOverflowRetries,
     modelPolicies: [],
     auto: true,
@@ -394,14 +401,70 @@ function readySnapshot(revision, values = storedValue()) {
 /** Await the microtask queue plus the next macrotask, so a `mutate()` settles. */
 const flush = () => new Promise(resolve => { setImmediate(resolve) })
 
-/** Every rendered control, in FIELDS order (inputs and the JSON textarea). */
-function controlsOf(ui) {
-  return findAll(ui.tree(), node => node.type === 'input' || node.type === 'textarea')
+/** The rendered top-level field label for one owned key. */
+function fieldLabelOf(ui, key) {
+  return findAll(ui.tree(), node => node.type === 'label'
+    && node.props?.className === 'dct-field-label'
+    && directText(node) === enCopy(`field.${key}.label`))[0]
 }
 
-/** The rendered control for one owned key. */
+/** The rendered control for one owned key (undefined for the composite field). */
 function controlOf(ui, key) {
-  return controlsOf(ui)[TUNE_ORDER.indexOf(key)]
+  const label = fieldLabelOf(ui, key)
+  if (label === undefined) return undefined
+  return findAll(ui.tree(), node => (node.type === 'input' || node.type === 'textarea')
+    && node.props.id === label.props.htmlFor)[0]
+}
+
+/** One id inside the per-model editor, derived from the field label's `for`. */
+function perModelId(ui, suffix) {
+  const label = fieldLabelOf(ui, 'modelPolicies')
+  if (label === undefined) throw new Error('the modelPolicies field label is not rendered')
+  return `${label.props.htmlFor}-${suffix}`
+}
+
+/** The composite per-model editor node. */
+function perModelEditor(ui) {
+  return findAll(ui.tree(), node => node.props?.className === 'dct-permodel')[0]
+}
+
+/** One rendered override card, in draft order. */
+function perModelEntries(ui) {
+  return findAll(ui.tree(), node => node.props?.className === 'dct-permodel-entry')
+}
+
+/** The provider or model `<select>` inside the per-model picker. */
+function perModelSelect(ui, which) {
+  const id = perModelId(ui, which)
+  return findAll(ui.tree(), node => node.type === 'select' && node.props.id === id)[0]
+}
+
+/** The labelled policy box of one override card. */
+function perModelBox(ui, index, key) {
+  const id = `${perModelId(ui, String(index))}-${key}`
+  return findAll(ui.tree(), node => node.type === 'input' && node.props.id === id)[0]
+}
+
+/** The Add-override button. */
+function perModelAdd(ui) {
+  return findAll(ui.tree(), node => node.type === 'button' && directText(node) === enCopy('perModel.add'))[0]
+}
+
+/** The Reset-to-system-defaults action. */
+function resetButton(ui) {
+  return findAll(ui.tree(), node => node.type === 'button' && directText(node) === enCopy('action.resetDefaults'))[0]
+}
+
+/** The remove action of one override card, in draft order. */
+function perModelRemove(ui, index) {
+  return findAll(ui.tree(), node => node.type === 'button' && directText(node) === enCopy('perModel.remove'))[index]
+}
+
+/** Type text into one policy box of one override card. */
+function setPolicyBox(ui, index, key, text) {
+  const box = perModelBox(ui, index, key)
+  if (box === undefined) throw new Error(`no rendered per-model box for entry ${String(index)} key "${key}"`)
+  box.props.onChange({ target: { value: text } })
 }
 
 /** Type text into one field by key; a checkbox takes `'true'`/`'false'`. */
@@ -464,13 +527,27 @@ const buttonWithText = (tree, keys) => findAll(
 )[0]
 
 /**
+ * The provider-grouped catalog the injected Remote double answers with. The
+ * picker must render only these ids: no provider or model may be hardcoded.
+ */
+const CATALOG_GROUPS = [
+  { id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-5', name: 'GPT-5' }, { id: 'gpt-5-mini', name: 'GPT-5 mini' }] },
+  { id: 'anthropic', name: 'Anthropic', models: [{ id: 'claude-sonnet-4', name: 'Claude Sonnet 4' }] },
+]
+
+/** The default `modelCatalog()` reply: a ready catalog with two providers. */
+const CATALOG_OK = () => Promise.resolve({ ok: true, value: { groups: CATALOG_GROUPS } })
+
+/**
  * Mount a fresh copy of the section against a fresh form double.
  * @param snapshot - the config-form snapshot to serve.
  * @param options - `nextResult` seeds what `mutate` resolves; `call` is the raw
- *   `/backend-restart` RPC implementation; `fetch` is the document-root probe.
+ *   `/backend-restart` RPC implementation; `fetch` is the document-root probe;
+ *   `catalog` is the injected `session.modelCatalog()` implementation;
+ *   `remoteUnavailable` omits the Remote service entirely.
  * @returns the mounted double plus its recorders and drivers.
  */
-function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl } = {}) {
+function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl, catalog, remoteUnavailable = false } = {}) {
   const calls = []
   const impl = call ?? ((channel, endpoint) => Promise.resolve(
     endpoint === 'status' ? { ok: true, value: { restartable: true } } : { ok: true },
@@ -490,6 +567,16 @@ function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl } = 
         return impl(channel, endpoint, payload, signal)
       },
     },
+  }
+  if (!remoteUnavailable) {
+    ctx.state.remote = {
+      session: {
+        modelCatalog: () => {
+          ctx.state.catalogCalls += 1
+          return (catalog ?? CATALOG_OK)()
+        },
+      },
+    }
   }
   clientPlugin.apply(ctx)
   const registration = ctx.state.registered[0]
@@ -567,21 +654,19 @@ await check('the bundle patch mounts exactly one row with the frozen entry id an
   assert.equal((patch.match(/- id:/g) ?? []).length, 1, 'the patch must declare exactly one row id')
 })
 
-await check('the mount patch seeds the install values 0.5 / 0.15 / 2 and no other option', () => {
-  for (const [key, value] of [['thresholdRatio', '0.5'], ['retainRatio', '0.15'], ['compactionRetries', '2']]) {
-    assert.match(patch, new RegExp(`^\\s+${key}:\\s+${value}\\s*$`, 'm'), `the mount patch does not seed ${key} at ${value}`)
-  }
-  // The seed is an install choice that differs from the code defaults and is
-  // projected into every preset that omits the key; the other eight options are
-  // deliberately not seeded, so they fall back to their code defaults.
+await check('the mount patch seeds NO option, so a fresh install runs the code defaults', () => {
+  // The patch inserts a bare row and no `config`: the tuner therefore runs the
+  // upstream compaction-basic code defaults (index.js `OPTION_SPECS`), and a
+  // preset that omits the keys already runs them, so the install changes
+  // nothing until the user edits a value.
   for (const key of TUNE_ORDER) {
-    if (key in MOUNT_SEED) continue
     assert.doesNotMatch(
       patch,
       new RegExp(`^\\s+${key}:`, 'm'),
-      `the mount patch seeds ${key}, which would make an unverified install choice reach every preset`,
+      `the mount patch seeds ${key}, which would make an install choice reach every preset`,
     )
   }
+  assert.doesNotMatch(patch, /^\s+config:\s*$/m, 'the mounted row must not carry a config block')
   assert.ok(!/commits\s+thresholdRatio|standard\.patch\.yml currently commits/i.test(patch), 'the false provenance comment is still in the mount patch')
 })
 
@@ -655,7 +740,7 @@ await check('the entry id, settings namespace, locale NS, and both halves agree'
 
 /* ══ 2b. docs, and the volatile-array seam the page depends on ════════════ */
 
-await check('README and CONTRACT document all eleven options, the code defaults, and the seed', () => {
+await check('README and CONTRACT document all eleven options and the code defaults', () => {
   const readme = read('README.md')
   const contract = read('CONTRACT.md')
   for (const option of host.TUNE_OPTIONS) {
@@ -663,8 +748,13 @@ await check('README and CONTRACT document all eleven options, the code defaults,
     assert.ok(contract.includes(`\`${option.key}\``), `CONTRACT does not name the option ${option.key}`)
   }
   for (const [file, text] of [['README.md', readme], ['CONTRACT.md', contract]]) {
-    assert.ok(text.includes('0.5 / 0.15 / 2'), `${file} does not name the install seed 0.5 / 0.15 / 2`)
     assert.ok(/code default/i.test(text), `${file} does not distinguish the upstream code default`)
+    // The seedless behaviour must be stated, and no doc may claim the install
+    // seeds 0.5 / 0.15 / 2 again (the legacy value may only appear as a stored
+    // value kept for existing profiles).
+    assert.ok(/seeds?\s+\*{0,2}nothing/i.test(text), `${file} does not state that the install seeds nothing`)
+    assert.doesNotMatch(text, /seeds\s+`?0\.5/i, `${file} claims the install seeds 0.5 / 0.15 / 2`)
+    assert.doesNotMatch(text, /install'?s seed/i, `${file} still describes an install-time seed`)
     // The disproved provenance claim must be gone: no shipped preset patch
     // commits any compaction option (only snapshot fixtures set them).
     assert.ok(!/standard\.patch\.yml[^\n]{0,80}commits/i.test(text), `${file} still claims a preset patch commits the seed`)
@@ -1398,10 +1488,12 @@ await check('behaviour preservation: a preset that omits every option is NOT rew
   assert.equal(untouchedEditor.edits.length, 0, 'writing the code defaults changed a preset that already ran them')
 })
 
-await check('the install seed is projected into a preset that omits the seeded keys', async () => {
+await check('a stored legacy seed is still projected into a preset that omits the seeded keys', async () => {
+  // Regression test for profiles installed before the mount patch stopped
+  // seeding: their stored `0.5 / 0.15 / 2` must keep reaching the presets.
   const untouched = presetConfig({})
   const seededEditor = createEditor([{ id: 'preset-untouched', name: host.TARGET_PRESET_PLUGIN, config: untouched }])
-  const result = await host.retune(seededEditor, MOUNT_SEED, () => {})
+  const result = await host.retune(seededEditor, LEGACY_SEED, () => {})
   assert.deepEqual(result.changed, ['preset-untouched'], 'the seeded keys must reach a preset that omits them')
   const child = host.findCompactionRow(seededEditor.edits[0].next).config
   assert.equal(child.thresholdRatio, 0.5, 'the seeded thresholdRatio was not projected')
@@ -1414,7 +1506,7 @@ await check('the install seed is projected into a preset that omits the seeded k
 /** Await the debounced pass, which `schedule()` arms through `setTimeout(..., 0)`. */
 const settle = () => new Promise(resolve => { setTimeout(resolve, 10) })
 
-/** Preset rows that all already carry the mount-time tune, so the mount pass is a no-op. */
+/** Preset rows that all already carry the legacy mount-time tune, so the mount pass is a no-op. */
 function applyRows() {
   const tune = { thresholdRatio: 0.5, retainRatio: 0.15, compactionRetries: 2 }
   const minimal = presetConfig({ ...tune })
@@ -1634,7 +1726,11 @@ await check('apply registers one dictionary under the entry id carrying both en 
     assert.ok(typeof zh[key] === 'string' && zh[key].length > 0, `zh is missing the key "${key}"`)
   }
   for (const key of [
-    'nav', 'title', 'intro', 'note.defaults', 'note.seed',
+    'nav', 'title', 'intro', 'note.defaults',
+    'action.resetDefaults', 'note.resetDefaults',
+    'perModel.heading', 'perModel.description', 'perModel.provider', 'perModel.model',
+    'perModel.add', 'perModel.remove', 'perModel.none', 'perModel.loading',
+    'perModel.unavailable', 'perModel.error', 'perModel.empty', 'perModel.outOfCatalog',
     'action.save', 'action.saving', 'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved',
     'error.refused', 'error.retainOrder', 'error.thresholdRange', 'error.retainRange', 'error.compactionRetries',
     'error.modelPoliciesCap',
@@ -1718,31 +1814,36 @@ await check('the dictionary carries the code default and the allowed range for e
       )
     }
   }
-  // The install seed has to be labelled as such in the page copy, and its
-  // numbers have to be the ones the mount patch actually commits.
-  const seeded = [...`${en['note.seed']} ${zh['note.seed']}`.matchAll(/\d+(?:\.\d+)?/g)].map(match => Number(match[0]))
-  for (const value of Object.values(MOUNT_SEED)) {
-    assert.ok(seeded.includes(value), `the seed note does not name the seeded value ${String(value)}: ${en['note.seed']}`)
-  }
-  assert.ok(en['note.defaults'].includes('code default'), 'the page must distinguish the upstream code default from the install seed')
+  // There is no install-seed note any more: the bundle seeds nothing. The page
+  // states that the code defaults are what a fresh install runs.
+  assert.ok(en['note.defaults'].includes('code default'), 'the page must state that each field shows the upstream code default')
+  assert.ok(en['note.seed'] === undefined && zh['note.seed'] === undefined, 'the removed install-seed note is still in the dictionary')
 })
 
-await check('a ready snapshot renders one labelled control per owned option, in TUNE_KEYS order', () => {
+await check('a ready snapshot renders one labelled control per owned option, in TUNE_KEYS order', async () => {
   const ui = mountSection(readySnapshot(7))
-  const controls = controlsOf(ui)
-  assert.equal(controls.length, TUNE_ORDER.length, `expected ${TUNE_ORDER.length} controls, rendered ${controls.length}`)
-  const labels = findAll(ui.tree(), node => node.type === 'label')
+  await ui.settle()
   const en = clientContext.state.dictionaries[0].dictionary.en
-  controls.forEach((control, index) => {
+  const labels = findAll(ui.tree(), node => node.type === 'label' && node.props?.className === 'dct-field-label')
+  assert.equal(labels.length, TUNE_ORDER.length, `expected ${TUNE_ORDER.length} top-level field labels, rendered ${labels.length}`)
+  labels.forEach((label, index) => {
     const key = TUNE_ORDER[index]
-    assert.ok(typeof control.props.id === 'string' && control.props.id.length > 0, `the ${key} control has no id for its label to point at`)
-    const label = labels.find(candidate => candidate.props.htmlFor === control.props.id)
-    assert.ok(label !== undefined, `no <label for> points at the ${key} control`)
-    assert.equal(directText(label), en[`field.${key}.label`], `control ${index} is not the ${key} field`)
+    assert.equal(directText(label), en[`field.${key}.label`], `field ${index} is not the ${key} field`)
+    assert.ok(typeof label.props.htmlFor === 'string' && label.props.htmlFor.length > 0, `the ${key} label has no htmlFor`)
+    if (key === 'modelPolicies') {
+      // The composite editor is one labelled group, not a single control.
+      const group = findAll(ui.tree(), node => node.props?.id === label.props.htmlFor)[0]
+      assert.equal(group?.props?.className, 'dct-permodel', 'the modelPolicies label does not point at the per-model editor')
+      return
+    }
+    const control = findAll(ui.tree(), node => node.type === 'input' && node.props.id === label.props.htmlFor)[0]
+    assert.ok(control !== undefined, `no <input> carries the id the ${key} label points at`)
     assert.equal(control.props.disabled, false, `a writable ready snapshot must not disable the ${key} control`)
   })
-  // Seeding: the stored seed for the three seeded options, the code defaults for
-  // the materialized ones, and blank for the three deliberately unset ones.
+  // Seeding: the stored legacy seed for the three keys it seeded (a profile
+  // installed before the mount patch stopped seeding still holds them), the code
+  // defaults for the materialized ones, and blank for the three deliberately
+  // unset ones.
   assert.equal(controlOf(ui, 'thresholdRatio').props.value, '0.5', 'thresholdRatio did not seed from the snapshot')
   assert.equal(controlOf(ui, 'headroomTokens').props.value, '65536', 'headroomTokens did not seed from the snapshot')
   assert.equal(controlOf(ui, 'retainRatio').props.value, '0.15', 'retainRatio did not seed from the snapshot')
@@ -1752,12 +1853,53 @@ await check('a ready snapshot renders one labelled control per owned option, in 
   assert.equal(controlOf(ui, 'maxTokens').props.value, '', 'an unset maxTokens must render blank')
   assert.equal(controlOf(ui, 'compactionRetries').props.value, '2', 'compactionRetries did not seed from the snapshot')
   assert.equal(controlOf(ui, 'maxOverflowRetries').props.value, '1', 'maxOverflowRetries did not seed from the snapshot')
-  assert.equal(controlOf(ui, 'modelPolicies').props.value, '[]', 'modelPolicies did not seed from the snapshot')
   assert.equal(controlOf(ui, 'auto').props.checked, true, 'auto did not seed from the snapshot')
   assert.equal(controlOf(ui, 'auto').props.type, 'checkbox', 'auto must render as a checkbox')
-  assert.equal(controlOf(ui, 'modelPolicies').type, 'textarea', 'modelPolicies must render as a JSON textarea')
+  // The stored table is empty, so the editor renders the empty-table note and
+  // the picker, with no override card.
+  assert.equal(perModelEntries(ui).length, 0, 'an empty stored table must render no override card')
+  assert.equal(perModelEditor(ui) !== undefined, true, 'the modelPolicies field is not the per-model editor')
+  assert.equal(perModelSelect(ui, 'provider') !== undefined, true, 'the catalog picker did not render a provider select')
   assert.equal(ui.saveButton().props.disabled, true, 'Save must be disabled while the draft equals the snapshot')
   assert.equal(renderedText(ui.tree()).includes('«missing:'), false, `the page rendered a missing dictionary key: ${renderedText(ui.tree())}`)
+})
+
+await check('a fresh install (no stored row values) renders the code defaults and keeps the unset keys unset', async () => {
+  // What the page shows right after installing with the seedless mount patch:
+  // the tuner row carries no config, so the snapshot holds only the keys the
+  // schemastery root materializes. `retainRatio` and its two companions still
+  // mean "unset upstream"; `retainRatio` alone has a concrete effective default,
+  // so its empty input displays that default as a placeholder.
+  const fresh = {
+    thresholdRatio: 0.8,
+    headroomTokens: 65_536,
+    summarizationProvider: '',
+    summarizationModel: '',
+    compactionRetries: 1,
+    maxOverflowRetries: 1,
+    modelPolicies: [],
+    auto: true,
+  }
+  const ui = mountSection(readySnapshot(1, fresh))
+  assert.equal(controlOf(ui, 'thresholdRatio').props.value, '0.8', 'thresholdRatio did not render the code default')
+  assert.equal(controlOf(ui, 'headroomTokens').props.value, '65536', 'headroomTokens did not render the code default')
+  assert.equal(controlOf(ui, 'retainRatio').props.value, '', 'an unset retainRatio must render blank')
+  assert.equal(controlOf(ui, 'retainRatio').props.placeholder, '0.16', 'the blank retainRatio must display its effective code default')
+  assert.equal(controlOf(ui, 'retainTokens').props.value, '', 'an unset retainTokens must render blank')
+  assert.equal(controlOf(ui, 'retainTokens').props.placeholder, undefined, 'retainTokens has no concrete effective default to display')
+  assert.equal(controlOf(ui, 'maxTokens').props.value, '', 'an unset maxTokens must render blank')
+  assert.equal(controlOf(ui, 'maxTokens').props.placeholder, undefined, 'maxTokens has no concrete effective default to display')
+  assert.equal(controlOf(ui, 'compactionRetries').props.value, '1', 'compactionRetries did not render the code default')
+  assert.equal(ui.saveButton().props.disabled, true, 'a fresh install has nothing dirty to save')
+  // Editing one field must NOT materialize the blank retention keys: they stay
+  // `unset` ops, which is what keeps the retention XOR expressible.
+  setField(ui, 'thresholdRatio', '0.9')
+  await clickSave(ui)
+  assert.equal(ui.form.writes.length, 1, 'the fresh-install draft was not writable')
+  const ops = Object.fromEntries(JSON.parse(JSON.stringify(ui.form.writes[0].ops)).map(op => [op.path[0], op]))
+  assert.deepEqual(ops.retainRatio, { op: 'unset', path: ['retainRatio'] }, 'an untouched blank retainRatio must stay unset')
+  assert.deepEqual(ops.retainTokens, { op: 'unset', path: ['retainTokens'] }, 'an untouched blank retainTokens must stay unset')
+  assert.deepEqual(ops.maxTokens, { op: 'unset', path: ['maxTokens'] }, 'an untouched blank maxTokens must stay unset')
 })
 
 await check('useSyncExternalStore gets one stable useCallback-wrapped bound pair, not bare methods', () => {
@@ -1796,7 +1938,11 @@ await check('a valid draft issues exactly ONE mutate with one op per option and 
     { op: 'set', path: ['auto'], value: true },
   ], `the atomic write ops drifted: ${JSON.stringify(write.ops)}`)
   assert.equal(write.revision, 7, `the mutate revision is ${String(write.revision)}, expected the snapshot revision 7`)
-  assert.ok(renderedText(ui.tree()).includes(clientContext.state.dictionaries[0].dictionary.en['status.saved']), `the saved confirmation is not rendered: ${renderedText(ui.tree())}`)
+  // Option (ii): the separate post-save confirmation is gone, so the standing
+  // restart-required notice below the Save button is the post-save message.
+  assert.ok(renderedText(ui.tree()).includes(clientContext.state.dictionaries[0].dictionary.en['restart.note']), `the post-save restart notice is not rendered: ${renderedText(ui.tree())}`)
+  assert.equal(findAll(ui.tree(), node => node.props?.className === 'dct-saved').length, 0, 'the removed post-save confirmation line is rendered again')
+  assert.equal(ui.alerts().length, 0, `a clean save rendered ${ui.alerts().length} error alert(s)`)
 })
 
 await check('the token retention form clears the ratio, and a blank optional field is an unset op', async () => {
@@ -1813,14 +1959,23 @@ await check('the token retention form clears the ratio, and a blank optional fie
   assert.deepEqual(byPath.maxTokens, { op: 'set', path: ['maxTokens'], value: 2048 }, 'an explicit maxTokens must be set, not derived')
 })
 
-await check('a valid modelPolicies JSON entry is submitted as one array op', async () => {
+await check('a valid per-model override is submitted as one modelPolicies array op', async () => {
   const ui = mountSection(readySnapshot(7))
-  const policy = { provider: 'openai', model: 'gpt-5', thresholdRatio: 0.4 }
-  setField(ui, 'modelPolicies', JSON.stringify([policy]))
+  await ui.settle()
+  // Add the catalog's first provider/model and fill one policy box: the box
+  // holds raw text, so the op proves the save path normalized it to a number.
+  perModelAdd(ui).props.onClick()
+  assert.equal(perModelEntries(ui).length, 1, 'the Add action did not create an override card')
+  setPolicyBox(ui, 0, 'thresholdRatio', '0.4')
+  assert.equal(ui.saveButton().props.disabled, false, 'a filled override must make the draft dirty')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 1, 'a valid modelPolicies table was refused locally')
   const op = JSON.parse(JSON.stringify(ui.form.writes[0].ops)).find(candidate => candidate.path[0] === 'modelPolicies')
-  assert.deepEqual(op, { op: 'set', path: ['modelPolicies'], value: [policy] }, `the modelPolicies op drifted: ${JSON.stringify(op)}`)
+  assert.deepEqual(
+    op,
+    { op: 'set', path: ['modelPolicies'], value: [{ provider: 'openai', model: 'gpt-5', thresholdRatio: 0.4 }] },
+    `the modelPolicies op drifted: ${JSON.stringify(op)}`,
+  )
   // An `auto: false` toggle must ride the same atomic write as a boolean.
   const ui2 = mountSection(readySnapshot(7))
   setField(ui2, 'auto', 'false')
@@ -1842,10 +1997,6 @@ await check('every client-side cross-field refusal mirrors the Host rule, and NO
     ['compactionRetries fractional', { compactionRetries: '1.5' }, 'error.compactionRetries'],
     ['maxOverflowRetries negative', { maxOverflowRetries: '-1' }, 'error.overflowRetries'],
     ['summary provider without its model', { summarizationProvider: 'openai' }, 'error.summarizationPair'],
-    ['malformed modelPolicies JSON', { modelPolicies: '[{' }, 'error.modelPoliciesJson'],
-    ['modelPolicies not an array', { modelPolicies: '{"provider":"openai"}' }, 'error.modelPolicies'],
-    ['modelPolicies duplicate target', { modelPolicies: '[{"provider":"o","model":"m"},{"provider":"o","model":"m"}]' }, 'error.modelPolicies'],
-    ['modelPolicies entry with a bogus key', { modelPolicies: '[{"provider":"o","model":"m","bogus":1}]' }, 'error.modelPolicies'],
     ['thresholdRatio 1.2', { thresholdRatio: '1.2' }, 'error.thresholdRange'],
     ['headroomTokens unsafe integer', { headroomTokens: '9007199254740993' }, 'error.headroomTokens'],
     ['headroomTokens exponent overflow', { headroomTokens: '1e21' }, 'error.headroomTokens'],
@@ -1853,7 +2004,6 @@ await check('every client-side cross-field refusal mirrors the Host rule, and NO
     ['compactionRetries hexadecimal', { compactionRetries: '0x2' }, 'error.compactionRetries'],
     ['retainTokens unsafe integer', { retainTokens: '1e21' }, 'error.retainTokens'],
     ['maxTokens unsafe integer', { maxTokens: '9007199254740993' }, 'error.maxTokens'],
-    ['modelPolicies entry with a zero resolved cap', { modelPolicies: '[{"provider":"o","model":"m","headroomTokens":0}]' }, 'error.modelPoliciesCap'],
   ]
   for (const [label, fields, errorKey] of cases) {
     const ui = mountSection(readySnapshot(7))
@@ -1864,17 +2014,55 @@ await check('every client-side cross-field refusal mirrors the Host rule, and NO
     assert.equal(alerts.length, 1, `${label}: expected one role="alert" node, got ${alerts.length}`)
     assert.equal(directText(alerts[0]), en[errorKey], `${label}: the refusal copy drifted: ${directText(alerts[0])}`)
   }
+  // The per-model rules are reachable through the picker's own boxes and through
+  // a stored table a direct `settings.mutate` could have written (the docs name
+  // that bypass as possible). Each case fills a box or seeds a stored table,
+  // makes the draft dirty through another field, and asserts the same refusal.
+  const perModelCases = [
+    ['per-model retainRatio at or above the threshold', { boxes: [['retainRatio', '0.9']] }, 'error.modelPolicies'],
+    ['per-model retainRatio outside (0, 1]', { boxes: [['retainRatio', '1.5']] }, 'error.modelPolicies'],
+    ['per-model both retention forms', { boxes: [['retainRatio', '0.1'], ['retainTokens', '100']] }, 'error.modelPolicies'],
+    ['per-model retainTokens fractional', { boxes: [['retainTokens', '1.5']] }, 'error.modelPolicies'],
+    ['per-model headroomTokens hexadecimal', { boxes: [['headroomTokens', '0x10']] }, 'error.modelPolicies'],
+    ['per-model maxTokens 0', { boxes: [['maxTokens', '0']] }, 'error.modelPolicies'],
+    ['per-model compactionRetries fractional', { boxes: [['compactionRetries', '1.5']] }, 'error.modelPolicies'],
+    ['per-model summary provider without its model', { boxes: [['summarizationProvider', 'openai']] }, 'error.modelPolicies'],
+    ['a stored table that is not an array', { snapshot: { modelPolicies: { provider: 'openai' } } }, 'error.modelPolicies'],
+    ['a stored duplicate target', { snapshot: { modelPolicies: [{ provider: 'o', model: 'm', thresholdRatio: 0.2 }, { provider: 'o', model: 'm', thresholdRatio: 0.3 }] } }, 'error.modelPolicies'],
+    ['a stored entry with a bogus key', { snapshot: { modelPolicies: [{ provider: 'o', model: 'm', thresholdRatio: 0.2, bogus: 1 }] } }, 'error.modelPolicies'],
+    ['a stored entry with a zero resolved cap', { snapshot: { modelPolicies: [{ provider: 'o', model: 'm', headroomTokens: 0 }] } }, 'error.modelPoliciesCap'],
+  ]
+  for (const [label, spec, errorKey] of perModelCases) {
+    const ui = mountSection(readySnapshot(7, storedValue(spec.snapshot ?? { modelPolicies: [{ provider: 'o', model: 'm' }] })))
+    if (spec.boxes !== undefined) {
+      await ui.settle()
+      for (const [key, text] of spec.boxes) setPolicyBox(ui, 0, key, text)
+    }
+    // Make the draft dirty so Save is enabled; the invalid table is what must refuse.
+    setField(ui, 'retainRatio', '0.1')
+    await clickSave(ui)
+    assert.equal(ui.form.writes.length, 0, `${label}: a locally invalid draft reached the Host: ${JSON.stringify(ui.form.writes)}`)
+    const alerts = ui.alerts()
+    assert.equal(alerts.length, 1, `${label}: expected one role="alert" node, got ${alerts.length}`)
+    assert.equal(directText(alerts[0]), en[errorKey], `${label}: the refusal copy drifted: ${directText(alerts[0])}`)
+  }
+  // `error.modelPoliciesJson` is now UNREACHABLE from this page: the composite
+  // editor always emits JSON.stringify output, so malformed JSON cannot be
+  // typed. The key and the parse guard are kept as defence in depth (a future
+  // raw path or a Host-side caller), and both dictionaries must still carry it.
+  assert.ok(en['error.modelPoliciesJson'].length > 0, 'the retained defensive parse-failure copy is missing')
 })
 
 await check('the client mirrors the entry-cap rule and the unmanaged-table note', async () => {
   const en = clientContext.state.dictionaries[0].dictionary.en
   // The same entry is accepted once an explicit top-level cap exists, exactly
   // like upstream's per-entry resolution.
-  const accepted = mountSection(readySnapshot(7))
+  const accepted = mountSection(readySnapshot(7, storedValue({ modelPolicies: [{ provider: 'o', model: 'm', headroomTokens: 0 }] })))
   setField(accepted, 'maxTokens', '4096')
-  setField(accepted, 'modelPolicies', '[{"provider":"o","model":"m","headroomTokens":0}]')
   await clickSave(accepted)
   assert.equal(accepted.form.writes.length, 1, 'an explicit top-level cap must make the zero-headroom entry writable')
+  const acceptedOp = JSON.parse(JSON.stringify(accepted.form.writes[0].ops)).find(candidate => candidate.path[0] === 'modelPolicies')
+  assert.deepEqual(acceptedOp, { op: 'set', path: ['modelPolicies'], value: [{ provider: 'o', model: 'm', headroomTokens: 0 }] }, `the accepted per-model op drifted: ${JSON.stringify(acceptedOp)}`)
   // An empty table renders the "your presets keep their own table" note and is
   // submitted as `unset`, so the row never carries an explicit empty table.
   const empty = mountSection(readySnapshot(7))
@@ -1886,6 +2074,148 @@ await check('the client mirrors the entry-cap rule and the unmanaged-table note'
   // A non-empty table must NOT show the note.
   const managed = mountSection(readySnapshot(7, storedValue({ modelPolicies: [{ provider: 'o', model: 'm' }] })))
   assert.equal(renderedText(managed.tree()).includes(en['note.modelPolicies']), false, 'the unmanaged-table note must not render for a non-empty table')
+})
+
+await check('the per-model picker prevents duplicates, drops all-empty entries, and preserves an out-of-catalog override', async () => {
+  const en = clientContext.state.dictionaries[0].dictionary.en
+  // Duplicate prevention: once the selected pair has an override, Add disables.
+  const ui = mountSection(readySnapshot(7))
+  await ui.settle()
+  assert.equal(perModelAdd(ui).props.disabled, false, 'Add must be enabled for a pair with no override')
+  perModelAdd(ui).props.onClick()
+  assert.equal(perModelEntries(ui).length, 1, 'the Add action did not create the override')
+  assert.equal(perModelAdd(ui).props.disabled, true, 'Add must disable for a pair that already has an override')
+  assert.equal(perModelBox(ui, 0, 'thresholdRatio') !== undefined, true, 'the new override rendered none of its nine boxes')
+  // Removing the only override returns the table to `unset` on the next save.
+  perModelRemove(ui, 0).props.onClick()
+  assert.equal(perModelEntries(ui).length, 0, 'the remove action did not delete the override')
+  setField(ui, 'retainRatio', '0.1')
+  await clickSave(ui)
+  const removedOp = JSON.parse(JSON.stringify(ui.form.writes[0].ops)).find(candidate => candidate.path[0] === 'modelPolicies')
+  assert.deepEqual(removedOp, { op: 'unset', path: ['modelPolicies'] }, `removing the last override must submit unset: ${JSON.stringify(removedOp)}`)
+  // An override whose nine boxes are all empty is dropped on save (the Lead's
+  // product decision), and the page copy states that rule.
+  const emptyDraft = mountSection(readySnapshot(7))
+  await emptyDraft.settle()
+  perModelAdd(emptyDraft).props.onClick()
+  assert.ok(renderedText(emptyDraft.tree()).includes(en['perModel.description']), 'the page does not state the all-empty-entry rule')
+  setField(emptyDraft, 'retainRatio', '0.1')
+  await clickSave(emptyDraft)
+  const emptyOp = JSON.parse(JSON.stringify(emptyDraft.form.writes[0].ops)).find(candidate => candidate.path[0] === 'modelPolicies')
+  assert.deepEqual(emptyOp, { op: 'unset', path: ['modelPolicies'] }, `an all-empty entry must be dropped, leaving unset: ${JSON.stringify(emptyOp)}`)
+  // An out-of-catalog saved override stays listed (marked), removable, and
+  // survives a save driven by another field.
+  const ghost = mountSection(readySnapshot(7, storedValue({ modelPolicies: [{ provider: 'ghost', model: 'phantom', thresholdRatio: 0.4 }] })))
+  await ghost.settle()
+  assert.equal(perModelEntries(ghost).length, 1, 'an out-of-catalog override was not listed')
+  assert.ok(renderedText(ghost.tree()).includes(en['perModel.outOfCatalog']), 'an out-of-catalog override is not marked as such')
+  setField(ghost, 'retainRatio', '0.1')
+  await clickSave(ghost)
+  const ghostOp = JSON.parse(JSON.stringify(ghost.form.writes[0].ops)).find(candidate => candidate.path[0] === 'modelPolicies')
+  assert.deepEqual(
+    ghostOp,
+    { op: 'set', path: ['modelPolicies'], value: [{ provider: 'ghost', model: 'phantom', thresholdRatio: 0.4 }] },
+    `an out-of-catalog override was dropped or rewritten: ${JSON.stringify(ghostOp)}`,
+  )
+})
+
+await check('the Reset action blanks every managed key and one Save unsets all eleven', async () => {
+  const en = clientContext.state.dictionaries[0].dictionary.en
+  // The fallbacks the cross-field checks use in reset mode must equal the host
+  // code defaults, or a reset draft could be refused by a stale constant.
+  const thresholdLiteral = /const DEFAULT_THRESHOLD_RATIO = ([0-9.]+);/.exec(clientSource)
+  const headroomLiteral = /const DEFAULT_HEADROOM_TOKENS = ([\d_]+);/.exec(clientSource)
+  assert.ok(thresholdLiteral !== null && headroomLiteral !== null, 'the client reset fallbacks are not declared')
+  assert.equal(Number(thresholdLiteral[1]), host.DEFAULT_TUNE.thresholdRatio, 'the client threshold fallback drifted from the host default')
+  assert.equal(Number(headroomLiteral[1].replace(/_/g, '')), host.DEFAULT_TUNE.headroomTokens, 'the client headroom fallback drifted from the host default')
+
+  const ui = mountSection(readySnapshot(7, storedValue({
+    thresholdRatio: 0.5,
+    retainRatio: 0.15,
+    compactionRetries: 2,
+    modelPolicies: [{ provider: 'o', model: 'm', thresholdRatio: 0.4 }],
+  })))
+  await ui.settle()
+  const reset = resetButton(ui)
+  assert.ok(reset !== undefined, 'the Reset action is not rendered')
+  assert.equal(reset.props.disabled, false, 'Reset must be enabled on a writable page')
+  assert.equal(ui.saveButton().props.disabled, true, 'the pristine page must have Save disabled')
+  assert.ok(renderedText(ui.tree()).includes(en['note.resetDefaults']), 'the reset explanation is not rendered')
+  reset.props.onClick()
+  // It writes nothing, and it blanks the whole draft including the cards.
+  assert.equal(ui.form.writes.length, 0, `Reset performed a write: ${JSON.stringify(ui.form.writes)}`)
+  for (const key of TUNE_ORDER) {
+    if (key === 'modelPolicies') continue
+    if (key === 'auto') {
+      assert.equal(controlOf(ui, key).props.checked, false, 'Reset left the auto box checked')
+      continue
+    }
+    assert.equal(controlOf(ui, key).props.value, '', `Reset left ${key} non-blank`)
+  }
+  assert.equal(perModelEntries(ui).length, 0, 'Reset left per-model cards behind')
+  assert.ok(renderedText(ui.tree()).includes(en['note.modelPolicies']), 'the cleared table does not render the unmanaged note')
+  assert.equal(ui.saveButton().props.disabled, false, 'Reset must make the draft dirty')
+  await clickSave(ui)
+  assert.equal(ui.form.writes.length, 1, 'the reset draft must be one atomic write')
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ui.form.writes[0].ops)),
+    TUNE_ORDER.map(key => ({ op: 'unset', path: [key] })),
+    `the reset op list drifted: ${JSON.stringify(ui.form.writes[0].ops)}`,
+  )
+  assert.equal(ui.form.writes[0].revision, 7, 'the reset write must carry the snapshot revision')
+  // The mode is spent once the write lands: the pristine draft disables Save.
+  assert.equal(ui.saveButton().props.disabled, true, 'a completed reset must leave Save disabled again')
+})
+
+await check('a snapshot change drops the Reset mode, so a later Save is a normal write', async () => {
+  // `resetMode` is scoped to the seedKey it was pressed on. This check exists
+  // because nothing else pinned that scoping: without it a recovery read would
+  // leave the stale reset in force and turn a normal Save into an all-unset
+  // write (and blank fields into unsets they should not be).
+  const ui = mountSection(readySnapshot(7, storedValue({ thresholdRatio: 0.5, retainRatio: 0.15, compactionRetries: 2 })))
+  await ui.settle()
+  resetButton(ui).props.onClick()
+  assert.equal(controlOf(ui, 'thresholdRatio').props.value, '', 'Reset did not blank the draft')
+  // The controller's recovery read lands a different snapshot: different
+  // revision and value, so a different seedKey.
+  ui.form.push(readySnapshot(8, storedValue({ thresholdRatio: 0.9, retainRatio: 0.3, compactionRetries: 4 })))
+  assert.equal(controlOf(ui, 'thresholdRatio').props.value, '0.9', 'the reset draft survived a snapshot change: the mode is not scoped to its snapshot')
+  assert.equal(controlOf(ui, 'retainRatio').props.value, '0.3', 'the retained tail did not re-seed from the recovery snapshot')
+  // Make the draft dirty again, then Save: this must be a NORMAL write.
+  setField(ui, 'headroomTokens', '32768')
+  await clickSave(ui)
+  assert.equal(ui.form.writes.length, 1, 'the post-recovery draft was not writable')
+  const ops = Object.fromEntries(JSON.parse(JSON.stringify(ui.form.writes[0].ops)).map(op => [op.path[0], op]))
+  assert.deepEqual(ops.thresholdRatio, { op: 'set', path: ['thresholdRatio'], value: 0.9 }, 'the recovery value was not submitted as a set')
+  assert.deepEqual(ops.headroomTokens, { op: 'set', path: ['headroomTokens'], value: 32_768 }, 'the edited headroom was not submitted as a set')
+  // The blank-string fields are the discriminator: a stale reset mode turns an
+  // empty provider/model into `unset`, while a normal save sets the empty pair.
+  assert.deepEqual(ops.summarizationProvider, { op: 'set', path: ['summarizationProvider'], value: '' }, 'a stale reset mode turned the summary provider into an unset')
+  assert.deepEqual(ops.summarizationModel, { op: 'set', path: ['summarizationModel'], value: '' }, 'a stale reset mode turned the summary model into an unset')
+  assert.notDeepEqual(
+    Object.values(ops).filter(op => op.op === 'unset').map(op => op.path[0]),
+    TUNE_ORDER,
+    'the stale reset emitted the all-unset op list after the snapshot changed',
+  )
+})
+
+await check('a cleared tuner row re-tunes a preset child that still holds the legacy seed', async () => {
+  // The Reset action's whole point: once the tuner row stores nothing, the
+  // retune pass must move a preset child still holding 0.5 / 0.15 / 2 onto the
+  // code defaults. The complementary no-write and legacy-seed checks stay green.
+  const stale = presetConfig({ thresholdRatio: 0.5, retainRatio: 0.15, compactionRetries: 2 })
+  const editor = createEditor([{ id: 'preset-stale', name: host.TARGET_PRESET_PLUGIN, config: stale }])
+  const result = await host.retune(editor, {}, () => {})
+  assert.deepEqual(result.changed, ['preset-stale'], `a cleared tuner row did not rewrite the stale preset child: ${JSON.stringify(result)}`)
+  const child = host.findCompactionRow(editor.edits[0].next).config
+  assert.equal(child.thresholdRatio, host.DEFAULT_TUNE.thresholdRatio, 'the retune did not restore the default thresholdRatio')
+  assert.equal(child.headroomTokens, host.DEFAULT_TUNE.headroomTokens, 'the retune did not restore the default headroomTokens')
+  assert.equal(child.retainRatio, host.DEFAULT_TUNE.retainRatio, 'the retune did not restore the default retainRatio')
+  assert.equal(child.maxTokens, host.DEFAULT_TUNE.headroomTokens, 'the retune did not derive maxTokens from the default headroom')
+  assert.equal(child.compactionRetries, host.DEFAULT_TUNE.compactionRetries, 'the retune did not restore the default compactionRetries')
+  assert.equal(child.maxOverflowRetries, host.DEFAULT_TUNE.maxOverflowRetries, 'the retune did not restore the default maxOverflowRetries')
+  assert.equal(child.auto, host.DEFAULT_TUNE.auto, 'the retune did not restore the default auto')
+  assert.equal(Object.hasOwn(child, 'retainTokens'), false, 'the retune left retainTokens beside retainRatio')
 })
 
 await check('a Host refusal (mutate false) surfaces error.refused, then the recovery snapshot re-seeds the inputs', async () => {
@@ -1917,8 +2247,12 @@ await check('a non-writable snapshot disables every control and Save and writes 
   const snapshot = readySnapshot(7)
   snapshot.writable = false
   const ui = mountSection(snapshot)
-  for (const control of controlsOf(ui)) assert.equal(control.props.disabled, true, 'a read-only snapshot must disable its controls')
+  await ui.settle()
+  const editable = findAll(ui.tree(), node => node.type === 'input' || node.type === 'select' || node.type === 'textarea')
+  assert.ok(editable.length >= TUNE_ORDER.length - 1, `a read-only page rendered only ${editable.length} controls`)
+  for (const control of editable) assert.equal(control.props.disabled, true, 'a read-only snapshot must disable its controls')
   assert.equal(ui.saveButton().props.disabled, true, 'a read-only snapshot must disable Save')
+  assert.equal(resetButton(ui)?.props.disabled, true, 'a read-only snapshot must disable Reset')
   setField(ui, 'retainRatio', '0.1')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 0, 'a read-only snapshot performed a write')
@@ -1927,12 +2261,17 @@ await check('a non-writable snapshot disables every control and Save and writes 
 
 await check('an unavailable namespace renders its note, disables the controls, and never writes', async () => {
   const ui = mountSection({ status: 'unavailable', value: undefined, revision: 0, writable: false })
+  await ui.settle()
   assert.ok(renderedText(ui.tree()).includes(clientContext.state.dictionaries[0].dictionary.en['status.unavailable']), 'the unavailable note is not rendered')
-  assert.equal(controlsOf(ui).length, TUNE_ORDER.length, `the unavailable page should still render its ${TUNE_ORDER.length} disabled controls`)
-  for (const control of controlsOf(ui)) assert.equal(control.props.disabled, true, 'an unavailable namespace must disable its controls')
+  const inputs = findAll(ui.tree(), node => node.type === 'input')
+  assert.equal(inputs.length, TUNE_ORDER.length - 1, `the unavailable page should still render its ${TUNE_ORDER.length - 1} disabled scalar controls`)
+  for (const control of findAll(ui.tree(), node => node.type === 'input' || node.type === 'select')) {
+    assert.equal(control.props.disabled, true, 'an unavailable namespace must disable its controls')
+  }
   setField(ui, 'retainRatio', '0.1')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 0, 'an unavailable namespace performed a write')
+  assert.equal(resetButton(ui)?.props.disabled, true, 'an unavailable namespace must disable Reset')
 })
 
 await check('no rendered copy is missing from the dictionary in any state', async () => {
@@ -2269,12 +2608,54 @@ const statusCall = (restartable, restartReply = { ok: true }) => (channel, endpo
   endpoint === 'status' ? { ok: true, value: { restartable } } : restartReply,
 )
 
-await check('the client injects the connection service at runtime and still requests only react', () => {
+await check('the client injects the connection and remote services at runtime and still requests only react', () => {
   assert.ok(Array.isArray(clientPlugin.inject), 'the client plugin exposes no inject array')
   assert.ok(clientPlugin.inject.includes('connection'), `the runtime inject list is missing connection: ${JSON.stringify(clientPlugin.inject)}`)
-  assert.deepEqual([...clientPlugin.inject].sort(), ['configForms', 'connection', 'locale', 'slots'], `the runtime inject list drifted: ${JSON.stringify(clientPlugin.inject)}`)
+  assert.ok(clientPlugin.inject.includes('remote'), `the runtime inject list is missing remote: ${JSON.stringify(clientPlugin.inject)}`)
+  assert.deepEqual([...clientPlugin.inject].sort(), ['configForms', 'connection', 'locale', 'remote', 'slots'], `the runtime inject list drifted: ${JSON.stringify(clientPlugin.inject)}`)
   assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-connection'), 'the manifest client inject is missing @deepseek-ai/dsh-client-connection')
+  assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-api-remotes'), 'the manifest client inject is missing @deepseek-ai/dsh-api-remotes, which provides the remote namespaces')
   assert.deepEqual(requested, ['react'], `the factory requested ${JSON.stringify(requested)} from the module table`)
+})
+
+await check('the catalog is read once per mount through the injected Remote service, and its reply gates the picker', async () => {
+  // A ready reply populates the provider/model selects from the catalog alone.
+  const ready = mountSection(readySnapshot(7))
+  await ready.settle()
+  assert.ok(ready.ctx.state.catalogCalls >= 1, 'the mount effect never called session.modelCatalog()')
+  const provider = perModelSelect(ready, 'provider')
+  const model = perModelSelect(ready, 'model')
+  assert.ok(provider !== undefined && model !== undefined, 'the ready catalog did not render the provider/model selects')
+  assert.deepEqual(
+    findAll(provider, node => node.type === 'option').map(option => option.props.value),
+    ['openai', 'anthropic'],
+    'the provider select is not the catalog provider list',
+  )
+  assert.deepEqual(
+    findAll(model, node => node.type === 'option').map(option => option.props.value),
+    ['gpt-5', 'gpt-5-mini'],
+    'the model select is not the first provider group\'s model list',
+  )
+  // A refused reply renders the error note and no picker, and the page still works.
+  const refused = mountSection(readySnapshot(7), { catalog: () => Promise.resolve({ ok: false, error: { message: 'nope' } }) })
+  await refused.settle()
+  assert.ok(renderedText(refused.tree()).includes(enCopy('perModel.error')), 'a refused catalog reply did not render its note')
+  assert.equal(perModelSelect(refused, 'provider'), undefined, 'a refused catalog reply still rendered the picker')
+  assert.equal(refused.saveButton().props.disabled, true, 'a refused catalog reply broke the rest of the page')
+  // A throwing catalog read (transport rejection) renders the same error note.
+  const throwing = mountSection(readySnapshot(7), { catalog: () => Promise.reject(new Error('transport')) })
+  await throwing.settle()
+  assert.ok(renderedText(throwing.tree()).includes(enCopy('perModel.error')), 'a rejected catalog read did not render its note')
+  // A missing Remote service renders the unavailable note instead.
+  const missing = mountSection(readySnapshot(7), { remoteUnavailable: true })
+  await missing.settle()
+  assert.ok(renderedText(missing.tree()).includes(enCopy('perModel.unavailable')), 'a missing Remote service did not render its note')
+  assert.equal(missing.ctx.state.catalogCalls, 0, 'a missing Remote service still counted a catalog call')
+  // A ready catalog with no routable provider renders the empty note and no picker.
+  const empty = mountSection(readySnapshot(7), { catalog: () => Promise.resolve({ ok: true, value: { groups: [] } }) })
+  await empty.settle()
+  assert.ok(renderedText(empty.tree()).includes(enCopy('perModel.empty')), 'an empty catalog did not render its note')
+  assert.equal(perModelSelect(empty, 'provider'), undefined, 'an empty catalog still rendered the picker')
 })
 
 await check('the restart-required notice is a real <strong> in the ready, unavailable and loading states', async () => {

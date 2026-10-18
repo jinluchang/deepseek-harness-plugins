@@ -5,20 +5,28 @@
  * summarization target pair, the summary token cap, both retry counts, the
  * exact-target `modelPolicies` table, and the `auto` switch — in ONE atomic
  * write, plus a bold restart-required notice and a restart action for the step
- * that makes the saved values reach the agent presets.
+ * that makes the saved values reach the agent presets, and a secondary
+ * **Reset to system defaults** action that stages the all-unset draft without
+ * writing anything.
  *
  * Every field's copy states the upstream `compaction-basic` code default and its
  * allowed range (`index.js` `TUNE_OPTIONS` is the host-side source of that
  * metadata; the two halves cannot import each other, so the tables are kept in
- * step by the offline suite). A seeded value installed by this bundle can differ
- * from the code default; the page shows the stored value, and the note above the
- * fields says so.
+ * step by the offline suite). The bundle seeds nothing: with no stored value the
+ * tuner runs those code defaults, and the note above the fields says so. A field
+ * whose code default is a concrete number but whose schema carries no
+ * `.default()` (`retainRatio`) shows that effective default as the input's
+ * placeholder while the empty value still means "unset upstream" — see
+ * `DEFAULT_RETAIN_RATIO`.
  *
  * Plain browser bundle (no build step): it self-registers with the page's
  * module loader and requests React, the only module-table entry it needs.
  * Values are read and written through `ctx.configForms.get('compaction-tuner')`
  * — the Host profile row that carries the tuner's config — so the page owns no
- * copy of another plugin's state and makes no cross-plugin value import.
+ * copy of another plugin's state and makes no cross-plugin value import. The
+ * per-model picker enumerates providers/models through the client Remote
+ * service (`ctx.remote.session.modelCatalog()`), which the plugin injects as
+ * `remote`; that read is the only other service this page uses.
  *
  * The cross-field rules (`retainRatio` XOR `retainTokens` and below the
  * threshold, the summarization pair, the derived summary cap, the
@@ -68,6 +76,8 @@ window.__ModuleLoader__.load({
      * `ratio` -> `step(0.01).min(0.01).max(1)`, `integer` -> `step(1).min(min)`.
      * A blank field is submitted as `unset`; only `retainRatio`, `retainTokens`
      * and `maxTokens` are ever legitimately blank (they carry no schema default).
+     * `retainRatio` is the one blank field whose effective value is a concrete
+     * code default, so its input carries that default as a placeholder.
      */
     const FIELDS = [
       { key: 'thresholdRatio', kind: 'ratio' },
@@ -92,11 +102,57 @@ window.__ModuleLoader__.load({
      */
     const DEFAULT_RETAIN_RATIO = 0.16;
 
+    /**
+     * The other upstream code defaults the cross-field checks fall back to when
+     * a key is left unset by the Reset action (`DEFAULT_TUNE` in `index.js`).
+     * The offline suite pins them against the host literals.
+     */
+    const DEFAULT_THRESHOLD_RATIO = 0.8;
+    const DEFAULT_HEADROOM_TOKENS = 65_536;
+
     /** The keys one `modelPolicies` entry may carry (`config.ts:46-50`). */
     const MODEL_POLICY_KEYS = [
       'provider', 'model', 'thresholdRatio', 'headroomTokens', 'retainRatio', 'retainTokens',
       'summarizationProvider', 'summarizationModel', 'maxTokens', 'compactionRetries', 'maxOverflowRetries',
     ];
+
+    /**
+     * The nine per-model policy boxes, in the order they render. `provider` and
+     * `model` identify the entry; `auto` is deliberately NOT per-model.
+     */
+    const PER_MODEL_KEYS = MODEL_POLICY_KEYS.filter(key => key !== 'provider' && key !== 'model');
+
+    /**
+     * Normalize one `ctx.remote.session.modelCatalog()` reply into what the
+     * picker renders. The reply is the Remote result envelope
+     * (`{ok:true, value}` / `{ok:false, error}`); a provider with no routable
+     * model is dropped, because it cannot be selected. No provider or model id
+     * is ever hardcoded: the whole list comes from this reply.
+     * @param result - the Remote reply, possibly a rejection value.
+     * @returns `{status, providers}` where status is `ready`, `empty`, or `error`.
+     */
+    function catalogState(result) {
+      if (result === null || typeof result !== 'object' || result.ok !== true
+        || result.value === null || typeof result.value !== 'object' || !Array.isArray(result.value.groups)) {
+        // A refusal that names the missing Remote service renders the
+        // "unavailable" note; any other refusal is a load error.
+        const unavailable = result !== null && typeof result === 'object'
+          && result.error !== undefined && result.error !== null
+          && result.error.code === 'compaction-tuner/remote-unavailable';
+        return { status: unavailable ? 'unavailable' : 'error', providers: [] };
+      }
+      const providers = result.value.groups.flatMap(group => {
+        if (group === null || typeof group !== 'object' || typeof group.id !== 'string' || group.id === '') return [];
+        const models = (Array.isArray(group.models) ? group.models : []).flatMap(model => (
+          model !== null && typeof model === 'object' && typeof model.id === 'string' && model.id !== ''
+            ? [{ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }]
+            : []
+        ));
+        if (models.length === 0) return [];
+        return [{ id: group.id, name: typeof group.name === 'string' && group.name !== '' ? group.name : group.id, models }];
+      });
+      return { status: providers.length === 0 ? 'empty' : 'ready', providers };
+    }
 
     /**
      * The repo's authenticated restart channel. It is owned and registered by
@@ -121,8 +177,7 @@ window.__ModuleLoader__.load({
       'nav': 'Compaction tuner',
       'title': 'Compaction tuner',
       'intro': 'One set of values for every agent preset in this profile. Sessions started after a save use them; a running session keeps the values it started with.',
-      'note.defaults': 'Each field notes the upstream compaction-basic code default. This bundle can be installed with a seeded value that differs; the field shows the stored value.',
-      'note.seed': 'This install seeds 0.5 / 0.15 / 2 for the threshold, the retained tail ratio, and compaction retries. A seeded value is projected into every preset row that omits the key, so those presets run the seed, not the code default.',
+      'note.defaults': 'Each field notes the upstream compaction-basic code default. This bundle seeds nothing, so those code defaults are what this install runs until you edit a value; the field shows the stored value.',
       'field.thresholdRatio.label': 'Compaction threshold',
       'field.thresholdRatio.description': 'Share of the context budget at which compaction triggers. The Host schema enforces a 0.01 step inside 0.01-1; compaction-basic itself accepts any finite value in (0, 1].',
       'field.thresholdRatio.unit': 'ratio in (0, 1], step 0.01',
@@ -203,14 +258,27 @@ window.__ModuleLoader__.load({
       'error.modelPoliciesCap': 'Each per-model policy must resolve to a summary token cap from 1 to 9007199254740991; an entry with a zero headroom needs an explicit cap.',
       'error.compactionRetries': 'Compaction retries must be a whole number from 0 to 9007199254740991 (the largest exact integer).',
       'note.modelPolicies': 'An empty per-model policy table leaves every preset\u2019s own table untouched; a non-empty table replaces it. Clearing a preset\u2019s table with an empty one is deliberately not offered.',
+      'perModel.heading': 'Per-model overrides',
+      'perModel.description': 'One override per exact provider/model route. Fill any of the nine option boxes; an override with every box empty changes nothing and is dropped when you save. An empty table leaves each preset\u2019s own per-model table untouched.',
+      'perModel.provider': 'Provider',
+      'perModel.model': 'Model',
+      'perModel.add': 'Add override',
+      'perModel.remove': 'Remove',
+      'perModel.none': 'No per-model override yet.',
+      'perModel.loading': 'Loading the model catalog\u2026',
+      'perModel.unavailable': 'The model catalog is not available in this deployment; a saved override can still be edited or removed.',
+      'perModel.error': 'The model catalog could not be loaded; a saved override can still be edited or removed.',
+      'perModel.empty': 'The catalog has no provider with a routable model.',
+      'perModel.outOfCatalog': 'not in the current catalog',
+      'action.resetDefaults': 'Reset to system defaults',
+      'note.resetDefaults': 'Clears every stored choice, including the per-model overrides, so the DSH system defaults apply. It writes nothing until you press Save; the presets are re-tuned to those defaults on the next pass. There is no automatic migration, and this cannot be undone from this page.',
     };
 
     const zh = {
       'nav': '\u538b\u7f29\u8c03\u4f18',
       'title': '\u538b\u7f29\u8c03\u4f18',
       'intro': '\u4e3a\u5f53\u524d\u914d\u7f6e\u4e2d\u7684\u6bcf\u4e2a Agent \u9884\u8bbe\u7edf\u4e00\u8bbe\u7f6e\u3002\u4fdd\u5b58\u540e\u65b0\u5efa\u7684\u4f1a\u8bdd\u4f1a\u4f7f\u7528\u8fd9\u4e9b\u503c\uff1b\u6b63\u5728\u8fd0\u884c\u7684\u4f1a\u8bdd\u4fdd\u6301\u542f\u52a8\u65f6\u7684\u503c\u3002',
-      'note.defaults': '\u6bcf\u4e2a\u5b57\u6bb5\u90fd\u6807\u6ce8\u4e86\u4e0a\u6e38 compaction-basic \u7684\u4ee3\u7801\u9ed8\u8ba4\u503c\u3002\u672c\u63d2\u4ef6\u5b89\u88c5\u65f6\u53ef\u80fd\u5199\u5165\u4e0e\u4e4b\u4e0d\u540c\u7684\u79cd\u5b50\u503c\uff1b\u5b57\u6bb5\u4e2d\u663e\u793a\u7684\u662f\u5df2\u4fdd\u5b58\u7684\u503c\u3002',
-      'note.seed': '\u672c\u5b89\u88c5\u4e3a\u538b\u7f29\u9608\u503c\u3001\u4fdd\u7559\u5c3e\u90e8\u6bd4\u4f8b\u4e0e\u538b\u7f29\u91cd\u8bd5\u6b21\u6570\u5199\u5165\u79cd\u5b50\u503c 0.5 / 0.15 / 2\u3002\u79cd\u5b50\u503c\u4f1a\u88ab\u5199\u5165\u6bcf\u4e2a\u672a\u58f0\u660e\u8be5\u952e\u7684\u9884\u8bbe\u884c\uff0c\u56e0\u6b64\u8fd9\u4e9b\u9884\u8bbe\u5b9e\u9645\u8fd0\u884c\u7684\u662f\u79cd\u5b50\u503c\uff0c\u800c\u4e0d\u662f\u4ee3\u7801\u9ed8\u8ba4\u503c\u3002',
+      'note.defaults': '\u6bcf\u4e2a\u5b57\u6bb5\u90fd\u6807\u6ce8\u4e86\u4e0a\u6e38 compaction-basic \u7684\u4ee3\u7801\u9ed8\u8ba4\u503c\u3002\u672c\u63d2\u4ef6\u4e0d\u5199\u5165\u4efb\u4f55\u79cd\u5b50\u503c\uff0c\u56e0\u6b64\u5728\u4f60\u4fee\u6539\u4e4b\u524d\uff0c\u672c\u5b89\u88c5\u8fd0\u884c\u7684\u6b63\u662f\u8fd9\u4e9b\u4ee3\u7801\u9ed8\u8ba4\u503c\uff1b\u5b57\u6bb5\u4e2d\u663e\u793a\u7684\u662f\u5df2\u4fdd\u5b58\u7684\u503c\u3002',
       'field.thresholdRatio.label': '\u538b\u7f29\u9608\u503c',
       'field.thresholdRatio.description': '\u89e6\u53d1\u538b\u7f29\u7684\u4e0a\u4e0b\u6587\u9884\u7b97\u5360\u6bd4\u3002\u5bbf\u4e3b schema \u5f3a\u5236 0.01 \u6b65\u957f\u4e14\u9650\u5236\u5728 0.01-1\uff1bcompaction-basic \u672c\u8eab\u63a5\u53d7 (0, 1] \u5185\u7684\u4efb\u610f\u6709\u9650\u6570\u503c\u3002',
       'field.thresholdRatio.unit': '0 \u5230 1 \u4e4b\u95f4\u7684\u6bd4\u4f8b\uff0c\u6b65\u957f 0.01',
@@ -291,6 +359,20 @@ window.__ModuleLoader__.load({
       'error.modelPoliciesCap': '\u6bcf\u4e2a\u6309\u6a21\u578b\u7b56\u7565\u7684\u6458\u8981 token \u4e0a\u9650\u5fc5\u987b\u5728 1 \u5230 9007199254740991 \u4e4b\u95f4\uff1b\u4f59\u91cf\u4e3a 0 \u7684\u6761\u76ee\u9700\u8981\u663e\u5f0f\u4e0a\u9650\u3002',
       'error.compactionRetries': '\u538b\u7f29\u91cd\u8bd5\u6b21\u6570\u5fc5\u987b\u662f 0 \u5230 9007199254740991\uff08\u6700\u5927\u7cbe\u786e\u6574\u6570\uff09\u4e4b\u95f4\u7684\u6574\u6570\u3002',
       'note.modelPolicies': '\u6309\u6a21\u578b\u7b56\u7565\u8868\u4e3a\u7a7a\u65f6\uff0c\u6bcf\u4e2a\u9884\u8bbe\u81ea\u5df1\u7684\u8868\u4fdd\u6301\u4e0d\u53d8\uff1b\u586b\u5199\u975e\u7a7a\u8868\u5219\u4f1a\u66ff\u6362\u5b83\u3002\u672c\u63d2\u4ef6\u4e0d\u63d0\u4f9b\u201c\u7528\u7a7a\u8868\u6e05\u7a7a\u9884\u8bbe\u8868\u201d\u7684\u9009\u9879\uff0c\u8fd9\u662f\u523b\u610f\u7684\u53d6\u820d\u3002',
+      'perModel.heading': '\u6309\u6a21\u578b\u8986\u76d6',
+      'perModel.description': '\u4e3a\u6bcf\u4e2a\u7cbe\u786e\u7684 provider/model \u8def\u7531\u8bbe\u7f6e\u4e00\u6761\u8986\u76d6\u3002\u586b\u5199\u4e5d\u4e2a\u9009\u9879\u4e2d\u7684\u4efb\u610f\u4e00\u4e2a\uff1b\u6240\u6709\u9009\u9879\u90fd\u4e3a\u7a7a\u7684\u8986\u76d6\u4e0d\u4f1a\u6539\u53d8\u4efb\u4f55\u884c\u4e3a\uff0c\u4fdd\u5b58\u65f6\u4f1a\u88ab\u4e22\u5f03\u3002\u7a7a\u8868\u4e0d\u4f1a\u6539\u52a8\u5404\u9884\u8bbe\u81ea\u5df1\u7684\u6309\u6a21\u578b\u8868\u3002',
+      'perModel.provider': '\u63d0\u4f9b\u65b9',
+      'perModel.model': '\u6a21\u578b',
+      'perModel.add': '\u6dfb\u52a0\u8986\u76d6',
+      'perModel.remove': '\u79fb\u9664',
+      'perModel.none': '\u5c1a\u65e0\u6309\u6a21\u578b\u8986\u76d6\u3002',
+      'perModel.loading': '\u6b63\u5728\u52a0\u8f7d\u6a21\u578b\u76ee\u5f55\u2026',
+      'perModel.unavailable': '\u6b64\u90e8\u7f72\u672a\u63d0\u4f9b\u6a21\u578b\u76ee\u5f55\uff1b\u5df2\u4fdd\u5b58\u7684\u8986\u76d6\u4ecd\u53ef\u7f16\u8f91\u6216\u79fb\u9664\u3002',
+      'perModel.error': '\u6a21\u578b\u76ee\u5f55\u52a0\u8f7d\u5931\u8d25\uff1b\u5df2\u4fdd\u5b58\u7684\u8986\u76d6\u4ecd\u53ef\u7f16\u8f91\u6216\u79fb\u9664\u3002',
+      'perModel.empty': '\u76ee\u5f55\u4e2d\u6ca1\u6709\u5e26\u53ef\u8def\u7531\u6a21\u578b\u7684\u63d0\u4f9b\u65b9\u3002',
+      'perModel.outOfCatalog': '\u4e0d\u5728\u5f53\u524d\u76ee\u5f55\u4e2d',
+      'action.resetDefaults': '\u6062\u590d\u7cfb\u7edf\u9ed8\u8ba4\u503c',
+      'note.resetDefaults': '\u6e05\u9664\u6240\u6709\u5df2\u4fdd\u5b58\u7684\u9009\u62e9\uff08\u5305\u62ec\u6309\u6a21\u578b\u8986\u76d6\uff09\uff0c\u4f7f DSH \u7cfb\u7edf\u9ed8\u8ba4\u503c\u751f\u6548\u3002\u5728\u4f60\u6309\u4e0b\u4fdd\u5b58\u4e4b\u524d\u4e0d\u4f1a\u5199\u5165\u4efb\u4f55\u5185\u5bb9\uff1b\u5404\u9884\u8bbe\u4f1a\u5728\u4e0b\u4e00\u6b21\u540c\u6b65\u65f6\u6539\u4e3a\u8fd9\u4e9b\u9ed8\u8ba4\u503c\u3002\u672c\u63d2\u4ef6\u4e0d\u4f1a\u81ea\u52a8\u8fc1\u79fb\uff0c\u6b64\u64cd\u4f5c\u65e0\u6cd5\u5728\u672c\u9875\u64a4\u9500\u3002',
     };
 
     /* Component-local sheet: rendered inside the section's own tree, so
@@ -318,8 +400,17 @@ window.__ModuleLoader__.load({
       '.dct-unit { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
       '.dct-input { box-sizing: border-box; width: 160px; height: 28px; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }',
       '.dct-input:disabled { cursor: not-allowed; opacity: 0.4; }',
-      '.dct-textarea { box-sizing: border-box; width: 100%; min-height: 104px; padding: 6px 8px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 18px; resize: vertical; }',
-      '.dct-textarea:disabled { cursor: not-allowed; opacity: 0.4; }',
+      '.dct-select { box-sizing: border-box; width: 180px; height: 28px; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }',
+      '.dct-select:disabled { cursor: not-allowed; opacity: 0.4; }',
+      '.dct-permodel { display: flex; flex-direction: column; gap: 10px; }',
+      '.dct-permodel-picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }',
+      '.dct-permodel-list { display: flex; flex-direction: column; gap: 10px; }',
+      '.dct-permodel-entry { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: 8px; }',
+      '.dct-permodel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }',
+      '.dct-permodel-target { color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; font-weight: 500; }',
+      '.dct-permodel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }',
+      '.dct-policy { display: flex; flex-direction: column; gap: 4px; }',
+      '.dct-policy-label { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }',
       '.dct-check { box-sizing: border-box; width: 16px; height: 16px; margin: 0; accent-color: var(--dsw-alias-button-primary-fill); }',
       '.dct-check:disabled { cursor: not-allowed; opacity: 0.4; }',
       '.dct-default { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
@@ -499,16 +590,27 @@ window.__ModuleLoader__.load({
      * A blank optional field means "unset", and the returned `values` carries
      * `undefined` for it so the write submits an `unset` op.
      * @param draft - the input texts, one per FIELDS entry.
+     * @param blankMeansUnset - the Reset action's mode: a blank field of ANY key
+     *   submits `unset` instead of being refused, and the cross-field checks
+     *   resolve it to its upstream code default.
      * @returns `{ values }` when the draft is writable, otherwise
      *   `{ key }` naming the localized refusal.
      */
-    function validateDraft(draft) {
-      const thresholdRatio = parseNumber(draft.thresholdRatio);
-      if (thresholdRatio === undefined || !(thresholdRatio > 0 && thresholdRatio <= 1)) {
+    function validateDraft(draft, blankMeansUnset = false) {
+      const thresholdText = typeof draft.thresholdRatio === 'string' ? draft.thresholdRatio.trim() : '';
+      const thresholdRatio = thresholdText === '' ? undefined : parseNumber(thresholdText);
+      if (thresholdText === '') {
+        if (!blankMeansUnset) return { key: 'error.thresholdRange' };
+      } else if (thresholdRatio === undefined || !(thresholdRatio > 0 && thresholdRatio <= 1)) {
         return { key: 'error.thresholdRange' };
       }
-      const headroomTokens = parseInteger(fieldOf('headroomTokens'), draft.headroomTokens);
-      if (headroomTokens === undefined) return { key: 'error.headroomTokens' };
+      const headroomText = typeof draft.headroomTokens === 'string' ? draft.headroomTokens.trim() : '';
+      const headroomTokens = headroomText === '' ? undefined : parseInteger(fieldOf('headroomTokens'), headroomText);
+      if (headroomText === '') {
+        if (!blankMeansUnset) return { key: 'error.headroomTokens' };
+      } else if (headroomTokens === undefined) {
+        return { key: 'error.headroomTokens' };
+      }
       const ratioText = typeof draft.retainRatio === 'string' ? draft.retainRatio.trim() : '';
       const retainRatio = ratioText === '' ? undefined : parseNumber(ratioText);
       if (ratioText !== '' && (retainRatio === undefined || !(retainRatio > 0 && retainRatio <= 1))) {
@@ -520,30 +622,75 @@ window.__ModuleLoader__.load({
       if (retainRatio !== undefined && retainTokens !== undefined) return { key: 'error.retentionExclusive' };
       if (retainTokens === undefined) {
         const effectiveRatio = retainRatio === undefined ? DEFAULT_RETAIN_RATIO : retainRatio;
-        if (!(effectiveRatio < thresholdRatio)) return { key: 'error.retainOrder' };
+        const effectiveThreshold = thresholdRatio === undefined ? DEFAULT_THRESHOLD_RATIO : thresholdRatio;
+        if (!(effectiveRatio < effectiveThreshold)) return { key: 'error.retainOrder' };
       }
       const maxText = typeof draft.maxTokens === 'string' ? draft.maxTokens.trim() : '';
       const maxTokens = maxText === '' ? undefined : parseInteger(fieldOf('maxTokens'), maxText);
       if (maxText !== '' && maxTokens === undefined) return { key: 'error.maxTokens' };
-      const resolvedMaxTokens = maxTokens === undefined ? headroomTokens : maxTokens;
+      const effectiveHeadroom = headroomTokens === undefined ? DEFAULT_HEADROOM_TOKENS : headroomTokens;
+      const resolvedMaxTokens = maxTokens === undefined ? effectiveHeadroom : maxTokens;
       if (!isSafeInteger(resolvedMaxTokens) || resolvedMaxTokens < 1) return { key: 'error.maxTokensResolved' };
-      const compactionRetries = parseInteger(fieldOf('compactionRetries'), draft.compactionRetries);
-      if (compactionRetries === undefined) return { key: 'error.compactionRetries' };
-      const maxOverflowRetries = parseInteger(fieldOf('maxOverflowRetries'), draft.maxOverflowRetries);
-      if (maxOverflowRetries === undefined) return { key: 'error.overflowRetries' };
-      const summarizationProvider = typeof draft.summarizationProvider === 'string' ? draft.summarizationProvider : '';
-      const summarizationModel = typeof draft.summarizationModel === 'string' ? draft.summarizationModel : '';
-      if ((summarizationProvider.length === 0) !== (summarizationModel.length === 0)) {
+      const retriesText = typeof draft.compactionRetries === 'string' ? draft.compactionRetries.trim() : '';
+      const compactionRetries = retriesText === '' ? undefined : parseInteger(fieldOf('compactionRetries'), retriesText);
+      if (retriesText === '') {
+        if (!blankMeansUnset) return { key: 'error.compactionRetries' };
+      } else if (compactionRetries === undefined) {
+        return { key: 'error.compactionRetries' };
+      }
+      const overflowText = typeof draft.maxOverflowRetries === 'string' ? draft.maxOverflowRetries.trim() : '';
+      const maxOverflowRetries = overflowText === '' ? undefined : parseInteger(fieldOf('maxOverflowRetries'), overflowText);
+      if (overflowText === '') {
+        if (!blankMeansUnset) return { key: 'error.overflowRetries' };
+      } else if (maxOverflowRetries === undefined) {
+        return { key: 'error.overflowRetries' };
+      }
+      const providerText = typeof draft.summarizationProvider === 'string' ? draft.summarizationProvider : '';
+      const modelText = typeof draft.summarizationModel === 'string' ? draft.summarizationModel : '';
+      if ((providerText.length === 0) !== (modelText.length === 0)) {
         return { key: 'error.summarizationPair' };
       }
       const policiesText = typeof draft.modelPolicies === 'string' && draft.modelPolicies.trim() !== ''
         ? draft.modelPolicies
         : '[]';
-      let modelPolicies;
+      let entries;
       try {
-        modelPolicies = JSON.parse(policiesText);
+        entries = JSON.parse(policiesText);
       } catch (_malformedJson) {
         return { key: 'error.modelPoliciesJson' };
+      }
+      if (!Array.isArray(entries)) return { key: 'error.modelPolicies' };
+      // The picker's boxes hold raw text, so every policy value is normalized
+      // here (decimal-only numbers, safe integers, strings verbatim) before the
+      // table reaches `modelPoliciesProblem()`. An entry whose nine boxes are all
+      // empty is DROPPED: a provider/model-only row would make the table managed
+      // and replace every preset's own overrides while changing nothing.
+      const modelPolicies = [];
+      for (const entry of entries) {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return { key: 'error.modelPolicies' };
+        if (typeof entry.provider !== 'string' || entry.provider === '') return { key: 'error.modelPolicies' };
+        if (typeof entry.model !== 'string' || entry.model === '') return { key: 'error.modelPolicies' };
+        const normalized = { ...entry };
+        // The nine owned keys are re-normalized from their raw box text; any
+        // OTHER key the stored entry carries is preserved verbatim so
+        // `modelPoliciesProblem()` still refuses it instead of the editor
+        // silently laundering it away.
+        for (const key of PER_MODEL_KEYS) delete normalized[key];
+        normalized.provider = entry.provider;
+        normalized.model = entry.model;
+        for (const key of PER_MODEL_KEYS) {
+          const raw = entry[key];
+          if (raw === undefined || raw === null || raw === '') continue;
+          const policyField = fieldOf(key);
+          const value = policyField.kind === 'string'
+            ? String(raw).trim()
+            : policyField.kind === 'integer'
+              ? parseInteger(policyField, String(raw))
+              : parseNumber(String(raw));
+          if (value === undefined || (policyField.kind === 'string' && value === '')) return { key: 'error.modelPolicies' };
+          normalized[key] = value;
+        }
+        if (Object.keys(normalized).length > 2) modelPolicies.push(normalized);
       }
       const policiesProblem = modelPoliciesProblem(modelPolicies, thresholdRatio, {
         maxTokensExplicit: maxText !== '',
@@ -559,13 +706,15 @@ window.__ModuleLoader__.load({
           headroomTokens,
           retainRatio,
           retainTokens,
-          summarizationProvider,
-          summarizationModel,
+          summarizationProvider: blankMeansUnset && providerText.length === 0 ? undefined : providerText,
+          summarizationModel: blankMeansUnset && modelText.length === 0 ? undefined : modelText,
           maxTokens,
           compactionRetries,
           maxOverflowRetries,
           modelPolicies: modelPolicies.length === 0 ? undefined : modelPolicies,
-          auto: draft.auto === 'true',
+          auto: blankMeansUnset && (typeof draft.auto !== 'string' || draft.auto.trim() === '')
+            ? undefined
+            : draft.auto === 'true',
         },
       };
     }
@@ -737,7 +886,7 @@ window.__ModuleLoader__.load({
      * @returns the section tree.
      */
     function TunerSection(props) {
-      const { form, t, callBackend } = props;
+      const { form, t, callBackend, readCatalog } = props;
       // The controller's methods need their receiver, and uSES resubscribes
       // whenever `subscribe` identity changes, so both seats are memoized to
       // one stable pair per form rather than handing uSES the bare methods.
@@ -752,6 +901,7 @@ window.__ModuleLoader__.load({
 
       const [editing, setEditing] = useState(null);
       const [edits, setEdits] = useState({});
+      const [resetState, setResetState] = useState(null);
       const [saving, setSaving] = useState(false);
       const [outcome, setOutcome] = useState(null);
       const pendingRef = useRef(false);
@@ -778,6 +928,33 @@ window.__ModuleLoader__.load({
         };
       }, [callBackend]);
 
+      const [catalog, setCatalog] = useState({ status: 'loading', providers: [] });
+      const [pickProvider, setPickProvider] = useState('');
+      const [pickModel, setPickModel] = useState('');
+
+      /* One mount effect reads the model catalog through the injected Remote
+       * caller. A missing service, a refused reply, a rejection and an empty
+       * catalog each degrade to their own localized note; the rest of the page
+       * — and any already-stored override — keeps working. */
+      useEffect(() => {
+        const controller = new window.AbortController();
+        let live = true;
+        Promise.resolve().then(() => readCatalog()).then(
+          (result) => {
+            if (!live || controller.signal.aborted) return;
+            setCatalog(catalogState(result));
+          },
+          () => {
+            if (!live || controller.signal.aborted) return;
+            setCatalog({ status: 'error', providers: [] });
+          },
+        );
+        return () => {
+          live = false;
+          controller.abort();
+        };
+      }, [readCatalog]);
+
       const status = snapshot === undefined || snapshot === null || typeof snapshot.status !== 'string'
         ? 'loading'
         : snapshot.status;
@@ -792,6 +969,10 @@ window.__ModuleLoader__.load({
        * A snapshot change therefore re-seeds every field the user is not
        * editing, which is what surfaces a refused write's recovery read. */
       const seedKey = ready ? `${String(snapshot.revision)}|${JSON.stringify(value ?? null)}` : '';
+      // The Reset action's mode holds only for the snapshot it was pressed on:
+      // a recovery read (new seedKey) drops it, so a stale reset can never turn
+      // a later save into an all-unset write.
+      const resetMode = resetState !== null && resetState.seedKey === seedKey;
       const baseline = ready ? seedDraft(value) : blankDraft();
       const shown = (field) => {
         const edit = edits[field];
@@ -802,10 +983,45 @@ window.__ModuleLoader__.load({
       for (const field of FIELDS) draft[field.key] = shown(field.key);
       const dirty = ready && FIELDS.some(field => draft[field.key] !== baseline[field.key]);
 
+      /* The per-model editor works on the same `modelPolicies` draft text the
+       * JSON field used to hold: the picker adds a `{provider, model}` entry,
+       * each option box writes its own raw text into that entry, and the Save
+       * path normalizes the text once (see `validateDraft`). */
+      const policyEntries = () => {
+        try {
+          const parsed = JSON.parse(draft.modelPolicies === '' ? '[]' : draft.modelPolicies);
+          return Array.isArray(parsed)
+            ? parsed.filter(entry => entry !== null && typeof entry === 'object' && !Array.isArray(entry))
+            : [];
+        } catch (_malformedPolicies) {
+          return [];
+        }
+      };
+      const providers = catalog.providers;
+      const activeProvider = providers.some(provider => provider.id === pickProvider)
+        ? pickProvider
+        : (providers[0] === undefined ? '' : providers[0].id);
+      const activeModels = (providers.find(provider => provider.id === activeProvider)?.models ?? []);
+      const activeModel = activeModels.some(model => model.id === pickModel)
+        ? pickModel
+        : (activeModels[0] === undefined ? '' : activeModels[0].id);
+      const entries = policyEntries();
+      const pairPresent = entries.some(entry => entry.provider === activeProvider && entry.model === activeModel);
+
       /**
        * Stage one control's text; the snapshot it was staged against rides along
        * so a later snapshot change can drop the stale edit. A checkbox reports
        * the boolean through `checked`, never through `value`.
+       * @param key - the FIELDS key being edited.
+       * @param text - the raw input text to stage.
+       */
+      const stage = (key, text) => {
+        setEdits(current => ({ ...current, [key]: { text, seedKey } }));
+        setOutcome(null);
+      };
+
+      /**
+       * Stage one control's event text.
        * @param field - the FIELDS entry being edited.
        * @param event - the control's change event.
        */
@@ -813,7 +1029,47 @@ window.__ModuleLoader__.load({
         const text = field.kind === 'boolean'
           ? (event.target.checked === true ? 'true' : 'false')
           : event.target.value;
-        setEdits(current => ({ ...current, [field.key]: { text, seedKey } }));
+        stage(field.key, text);
+      };
+
+      /** Write the whole per-model entries array back into the draft JSON text. */
+      const writePolicies = (next) => { stage('modelPolicies', JSON.stringify(next)); };
+
+      /** Set one option box of one entry; blank removes the key. */
+      const setPolicyBox = (index, key, text) => {
+        const next = policyEntries().map(entry => ({ ...entry }));
+        const entry = next[index];
+        if (entry === undefined) return;
+        if (text === '') delete entry[key];
+        else entry[key] = text;
+        writePolicies(next);
+      };
+
+      /** Append the currently selected provider/model as a new override. */
+      const addPolicy = () => {
+        if (disabled || activeProvider === '' || activeModel === '' || pairPresent) return;
+        writePolicies([...policyEntries(), { provider: activeProvider, model: activeModel }]);
+      };
+
+      /** Remove one override; removing the last one returns the table to `unset`. */
+      const removePolicy = (index) => {
+        writePolicies(policyEntries().filter((_entry, position) => position !== index));
+      };
+
+      /**
+       * Replace the whole draft with the system-default (unset) state: every
+       * managed field blank, the per-model table empty. This writes NOTHING —
+       * the user reviews it and presses Save, which then submits one `unset` op
+       * per managed key (`resetMode` makes a blank field of ANY key an unset).
+       */
+      const resetDraft = () => {
+        if (disabled || saving || pendingRef.current) return;
+        const next = { ...edits };
+        for (const field of FIELDS) {
+          next[field.key] = { text: field.kind === 'json' ? '[]' : '', seedKey };
+        }
+        setEdits(next);
+        setResetState({ seedKey });
         setOutcome(null);
       };
 
@@ -822,11 +1078,13 @@ window.__ModuleLoader__.load({
        * optional field becomes an `unset` op: the tuner's schema gives
        * `retainRatio`, `retainTokens` and `maxTokens` no default on purpose, so
        * `unset` is what restores "unset upstream" instead of materializing one
-       * side of the retention XOR.
+       * side of the retention XOR. In `resetMode` a blank field of ANY key is
+       * an `unset`, which is how the Reset action clears the materialized
+       * defaults that would otherwise keep an old row alive.
        */
       const save = () => {
         if (disabled || saving || pendingRef.current) return;
-        const check = validateDraft(draft);
+        const check = validateDraft(draft, resetMode);
         if (check.values === undefined) {
           setOutcome({ kind: 'invalid', key: check.key });
           return;
@@ -847,12 +1105,14 @@ window.__ModuleLoader__.load({
             // The write's outcome owns the draft: the next snapshot (the
             // accepted view, or the controller's recovery read) re-seeds it.
             setEdits({});
+            setResetState(null);
             setOutcome(accepted === true ? { kind: 'saved' } : { kind: 'refused' });
           },
           () => {
             pendingRef.current = false;
             setSaving(false);
             setEdits({});
+            setResetState(null);
             setOutcome({ kind: 'refused' });
           },
         );
@@ -976,10 +1236,117 @@ window.__ModuleLoader__.load({
       }
 
       /**
+       * One override row: its provider/model heading, a remove action, and one
+       * labelled box per policy option. The boxes render the raw draft text, so
+       * an intermediate value the user is still typing is never rewritten.
+       * @param entry - one `modelPolicies` entry from the draft.
+       * @param index - its position, which addresses its boxes.
+       * @returns the entry card.
+       */
+      const policyEntryRow = (entry, index) => {
+        const provider = typeof entry.provider === 'string' ? entry.provider : '';
+        const model = typeof entry.model === 'string' ? entry.model : '';
+        const known = providers.some(candidate => candidate.id === provider
+          && candidate.models.some(candidateModel => candidateModel.id === model));
+        const boxes = PER_MODEL_KEYS.map((key) => {
+          const policyField = fieldOf(key);
+          const boxId = `${ids.modelPolicies}-${index}-${key}`;
+          const raw = entry[key];
+          const shared = {
+            id: boxId,
+            className: 'dct-input',
+            disabled,
+            value: raw === undefined || raw === null ? '' : String(raw),
+            onChange: (event) => { setPolicyBox(index, key, event.target.value); },
+          };
+          const control = policyField.kind === 'string'
+            ? h('input', { ...shared, type: 'text' })
+            : h('input', {
+              ...shared,
+              type: 'number',
+              inputMode: 'decimal',
+              step: policyField.kind === 'ratio' ? 0.01 : 1,
+              min: policyField.kind === 'ratio' ? 0.01 : policyField.min,
+              max: policyField.kind === 'ratio' ? 1 : undefined,
+            });
+          return h('div', { className: 'dct-policy', key },
+            h('label', { className: 'dct-policy-label', htmlFor: boxId }, t(`field.${key}.label`)),
+            control,
+          );
+        });
+        return h('div', { className: 'dct-permodel-entry', key: `${String(index)}:${provider}\u0000${model}` },
+          h('div', { className: 'dct-permodel-head' },
+            h('span', { className: 'dct-permodel-target' },
+              known ? `${provider} / ${model}` : `${provider} / ${model} \u2014 ${t('perModel.outOfCatalog')}`),
+            h('button', {
+              type: 'button',
+              className: 'dct-button dct-outline',
+              disabled,
+              onClick: () => { removePolicy(index); },
+            }, t('perModel.remove')),
+          ),
+          h('div', { className: 'dct-permodel-grid' }, boxes),
+        );
+      };
+
+      /**
+       * The composite `modelPolicies` editor: a provider/model picker fed only
+       * by the catalog, and one entry card per stored override. A pair that
+       * already has an override cannot be added; an entry the catalog does not
+       * know stays listed (and removable), so a saved override is never
+       * silently dropped.
+       * @returns the editor node.
+       */
+      const perModelField = () => {
+        const catalogNote = catalog.status === 'loading' ? 'perModel.loading'
+          : catalog.status === 'unavailable' ? 'perModel.unavailable'
+            : catalog.status === 'error' ? 'perModel.error'
+              : catalog.status === 'empty' ? 'perModel.empty'
+                : null;
+        return h('div', { className: 'dct-permodel', id: ids.modelPolicies, 'aria-describedby': `${ids.modelPolicies}-description` },
+          h('span', { className: 'dct-permodel-target' }, t('perModel.heading')),
+          h('p', { className: 'dct-description' }, t('perModel.description')),
+          catalog.status === 'ready'
+            ? h('div', { className: 'dct-permodel-picker' },
+              h('label', { className: 'dct-policy-label', htmlFor: `${ids.modelPolicies}-provider` }, t('perModel.provider')),
+              h('select', {
+                id: `${ids.modelPolicies}-provider`,
+                className: 'dct-select',
+                disabled,
+                value: activeProvider,
+                onChange: (event) => { setPickProvider(event.target.value); setPickModel(''); },
+              }, providers.map(provider => h('option', { key: provider.id, value: provider.id }, provider.name))),
+              h('label', { className: 'dct-policy-label', htmlFor: `${ids.modelPolicies}-model` }, t('perModel.model')),
+              h('select', {
+                id: `${ids.modelPolicies}-model`,
+                className: 'dct-select',
+                disabled,
+                value: activeModel,
+                onChange: (event) => { setPickModel(event.target.value); },
+              }, activeModels.map(model => h('option', { key: model.id, value: model.id }, model.name))),
+              h('button', {
+                type: 'button',
+                className: 'dct-button dct-outline',
+                disabled: disabled || activeProvider === '' || activeModel === '' || pairPresent,
+                onClick: addPolicy,
+              }, t('perModel.add')),
+            )
+            : null,
+          catalogNote === null ? null : h('p', { className: 'dct-note' }, t(catalogNote)),
+          entries.length === 0
+            ? h('p', { className: 'dct-empty' }, t('perModel.none'))
+            : h('div', { className: 'dct-permodel-list' }, entries.map(policyEntryRow)),
+        );
+      };
+
+      /**
        * One labelled control: a numeric input for `ratio`/`integer`, a text
-       * input for `string`, a checkbox for `boolean`, and a JSON textarea for
-       * the `modelPolicies` table. The head shows the allowed range, and the
-       * footer shows the upstream code default beside the description.
+       * input for `string`, a checkbox for `boolean`, and the provider/model
+       * picker for the `modelPolicies` table. The head shows the allowed range,
+       * and the footer shows the upstream code default beside the description.
+       * An empty `retainRatio` shows its effective code default as a
+       * placeholder, so the blank value and the value actually in force are
+       * both visible.
        * @param field - one FIELDS entry.
        * @returns the field row.
        */
@@ -1003,14 +1370,7 @@ window.__ModuleLoader__.load({
             onChange: change(field),
           });
         } else if (field.kind === 'json') {
-          control = h('textarea', {
-            ...shared,
-            className: 'dct-textarea',
-            rows: 6,
-            spellCheck: false,
-            value: draft[key],
-            onChange: change(field),
-          });
+          control = perModelField();
         } else {
           const numeric = field.kind !== 'string';
           control = h('input', {
@@ -1021,6 +1381,11 @@ window.__ModuleLoader__.load({
             step: field.kind === 'ratio' ? 0.01 : field.kind === 'integer' ? 1 : undefined,
             min: field.kind === 'ratio' ? 0.01 : numeric ? field.min : undefined,
             max: field.kind === 'ratio' ? 1 : undefined,
+            // A browser shows this only while the input is empty, so the
+            // effective code default of an unset `retainRatio` is visible
+            // without loading the value into the field: the input still
+            // submits `unset`, and the retention XOR stays expressible.
+            placeholder: field.key === 'retainRatio' ? String(DEFAULT_RETAIN_RATIO) : undefined,
             value: draft[key],
             onChange: change(field),
           });
@@ -1041,9 +1406,6 @@ window.__ModuleLoader__.load({
         : outcome !== null && outcome.kind === 'refused'
           ? h('p', { className: 'dct-alert', role: 'alert' }, t('error.refused'))
           : null;
-      const saved = outcome !== null && outcome.kind === 'saved'
-        ? h('p', { className: 'dct-saved', role: 'status' }, t('status.saved'))
-        : null;
 
       return h('div', { className: 'dct-page' },
         h('style', null, STYLE_TEXT),
@@ -1051,19 +1413,16 @@ window.__ModuleLoader__.load({
           h('h2', { className: 'dct-title' }, t('title')),
           h('p', { className: 'dct-intro' }, t('intro')),
         ),
-        restartBlock,
         status === 'unavailable'
           ? h('p', { className: 'dct-note' }, t('status.unavailable'))
           : null,
         !ready || writable ? null : h('p', { className: 'dct-note' }, t('status.readOnly')),
         ready ? h('p', { className: 'dct-note' }, t('note.defaults')) : null,
-        ready ? h('p', { className: 'dct-note' }, t('note.seed')) : null,
         ready && (draft.modelPolicies.trim() === '' || draft.modelPolicies.trim() === '[]')
           ? h('p', { className: 'dct-note' }, t('note.modelPolicies'))
           : null,
         FIELDS.map(fieldRow),
         alert,
-        saved,
         h('div', { className: 'dct-actions' },
           h('button', {
             type: 'button',
@@ -1072,13 +1431,21 @@ window.__ModuleLoader__.load({
             'aria-busy': saving ? 'true' : undefined,
             onClick: save,
           }, saving ? t('action.saving') : t('action.save')),
+          h('button', {
+            type: 'button',
+            className: 'dct-button dct-outline',
+            disabled: disabled || saving,
+            onClick: resetDraft,
+          }, t('action.resetDefaults')),
         ),
+        ready ? h('p', { className: 'dct-note' }, t('note.resetDefaults')) : null,
+        restartBlock,
       );
     }
 
     return {
       name: '@local/dsh-compaction-tuner',
-      inject: ['slots', 'locale', 'configForms', 'connection'],
+      inject: ['slots', 'locale', 'configForms', 'connection', 'remote'],
       /**
        * Register the plugin dictionaries and the Compaction-tuner settings
        * section. The restart channel is resolved lazily inside the caller, so a
@@ -1099,6 +1466,29 @@ window.__ModuleLoader__.load({
           }
           return connection.rpc.call(RESTART_CHANNEL, endpoint, payload, signal);
         };
+        /**
+         * Read the provider-grouped model catalog through the client Remote
+         * service. A deployment without the service, or one whose reply is not
+         * the expected envelope, resolves to a refused result so the picker
+         * renders its own note instead of breaking the page.
+         * @returns the Remote result envelope.
+         */
+        const readCatalog = () => {
+          const remote = ctx.get('remote');
+          if (remote === undefined || remote === null
+            || remote.session === undefined || remote.session === null
+            || typeof remote.session.modelCatalog !== 'function') {
+            return Promise.resolve({
+              ok: false,
+              error: { code: 'compaction-tuner/remote-unavailable', message: 'the client Remote service does not expose session.modelCatalog' },
+            });
+          }
+          try {
+            return Promise.resolve(remote.session.modelCatalog());
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        };
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: SECTION_ID,
@@ -1106,7 +1496,7 @@ window.__ModuleLoader__.load({
           // `label` is required: an omitted label renders an empty nav row.
           label: () => t('nav'),
           locale: NS,
-          inject: () => ({ form, t, callBackend }),
+          inject: () => ({ form, t, callBackend, readCatalog }),
         }, TunerSection));
       },
     };
