@@ -1,5 +1,5 @@
 /**
- * Host half of the restart-backend bundle.
+ * Host half of the backend-restart bundle.
  *
  * Owns one authenticated Connection channel: `status` reports whether this
  * process can relaunch itself, and `restart` launches the successor supervisor,
@@ -18,7 +18,7 @@ const HELPER_PATH = fileURLToPath(new URL('./restart-helper.js', import.meta.url
 const EXIT_DELAY_MS = 500
 
 /** Stable Cordis plugin name. */
-export const name = 'restart-backend'
+export const name = 'backend-restart'
 
 /**
  * Required services: the registry that owns the channel's trust and
@@ -28,7 +28,7 @@ export const name = 'restart-backend'
 export const inject = ['connection', 'webServer']
 
 /** Name of the channel this plugin owns; `/api` is reserved and never reused. */
-const CHANNEL = '/restart-backend'
+const CHANNEL = '/backend-restart'
 
 /**
  * Build one carrier-neutral failure result.
@@ -37,7 +37,7 @@ const CHANNEL = '/restart-backend'
  * @returns {{ ok: false, error: { code: string, message: string, details: object } }} the failure result.
  */
 function failure(code, message) {
-  return { ok: false, error: { code: `restart-backend/${code}`, message, details: {} } }
+  return { ok: false, error: { code: `backend-restart/${code}`, message, details: {} } }
 }
 
 /**
@@ -121,7 +121,7 @@ export function apply(ctx) {
 
   ctx.effect(() => () => {
     if (exitTimer !== undefined) clearTimeout(exitTimer)
-  }, 'restart-backend: restart exit')
+  }, 'backend-restart: restart exit')
 
   const statusView = () => {
     if (phase !== 'running') {
@@ -166,7 +166,7 @@ export function apply(ctx) {
     // Attach before reading the pid: a failed spawn emits 'error' on a later
     // tick, and an unhandled one would throw inside the Host process.
     helper.once('error', (error) => {
-      ctx.logger.warn(`restart-backend: successor supervisor failed: ${error.message}`)
+      ctx.logger.warn(`backend-restart: successor supervisor failed: ${error.message}`)
     })
     if (helper.pid === undefined) {
       return failure('spawn-failed', 'the successor supervisor could not be started')
@@ -191,5 +191,5 @@ export function apply(ctx) {
       }
     })
     return () => { void dispose() }
-  }, 'restart-backend: restart channel')
+  }, 'backend-restart: restart channel')
 }

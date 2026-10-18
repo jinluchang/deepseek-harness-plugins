@@ -1,6 +1,6 @@
-# Frozen interface: `@local/dsh-restart-backend`
+# Frozen interface: `@local/dsh-backend-restart`
 
-Package directory: `plugins/dsh-restart-backend/` (installed into the active DSH profile as a bundle).
+Package directory: `plugins/dsh-backend-restart/` (installed into the active DSH profile as a bundle).
 
 ## Why this exists
 
@@ -16,9 +16,9 @@ that the browser already uses for every other Host call. Both sides must agree o
 
 | Item | Value |
 | --- | --- |
-| Channel | `/restart-backend` (matches Connection's `^/[A-Za-z0-9._~-]+$`, never `/api`) |
-| Host registration | `ctx.connection.rpc.handle('/restart-backend', handler)` inside `ctx.effect` |
-| Client call | `ctx.get('connection').rpc.call('/restart-backend', endpoint, payload, signal)` |
+| Channel | `/backend-restart` (matches Connection's `^/[A-Za-z0-9._~-]+$`, never `/api`) |
+| Host registration | `ctx.connection.rpc.handle('/backend-restart', handler)` inside `ctx.effect` |
+| Client call | `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
 
 The channel is authenticated: `HostConnectionService.admit()` applies the Host/Origin fence plus the
 browser credential, so only an admitted browser peer reaches the handler. Both halves must treat a thrown
@@ -52,14 +52,14 @@ supervisor has been started, not that the new process is already serving. A lost
 ambiguous with success: the Client must treat a transport rejection of this call as "possibly restarting"
 and continue with the recovery sequence below.
 
-Failure response `error`: `{ "code": "restart-backend/<reason>", "message": <diagnostic English>, "details": {} }`.
+Failure response `error`: `{ "code": "backend-restart/<reason>", "message": <diagnostic English>, "details": {} }`.
 
 | `code` | Meaning |
 | --- | --- |
-| `restart-backend/busy` | A restart request already owns this process. |
-| `restart-backend/unsupported` | This process cannot relaunch itself (Electron main process, missing launch command, or no launcher exit). |
-| `restart-backend/spawn-failed` | The successor supervisor could not be started. |
-| `restart-backend/unknown-endpoint` | Endpoint name outside `status`/`restart`. |
+| `backend-restart/busy` | A restart request already owns this process. |
+| `backend-restart/unsupported` | This process cannot relaunch itself (Electron main process, missing launch command, or no launcher exit). |
+| `backend-restart/spawn-failed` | The successor supervisor could not be started. |
+| `backend-restart/unknown-endpoint` | Endpoint name outside `status`/`restart`. |
 
 Client copy must localize every failure; `message` is diagnostic only.
 

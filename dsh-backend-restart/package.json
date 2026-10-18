@@ -1,5 +1,5 @@
 {
-  "name": "@local/dsh-restart-backend",
+  "name": "@local/dsh-backend-restart",
   "version": "1.0.0",
   "private": true,
   "type": "module",

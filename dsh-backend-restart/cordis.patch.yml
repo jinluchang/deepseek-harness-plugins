@@ -1,5 +1,5 @@
 # Host half of the restart bundle: the authenticated restart channel and its
 # Client module are both declared by the package itself.
 - insert:
-    - id: restart-backend
-      name: '@local/dsh-restart-backend'
+    - id: backend-restart
+      name: '@local/dsh-backend-restart'

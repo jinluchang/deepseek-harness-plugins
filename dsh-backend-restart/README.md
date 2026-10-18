@@ -1,4 +1,4 @@
-# `@local/dsh-restart-backend`
+# `@local/dsh-backend-restart`
 
 A local DSH plugin that adds a **Restart backend** row at the end of the **General** settings page, just
 above the version information. The action asks the running Host for permission to replace itself and then
@@ -14,11 +14,11 @@ The plugin is a profile bundle, not a workspace package. Install it from the rep
 Plugin Manager, which links the directory into the active profile and records the bundle row:
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/plugins/dsh-restart-backend"
+pnpm dsh plugin --profile web add link:"$PWD/plugins/dsh-backend-restart"
 ```
 
 In a running GUI session the same step is the `plugin_manager` tool with `action: install_bundle` and
-`target: <absolute path to plugins/dsh-restart-backend>`; `application: "applied"` means the profile changed
+`target: <absolute path to plugins/dsh-backend-restart>`; `application: "applied"` means the profile changed
 and no restart was needed. The plugin then loads on the next full page load.
 
 ## Use
@@ -34,11 +34,11 @@ argv, or a launcher that never exits).
 
 ## Verify
 
-- Self-check: `node plugins/dsh-restart-backend/verify.mjs` parses the manifest and both halves, then asserts
+- Self-check: `node plugins/dsh-backend-restart/verify.mjs` parses the manifest and both halves, then asserts
   the channel contract, the refusal rules, the carrier-scope fallback, the supervisor's flags and probes, and
   the spawn-failure classification. Thirteen checks, hermetic: it never restarts anything.
-- Syntax and manifest: `node --check plugins/dsh-restart-backend/index.js plugins/dsh-restart-backend/restart-helper.js`
-  and `node -e "JSON.parse(require('node:fs').readFileSync('plugins/dsh-restart-backend/package.json'))"`.
+- Syntax and manifest: `node --check plugins/dsh-backend-restart/index.js plugins/dsh-backend-restart/restart-helper.js`
+  and `node -e "JSON.parse(require('node:fs').readFileSync('plugins/dsh-backend-restart/package.json'))"`.
 - Supervisor behavior without a Host: the supervisor is a plain ESM module; its exported
   `parseArguments`, `probePort`, `waitForSlot`, `startSuccessor`, and `supervise` are exercised directly by
   passing flags on the command line and reading the exit codes documented in the module header.
@@ -46,7 +46,7 @@ argv, or a launcher that never exits).
   (and optionally `webServer`, `webServer.getOrigin`, `appExit`), so a fake context asserts the `status` and
   `restart` responses, the refusal cases, and the launch command it records.
 - Full cycle: run an isolated instance with its own `DSH_HOME` on a spare port, mint a browser-session
-  cookie from that profile, call `POST /restart-backend/restart`, and watch the pid change across the
+  cookie from that profile, call `POST /backend-restart/restart`, and watch the pid change across the
   down/up transition.
 
 ## Files

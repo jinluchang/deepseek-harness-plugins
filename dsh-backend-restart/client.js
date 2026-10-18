@@ -1,19 +1,19 @@
 /**
- * Client half of @local/dsh-restart-backend: a General-settings row that
- * asks the Host process to replace itself through the frozen /restart-backend
+ * Client half of @local/dsh-backend-restart: a General-settings row that
+ * asks the Host process to replace itself through the frozen /backend-restart
  * channel, waits for the successor to answer again, then reloads the page.
  * Plain browser bundle module; React is the only module-table request.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-restart-backend',
+  id: '@local/dsh-backend-restart',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
     const { useCallback, useEffect, useId, useRef, useState } = React;
 
     /** Channel, endpoints, and dictionary namespace frozen by CONTRACT.md. */
-    const CHANNEL = '/restart-backend';
-    const NS = 'restart-backend';
+    const CHANNEL = '/backend-restart';
+    const NS = 'backend-restart';
 
     /* Recovery budget: the old listener must disappear, then the successor
      * must answer. Both phases are bounded so the user never waits on a dead
@@ -116,9 +116,9 @@ window.__ModuleLoader__.load({
       const error = result !== null && typeof result === 'object' && result.ok === false ? result.error : undefined;
       const code = error !== null && typeof error === 'object' ? error.code : undefined;
       switch (code) {
-        case 'restart-backend/busy': return 'error.busy';
-        case 'restart-backend/unsupported': return 'error.unsupported';
-        case 'restart-backend/spawn-failed': return 'error.spawnFailed';
+        case 'backend-restart/busy': return 'error.busy';
+        case 'backend-restart/unsupported': return 'error.unsupported';
+        case 'backend-restart/spawn-failed': return 'error.spawnFailed';
         default: return 'error.generic';
       }
     }
@@ -154,12 +154,12 @@ window.__ModuleLoader__.load({
     function delay(ms, signal) {
       return new Promise((resolve, reject) => {
         if (signal.aborted) {
-          reject(new Error('restart-backend: recovery poll aborted'));
+          reject(new Error('backend-restart: recovery poll aborted'));
           return;
         }
         const onAbort = () => {
           window.clearTimeout(timer);
-          reject(new Error('restart-backend: recovery poll aborted'));
+          reject(new Error('backend-restart: recovery poll aborted'));
         };
         const timer = window.setTimeout(() => {
           signal.removeEventListener('abort', onAbort);
@@ -490,18 +490,18 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      name: '@local/dsh-restart-backend',
+      name: '@local/dsh-backend-restart',
       inject: ['slots', 'locale', 'connection'],
       /**
        * Register the plugin dictionaries and the General-settings restart row.
        * @param ctx - client root context.
        */
       apply(ctx) {
-        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-restart-backend: dictionaries');
+        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-backend-restart: dictionaries');
         const callHost = (endpoint, payload, signal) => {
           const connection = ctx.get('connection');
           if (connection === undefined) {
-            return Promise.reject(new Error('restart-backend: the connection service is unavailable'));
+            return Promise.reject(new Error('backend-restart: the connection service is unavailable'));
           }
           return connection.rpc.call(CHANNEL, endpoint, payload, signal);
         };
@@ -512,7 +512,7 @@ window.__ModuleLoader__.load({
         // and immediately above the version row (`current-version`, order 100).
         ctx.slots.inject('settings.general.item', () => ctx.slots.register({
           name: 'settings.general.item',
-          id: 'restart-backend',
+          id: 'backend-restart',
           order: 99,
           locale: NS,
           inject: () => ({ callHost }),

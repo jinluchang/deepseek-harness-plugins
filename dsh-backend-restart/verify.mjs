@@ -7,7 +7,7 @@
  * loopback, and the only successor it spawns is a path that cannot exist. The
  * full replacement cycle is a browser-and-instance test, not this file.
  *
- * Run: `node plugins/dsh-restart-backend/verify.mjs`
+ * Run: `node dsh-backend-restart/verify.mjs`
  */
 
 import assert from 'node:assert/strict'
@@ -68,7 +68,7 @@ const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.met
 const patch = readFileSync(new URL('./cordis.patch.yml', import.meta.url), 'utf8')
 
 await check('the manifest names the bundle, its patch, and every runtime file', () => {
-  assert.equal(packageJson.name, '@local/dsh-restart-backend')
+  assert.equal(packageJson.name, '@local/dsh-backend-restart')
   assert.equal(packageJson.private, true)
   assert.equal(packageJson.type, 'module')
   assert.equal(packageJson.dsh.bundle.patch, './cordis.patch.yml')
@@ -86,8 +86,8 @@ await check('the manifest names the bundle, its patch, and every runtime file', 
 
 await check('the bundle patch inserts this plugin exactly once', () => {
   const rows = patch.split('\n').filter(line => line.trimStart().startsWith('- id:'))
-  assert.deepEqual(rows.map(row => row.trim()), ['- id: restart-backend'])
-  assert.match(patch, /^\s+name: '@local\/dsh-restart-backend'$/m)
+  assert.deepEqual(rows.map(row => row.trim()), ['- id: backend-restart'])
+  assert.match(patch, /^\s+name: '@local\/dsh-backend-restart'$/m)
 })
 
 await check('the launch command replays Node flags and the application arguments', () => {
@@ -106,9 +106,9 @@ await check('the origin is read from the carrier and survives a carrier that can
 await check('the channel registers under the documented name and disposes both effects', () => {
   const ctx = fakeContext()
   apply(ctx)
-  assert.deepEqual(ctx.effects.map(entry => entry.label), ['restart-backend: restart exit', 'restart-backend: restart channel'])
+  assert.deepEqual(ctx.effects.map(entry => entry.label), ['backend-restart: restart exit', 'backend-restart: restart channel'])
   assert.equal(ctx.registered.length, 1)
-  assert.equal(ctx.registered[0].channel, '/restart-backend')
+  assert.equal(ctx.registered[0].channel, '/backend-restart')
   ctx.effects.forEach(entry => { if (typeof entry.disposer === 'function') entry.disposer() })
 })
 
@@ -124,7 +124,7 @@ await check('status reports this process as restartable, and an unknown endpoint
   assert.equal(status.value.restartable, true)
   const unknown = await handler('nope', {}, new AbortController().signal, {})
   assert.equal(unknown.ok, false)
-  assert.equal(unknown.error.code, 'restart-backend/unknown-endpoint')
+  assert.equal(unknown.error.code, 'backend-restart/unknown-endpoint')
 })
 
 await check('a launcher without a bounded exit refuses the restart instead of half-restarting', async () => {
@@ -133,7 +133,7 @@ await check('a launcher without a bounded exit refuses the restart instead of ha
   assert.equal(restartBlocker(ctx), 'this launcher has no bounded process-exit capability')
   const refused = await ctx.registered[0].handler('restart', {}, new AbortController().signal, {})
   assert.equal(refused.ok, false)
-  assert.equal(refused.error.code, 'restart-backend/unsupported')
+  assert.equal(refused.error.code, 'backend-restart/unsupported')
   const status = await ctx.registered[0].handler('status', {}, new AbortController().signal, {})
   assert.equal(status.value.restartable, false)
   assert.match(status.value.reason, /bounded process-exit/)
@@ -143,7 +143,7 @@ await check('a refused carrier registration falls back to the root scope, and on
   const guarded = fakeContext({ guardError: true })
   apply(guarded)
   assert.equal(guarded.registered.length, 1)
-  assert.equal(guarded.registered[0].channel, '/restart-backend')
+  assert.equal(guarded.registered[0].channel, '/backend-restart')
 
   assert.throws(
     () => registerChannel({

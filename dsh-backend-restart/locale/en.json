@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Backend Restart",
+    "title": "DSH backend restart",
     "description": "Adds an action at the end of General settings that restarts the DSH backend process."
   }
 }
