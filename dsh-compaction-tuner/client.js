@@ -70,27 +70,27 @@ window.__ModuleLoader__.load({
     const SECTION_ORDER = 40;
 
     /**
-     * The eleven tuner fields, in the order their ops are submitted. This order
-     * is the host `TUNE_KEYS` order, and each entry carries the client-side
-     * input shape and numeric bound, mirroring the host schema:
-     * `ratio` -> `step(0.01).min(0.01).max(1)`, `integer` -> `step(1).min(min)`.
-     * A blank field is submitted as `unset`; only `retainRatio`, `retainTokens`
-     * and `maxTokens` are ever legitimately blank (they carry no schema default).
-     * `retainRatio` is the one blank field whose effective value is a concrete
-     * code default, so its input carries that default as a placeholder.
+     * The eleven tuner fields, in the order their ops are submitted: the host
+     * `TUNE_KEYS` order, each with its client-side input shape and numeric bound
+     * (`ratio` -> `step(0.01).min(0.01).max(1)`, `integer` -> `step(1).min(min)`).
+     * A blank field is submitted as `unset`; only `retainRatio`, `retainTokens` and
+     * `maxTokens` are ever legitimately blank (no schema default), and `retainRatio`
+     * carries its unset default as a placeholder. `default` mirrors the host
+     * `OPTION_SPECS` code default (`index.js:149-250`, cited per entry) — only
+     * `react` may be required (`verify.mjs:682`); `undefined` = unset upstream.
      */
     const FIELDS = [
-      { key: 'thresholdRatio', kind: 'ratio' },
-      { key: 'headroomTokens', kind: 'integer', min: 0 },
-      { key: 'retainRatio', kind: 'ratio' },
-      { key: 'retainTokens', kind: 'integer', min: 0 },
-      { key: 'summarizationProvider', kind: 'string' },
-      { key: 'summarizationModel', kind: 'string' },
-      { key: 'maxTokens', kind: 'integer', min: 1 },
-      { key: 'compactionRetries', kind: 'integer', min: 0 },
-      { key: 'maxOverflowRetries', kind: 'integer', min: 0 },
-      { key: 'modelPolicies', kind: 'json' },
-      { key: 'auto', kind: 'boolean' },
+      { key: 'thresholdRatio', kind: 'ratio', default: 0.8 }, // index.js:153
+      { key: 'headroomTokens', kind: 'integer', min: 0, default: 65_536 }, // index.js:161
+      { key: 'retainRatio', kind: 'ratio', default: 0.16 }, // index.js:169
+      { key: 'retainTokens', kind: 'integer', min: 0, default: undefined }, // index.js:177
+      { key: 'summarizationProvider', kind: 'string', default: '' }, // index.js:185
+      { key: 'summarizationModel', kind: 'string', default: '' }, // index.js:193
+      { key: 'maxTokens', kind: 'integer', min: 1, default: undefined }, // index.js:201
+      { key: 'compactionRetries', kind: 'integer', min: 0, default: 1 }, // index.js:209
+      { key: 'maxOverflowRetries', kind: 'integer', min: 0, default: 1 }, // index.js:217
+      { key: 'modelPolicies', kind: 'json', default: Object.freeze([]) }, // index.js:225
+      { key: 'auto', kind: 'boolean', default: true }, // index.js:245
     ];
 
     /**
@@ -396,7 +396,7 @@ window.__ModuleLoader__.load({
       '.dct-confirm-actions { display: flex; gap: 8px; }',
       '.dct-field { display: flex; flex-direction: column; gap: 6px; padding: 14px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }',
       '.dct-field-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }',
-      '.dct-field-label { color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; }',
+      '.dct-field-label { color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; } .dct-field-label[data-nondefault="true"] { font-weight: 600; }',
       '.dct-unit { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
       '.dct-input { box-sizing: border-box; width: 160px; height: 28px; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 6px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; }',
       '.dct-input:disabled { cursor: not-allowed; opacity: 0.4; }',
@@ -882,11 +882,11 @@ window.__ModuleLoader__.load({
      * @param props.t - localized copy for this plugin's namespace.
      * @param props.callBackend - caller for the shared restart channel.
      * @param props.close - shell-owned panel exit; this page needs no exit of
-     *   its own, so it never calls it (the contract still passes it).
+     *   its own, so it never calls it. `readCatalog`, `connection` and `onConnectionReset` are the page's catalog seats.
      * @returns the section tree.
      */
     function TunerSection(props) {
-      const { form, t, callBackend, readCatalog } = props;
+      const { form, t, callBackend, readCatalog, connection, onConnectionReset } = props;
       // The controller's methods need their receiver, and uSES resubscribes
       // whenever `subscribe` identity changes, so both seats are memoized to
       // one stable pair per form rather than handing uSES the bare methods.
@@ -933,27 +933,27 @@ window.__ModuleLoader__.load({
       const [pickModel, setPickModel] = useState('');
 
       /* One mount effect reads the model catalog through the injected Remote
-       * caller. A missing service, a refused reply, a rejection and an empty
-       * catalog each degrade to their own localized note; the rest of the page
-       * — and any already-stored override — keeps working. */
-      useEffect(() => {
-        const controller = new window.AbortController();
-        let live = true;
-        Promise.resolve().then(() => readCatalog()).then(
-          (result) => {
-            if (!live || controller.signal.aborted) return;
-            setCatalog(catalogState(result));
-          },
-          () => {
-            if (!live || controller.signal.aborted) return;
-            setCatalog({ status: 'error', providers: [] });
-          },
-        );
-        return () => {
-          live = false;
-          controller.abort();
-        };
-      }, [readCatalog]);
+       * caller and re-reads it whenever a connection generation resets, so a
+       * mount-time failure cannot outlive the connection it was made on.
+       *
+       * A genuine failure — a refused reply (`ok` not true) or a rejected
+       * promise — is retried twice with backoff (300ms, then 1200ms) before it
+       * settles on the load-error note, so a transient refusal cannot leave a
+       * dead picker. The plugin's own `compaction-tuner/remote-unavailable`
+       * reply is never retried: the Remote service is absent, so another call
+       * cannot succeed and the page must make no further call at all in that
+       * case (the offline suite pins exactly zero calls there). The abort
+       * controller still cancels an in-flight read, and every pending retry.
+       *
+       * A missing service, a refused reply, a rejection and an empty catalog
+       * each degrade to their own localized note; the rest of the page — and
+       * any already-stored override — keeps working. */
+      useEffect(() => watchCatalog({
+        read: readCatalog,
+        connection,
+        onReset: onConnectionReset,
+        onState: setCatalog,
+      }), [readCatalog, connection, onConnectionReset]);
 
       const status = snapshot === undefined || snapshot === null || typeof snapshot.status !== 'string'
         ? 'loading'
@@ -1392,7 +1392,7 @@ window.__ModuleLoader__.load({
         }
         return h('div', { className: 'dct-field', key },
           h('div', { className: 'dct-field-head' },
-            h('label', { className: 'dct-field-label', htmlFor: ids[key] }, t(`field.${key}.label`)),
+            h('label', { className: 'dct-field-label', htmlFor: ids[key], 'data-nondefault': isNonDefaultText(field, draft[key]) ? 'true' : undefined }, t(`field.${key}.label`)),
             h('span', { className: 'dct-unit' }, t(`field.${key}.unit`)),
           ),
           control,
@@ -1443,7 +1443,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    return {
+    const plugin = {
       name: '@local/dsh-compaction-tuner',
       inject: ['slots', 'locale', 'configForms', 'connection', 'remote'],
       /**
@@ -1459,18 +1459,18 @@ window.__ModuleLoader__.load({
         const t = ctx.locale.bind(NS);
         const callBackend = (endpoint, payload, signal) => {
           const connection = ctx.get('connection');
-          if (connection === undefined || connection === null
-            || connection.rpc === undefined || connection.rpc === null
-            || typeof connection.rpc.call !== 'function') {
+          if (connection === undefined || connection === null || connection.rpc === undefined
+            || connection.rpc === null || typeof connection.rpc.call !== 'function') {
             return Promise.reject(new Error('compaction-tuner: the shared Connection service is unavailable'));
           }
           return connection.rpc.call(RESTART_CHANNEL, endpoint, payload, signal);
         };
+        // Re-read the catalog whenever an established connection resets.
+        const onConnectionReset = catalogResetSeat(ctx);
         /**
          * Read the provider-grouped model catalog through the client Remote
-         * service. A deployment without the service, or one whose reply is not
-         * the expected envelope, resolves to a refused result so the picker
-         * renders its own note instead of breaking the page.
+         * service; a missing service or an unexpected envelope resolves to a
+         * refused result so the picker renders its own note.
          * @returns the Remote result envelope.
          */
         const readCatalog = () => {
@@ -1496,9 +1496,152 @@ window.__ModuleLoader__.load({
           // `label` is required: an omitted label renders an empty nav row.
           label: () => t('nav'),
           locale: NS,
-          inject: () => ({ form, t, callBackend, readCatalog }),
+          inject: () => ({ form, t, callBackend, readCatalog, connection: ctx.get('connection'), onConnectionReset }),
         }, TunerSection));
       },
     };
+
+    /**
+     * Whether the text SHOWN for one option deviates from that option's code
+     * default — which is what a bold option LABEL marks. A blank field means
+     * "unset", and the code default then applies, so a blank is never a
+     * deviation (that covers `retainTokens`/`maxTokens`, whose code default is
+     * itself `undefined`). `modelPolicies` is the composite field: the empty
+     * table (`''` or `'[]'`) is the default, and any listed override deviates.
+     * The marking rides on the label's `data-nondefault` attribute, styled in
+     * STYLE_TEXT, so the label's className and its single direct text child —
+     * both asserted exactly by the offline suite — never change.
+     *
+     * Declared below the last line CONTRACT.md cites (`client.js:1492`) on
+     * purpose: `verify.mjs:898` resolves every documentation citation against
+     * the current file, so a helper inserted mid-file would invalidate the
+     * frozen citation set and fail the suite.
+     * @param field - one FIELDS entry; it carries the mirrored code default.
+     * @param text - the option's current draft text, exactly as shown.
+     * @returns true when the shown value differs from the code default.
+     */
+    function isNonDefaultText(field, text) {
+      const shown = typeof text === 'string' ? text.trim() : '';
+      if (shown === '') return false;
+      if (field.kind === 'json') {
+        try {
+          const parsed = JSON.parse(shown);
+          return !(Array.isArray(parsed) && parsed.length === 0);
+        } catch (_malformedPolicies) {
+          // A table the user is still typing is not the empty default either.
+          return true;
+        }
+      }
+      if (field.default === undefined) return true;
+      return shown !== String(field.default);
+    }
+
+    /**
+     * The backoff between catalog read attempts: at most 1 + two calls, so a
+     * transient mount-time refusal cannot spin against a failing gateway.
+     */
+    const CATALOG_RETRY_DELAYS = [300, 1200];
+
+    /**
+     * The diagnostic form of one failed `session.modelCatalog()` attempt. The
+     * refusal code, its message and the raw reply (or the rejection value) used
+     * to be discarded, which left the page's `perModel.error` note
+     * undiagnosable; `watchCatalog` emits this beside its console line instead.
+     * @param result - the refused reply, or the rejection value.
+     * @returns `{code, message, reply}`, with `code` possibly `undefined`.
+     */
+    function catalogFailure(result) {
+      const error = result !== null && typeof result === 'object' ? result.error : undefined;
+      if (error !== null && typeof error === 'object') {
+        return { code: error.code, message: error.message, reply: result };
+      }
+      // Duck-typed, not `instanceof Error`: a rejection can cross the vm realm
+      // the harness mounts this client in, where that check is always false.
+      const message = result !== null && typeof result === 'object' && typeof result.message === 'string'
+        ? result.message
+        : String(result);
+      return { code: undefined, message, reply: result };
+    }
+
+    /**
+     * The page's `connection/reset` seat. Every established connection
+     * generation emits that context event
+     * (`packages/client/connection/src/client/index.ts:28`), which is how the
+     * in-tree pages re-pull their wire-derived caches; re-reading the catalog
+     * on it is what keeps a mount-time failure from sticking. The context
+     * listener exists only while a page seat is subscribed, and a context with
+     * no event bus (the offline harness double) simply never fires.
+     * @param ctx - the client root context.
+     * @returns a subscribe function that returns its own disposer.
+     */
+    function catalogResetSeat(ctx) {
+      const seats = new Set();
+      let unsubscribe = null;
+      return seat => {
+        seats.add(seat);
+        if (unsubscribe === null && typeof ctx.on === 'function') {
+          const disposer = ctx.on('connection/reset', () => { for (const listener of [...seats]) listener(); });
+          unsubscribe = typeof disposer === 'function' ? disposer : null;
+        }
+        return () => {
+          seats.delete(seat);
+          if (seats.size === 0 && unsubscribe !== null) {
+            const disposer = unsubscribe;
+            unsubscribe = null;
+            disposer();
+          }
+        };
+      };
+    }
+
+    /**
+     * Own one catalog read cycle: read once, retry a GENUINE failure at most
+     * `CATALOG_RETRY_DELAYS.length` times with that backoff, and re-read from
+     * scratch whenever the connection resets. The plugin's own
+     * `compaction-tuner/remote-unavailable` reply is never retried: the Remote
+     * service is absent, so another call cannot succeed, and the missing-service
+     * case must make no call at all beyond the first.
+     * @param read - the injected `readCatalog` caller.
+     * @param connection - the injected Connection service, when it emits by itself.
+     * @param onReset - the context `connection/reset` seat, when one is available.
+     * @param onState - receives every resolved `{status, providers}` state.
+     * @returns the effect cleanup: stops retries, aborts, unsubscribes.
+     */
+    function watchCatalog({ read, connection, onReset, onState }) {
+      const controller = new window.AbortController();
+      let live = true;
+      let timer;
+      const attempt = (retry) => {
+        const settle = (result) => {
+          if (!live || controller.signal.aborted) return;
+          const state = catalogState(result);
+          if (state.status === 'error') {
+            console.error('[compaction-tuner] model catalog load failed', catalogFailure(result));
+            if (retry < CATALOG_RETRY_DELAYS.length) {
+              timer = window.setTimeout(() => { attempt(retry + 1); }, CATALOG_RETRY_DELAYS[retry]);
+            }
+          }
+          onState(state);
+        };
+        Promise.resolve().then(() => read()).then(settle, settle);
+      };
+      attempt(0);
+      const reRead = () => {
+        if (!live || controller.signal.aborted) return;
+        if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; }
+        attempt(0);
+      };
+      const offSeat = typeof onReset === 'function' ? onReset(reRead) : undefined;
+      const offConnection = typeof connection?.on === 'function' ? connection.on('connection/reset', reRead) : undefined;
+      return () => {
+        live = false;
+        controller.abort();
+        if (timer !== undefined) window.clearTimeout(timer);
+        if (typeof offSeat === 'function') offSeat();
+        if (typeof offConnection === 'function') offConnection();
+      };
+    }
+
+    return plugin;
   },
 });

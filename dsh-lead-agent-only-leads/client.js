@@ -283,6 +283,7 @@ window.__ModuleLoader__.load({
       '.dll-row { box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; padding: 14px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }',
       '.dll-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }',
       '.dll-row-name { color: var(--dsw-alias-label-primary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 20px; }',
+      '.dll-row-name[data-nondefault="true"] { font-weight: 600; }',
       '.dll-row-desc { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }',
       '.dll-row-default { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
       '.dll-row-none { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
@@ -501,14 +502,20 @@ Hand every part of the job out, and answer the user as soon as it is out.
      * the description, plus a switch; a `none` row renders neither — that label
      * was inert for a row no toggle can affect — and instead shows the reason and
      * a `Not toggleable` badge where the switch would be.
-     * @param props - row entry, live value, disabled state, and writers.
+     * @param props - row entry, live value, deviation flag, disabled state, and writers.
      * @returns the row element.
      */
-    function ToolRow({ entry, enabled, disabled, pending, onToggle, t }) {
+    function ToolRow({ entry, enabled, deviates, disabled, pending, onToggle, t }) {
       const reason = entry.klass === 'none' ? NONE_REASON[entry.name] : undefined;
+      // Bold the LABEL alone when the shown value leaves the code default; a `none`
+      // row has no toggle, so its label never marks a deviation.
+      const nonDefault = deviates === true && entry.klass !== 'none';
       return h('div', { className: 'dll-row' },
         h('div', { className: 'dll-row-text' },
-          h('div', { className: 'dll-row-name' }, entry.name),
+          h('div', {
+            className: 'dll-row-name',
+            'data-nondefault': nonDefault ? 'true' : undefined,
+          }, entry.name),
           h('p', { className: 'dll-row-desc' }, t(descKey(entry.name))),
           entry.klass === 'none'
             ? null
@@ -599,16 +606,21 @@ Hand every part of the job out, and answer the user as soon as it is out.
         ...GROUPS.map(group => h('section', { className: 'dll-group', key: group },
           h('h3', { className: 'dll-group-title' }, t(`group.${group}`)),
           h('p', { className: 'dll-group-note' }, t(`group.${group}.note`)),
-          ...LEAD_TOOL_CATALOG.filter(entry => entry.klass === group).map(entry =>
-            h(ToolRow, {
+          ...LEAD_TOOL_CATALOG.filter(entry => entry.klass === group).map(entry => {
+            // The effective on/off the switch shows: an unset name falls back to
+            // the catalog default. The label is bold exactly when that differs.
+            const enabled = tools[entry.name] === undefined ? entry.def : tools[entry.name] === true;
+            return h(ToolRow, {
               key: entry.name,
               entry,
-              enabled: tools[entry.name] === undefined ? entry.def : tools[entry.name] === true,
+              enabled,
+              deviates: enabled !== entry.def,
               disabled: !writable,
               pending: pending.has(entry.name),
               onToggle: toggle,
               t,
-            })),
+            });
+          }),
         )),
       );
     }

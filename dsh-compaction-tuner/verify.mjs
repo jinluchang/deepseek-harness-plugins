@@ -261,10 +261,22 @@ function fakeClientContext() {
     catalogCalls: 0,
   }
   const form = new BoundForm()
+  /** The context event bus, so a `connection/reset` seat can be driven. */
+  const events = new Map()
   const ctx = {
     state,
     form,
     get: name => (name === 'connection' ? state.connection : name === 'remote' ? state.remote : undefined),
+    on(event, listener) {
+      const listeners = events.get(event) ?? new Set()
+      listeners.add(listener)
+      events.set(event, listeners)
+      return () => { listeners.delete(listener) }
+    },
+    /** Emit one context event, exactly as the Connection service does on connect. */
+    emit(event) {
+      for (const listener of [...(events.get(event) ?? [])]) listener()
+    },
     effect(callback, label) {
       state.effects.push(label)
       const disposer = callback()
@@ -2618,7 +2630,7 @@ await check('the client injects the connection and remote services at runtime an
   assert.deepEqual(requested, ['react'], `the factory requested ${JSON.stringify(requested)} from the module table`)
 })
 
-await check('the catalog is read once per mount through the injected Remote service, and its reply gates the picker', async () => {
+await check('the catalog is read at mount through the injected Remote service, retries a failure a bounded number of times, and its reply gates the picker', async () => {
   // A ready reply populates the provider/model selects from the catalog alone.
   const ready = mountSection(readySnapshot(7))
   await ready.settle()
@@ -2656,6 +2668,39 @@ await check('the catalog is read once per mount through the injected Remote serv
   await empty.settle()
   assert.ok(renderedText(empty.tree()).includes(enCopy('perModel.empty')), 'an empty catalog did not render its note')
   assert.equal(perModelSelect(empty, 'provider'), undefined, 'an empty catalog still rendered the picker')
+  // A genuine failure is retried twice with backoff (1 + 2 calls at most), and
+  // a later `connection/reset` re-reads the catalog, so a mount-time failure
+  // cannot stick the way the one-shot read did.
+  const clock = installClock()
+  try {
+    let attempts = 0
+    const flaky = mountSection(readySnapshot(7), {
+      catalog: () => {
+        attempts += 1
+        return attempts <= 3
+          ? Promise.resolve({ ok: false, error: { code: 'session/catalog-refused', message: 'catalog boom' } })
+          : CATALOG_OK()
+      },
+    })
+    await flaky.settle()
+    assert.equal(flaky.ctx.state.catalogCalls, 1, `the first attempt made ${flaky.ctx.state.catalogCalls} calls, expected 1`)
+    assert.ok(renderedText(flaky.tree()).includes(enCopy('perModel.error')), 'a transient refusal did not render its note')
+    assert.deepEqual(clock.pendingDelays(), [300], `the first backoff was ${JSON.stringify(clock.pendingDelays())}`)
+    await clock.runOldest()
+    assert.equal(flaky.ctx.state.catalogCalls, 2, 'the first retry did not run')
+    assert.deepEqual(clock.pendingDelays(), [1200], `the second backoff was ${JSON.stringify(clock.pendingDelays())}`)
+    await clock.runOldest()
+    assert.equal(flaky.ctx.state.catalogCalls, 3, 'the second retry did not run')
+    assert.deepEqual(clock.pendingDelays(), [], 'the retry was not bounded to 1 + two calls')
+    await clock.runOldest()
+    assert.equal(flaky.ctx.state.catalogCalls, 3, 'a retry ran beyond the bound')
+    assert.ok(renderedText(flaky.tree()).includes(enCopy('perModel.error')), 'an exhausted retry lost the load-error note')
+    flaky.ctx.emit('connection/reset')
+    await flaky.settle()
+    assert.equal(flaky.ctx.state.catalogCalls, 4, 'a connection reset did not re-read the catalog')
+    assert.equal(renderedText(flaky.tree()).includes(enCopy('perModel.error')), false, 'the recovered page still shows the load-error note')
+    assert.ok(perModelSelect(flaky, 'provider') !== undefined, 'the recovered catalog did not render the picker')
+  } finally { clock.restore() }
 })
 
 await check('the restart-required notice is a real <strong> in the ready, unavailable and loading states', async () => {
