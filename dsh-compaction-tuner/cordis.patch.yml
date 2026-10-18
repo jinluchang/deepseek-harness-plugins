@@ -1,0 +1,21 @@
+# Bundle patch for dsh-compaction-tuner.
+#
+# One row owns the three values every agent preset runs its `compaction-basic`
+# child with. They are THE single control: this row's `config` is the source of
+# truth, and each retune pass pushes the values into every
+# `@deepseek-ai/dsh-agent-preset` row of the active profile, replacing the
+# per-preset tune that the shipped preset patches commit (the checkout's
+# `packages/bundle/web-app/presets/standard.patch.yml` currently commits
+# thresholdRatio 0.5, retainRatio 0.15, compactionRetries 2).
+#
+# The row itself is persisted the same way as any other profile row: the
+# settings page writes the active profile's `cordis.patch.yml` (the profile's
+# own `cordis.patch.yml`, next to its `package.json`), and the per-preset copies
+# retune writes live in that same profile patch file.
+- insert:
+    - id: compaction-tuner
+      name: '@local/dsh-compaction-tuner'
+      config:
+        thresholdRatio: 0.5
+        retainRatio: 0.15
+        compactionRetries: 2

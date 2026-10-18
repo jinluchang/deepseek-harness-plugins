@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Compaction tuner",
+    "description": "Tune the compaction threshold, retained tail, and retry count once for every agent preset in this profile."
+  }
+}

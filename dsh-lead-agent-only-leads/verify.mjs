@@ -54,12 +54,16 @@ const {
   volatileValue,
 } = await import('./index.js')
 
-/** Tool names the `standard` preset mounts, which an Agent of it inherits. */
+/**
+ * Tool names the `standard` preset mounts, which an Agent of it inherits. The
+ * plan-mode row registers only `exit_plan_mode`: plan mode itself is session
+ * state the user enters (the `/plan` command or the composer), not a tool.
+ */
 const PRESET_SURFACE = [
   'bash', 'pwsh', 'read', 'read_image', 'write', 'edit', 'glob', 'grep',
   'job_list', 'job_output', 'job_kill', 'schedule_create', 'schedule_list',
   'subagent_fork', 'workflow', 'todo_write', 'ask_user_question',
-  'web_search', 'web_fetch', 'present', 'skill', 'plan_mode',
+  'web_search', 'web_fetch', 'present', 'skill', 'exit_plan_mode',
 ]
 
 /**
@@ -74,7 +78,12 @@ const AGENT_LAYER = [
   'subagent', 'list_subagent_models',
 ]
 
-const KEPT_BY_DEFAULT = ['read', 'read_image', 'glob', 'grep', 'ask_user_question', 'todo_write']
+/**
+ * Catalog-default keep list: every `whitelist` row whose `def` is true, in
+ * catalog order. A Lead talks to the user, tracks the work, and can submit a
+ * plan; it cannot read, search, write, or run anything.
+ */
+const KEPT_BY_DEFAULT = ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present']
 
 /** The catalog's guard-off defaults, i.e. the deny list a fresh Lead gets. */
 const DENIED_BY_DEFAULT = ['wait_agent', 'subagent', 'list_subagent_models']
@@ -264,18 +273,49 @@ check('leadContract states the non-blocking contract and supersedes the wait rul
 })
 
 /**
- * The contract text exactly as it shipped before `leadContract()` accepted
- * options, embedded so the check needs neither git state nor a historical copy.
- * The no-argument call must still return this byte for byte.
+ * The contract text the catalog defaults produce, embedded so the check needs
+ * neither git state nor a historical copy. `leadContract()` with no arguments,
+ * `leadContract({})`, and `leadContract({ deny: catalog.deny })` must all return
+ * it byte for byte.
  */
-const LEGACY_CONTRACT_TEXT = "Non-blocking Lead\n\nYou are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, and `wait_agent`, `subagent`, and `list_subagent_models` are refused — do not plan around waiting or around one-shot delegation. This supersedes the Agent Teams instruction to wait for teammates before answering.\n\nHand every part of the job out, and answer the user as soon as it is out.\n- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result.\n- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.\n- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.\n- Use read, glob, and grep to inspect the workspace before and while briefing, and ask_user_question when the decision is the user's to make. Teammates do the writing.\n- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn."
+const FROZEN_CONTRACT_TEXT = "Non-blocking Lead\n\nYou are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, you cannot read files, search the workspace, or view images, and `wait_agent`, `subagent`, and `list_subagent_models` are refused — do not count on waiting or on one-shot delegation. Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools; everything else the preset mounts is off your list. This supersedes the Agent Teams instruction to wait for teammates before answering.\n\nHand every part of the job out, and answer the user as soon as it is out.\n- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.\n- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.\n- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.\n- Teammates do the reading, searching, and writing; you brief and coordinate. Use ask_user_question when the decision is the user's to make.\n- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn."
 
-check('leadContract() with no arguments is byte-identical to the pre-options text', () => {
+/** The user's exact reconnaissance wording, embedded so it is asserted byte for byte. */
+const RECON_BULLET = '- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.'
+
+/** The wording task-14 deleted; it must not survive anywhere in the contract. */
+const DELETED_RECON_SENTENCE = 'You cannot read, search, or list the repository, so you may not know those files or checks yet. That is what reconnaissance is for:'
+
+/**
+ * Whether a contract text talks about planning at all. Naming the `exit_plan_mode`
+ * TOOL is required by the resolved-tool-list sentence (the tool stays enabled), so
+ * that backticked name is stripped first: what must never appear is "plan mode",
+ * "planning", or any other bare "plan".
+ * @param {string} text - a contract text.
+ * @returns {boolean} true when the text talks about planning beyond naming the tool.
+ */
+function mentionsPlanning(text) {
+  return /plan/i.test(text.split('`exit_plan_mode`').join(''))
+}
+
+check('leadContract() with no arguments is the frozen catalog-default text', () => {
   const text = leadContract()
-  assert.equal(text, LEGACY_CONTRACT_TEXT)
-  assert.equal(Buffer.byteLength(text, 'utf8'), 1098, 'the frozen text is 1098 UTF-8 bytes')
-  assert.equal(createHash('sha256').update(text, 'utf8').digest('hex'), '85224c623b11cdcbced5db780028b7c1ce6921fad0625764439423bd5357dfa9')
-  assert.equal(leadContract({}), LEGACY_CONTRACT_TEXT, 'an empty options object must also keep the legacy text')
+  assert.equal(text, FROZEN_CONTRACT_TEXT)
+  assert.equal(Buffer.byteLength(text, 'utf8'), 1688, 'the frozen text is 1688 UTF-8 bytes')
+  assert.equal(createHash('sha256').update(text, 'utf8').digest('hex'), 'b9ac0d72c75c6e9e214fb155b3fdc0a80bffc24201f8bd10635b3f1e00dc175b')
+  assert.equal(leadContract({}), FROZEN_CONTRACT_TEXT, 'an empty options object must also keep the frozen text')
+  // The contract must not read as if it mentioned or encouraged planning, even
+  // though `exit_plan_mode` stays an enabled catalog tool and is therefore named
+  // by the resolved-tool-list sentence.
+  assert.equal(/plan mode|planning/i.test(text), false, 'the contract must never say "plan mode" or "planning"')
+  assert.equal(mentionsPlanning(text), false, 'the only "plan" in the text may be the `exit_plan_mode` tool name')
+  // The brief bullet carries the reconnaissance flow, byte for byte and once.
+  assert.equal(text.split(RECON_BULLET).length - 1, 1, 'the reconnaissance bullet must appear exactly once, byte-identical')
+  assert.equal(text.includes(DELETED_RECON_SENTENCE), false, 'the deleted sentence must not survive')
+  assert.match(text, /you may create a reconnaissance task/, 'the reconnaissance flow lives inside the brief bullet')
+  assert.equal(/\bwait|\bblock/i.test(RECON_BULLET), false, 'the reconnaissance bullet must not introduce blocking language')
+  // The claim paragraph names the resolved tools and the generic Team-tools phrase.
+  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools; everything else the preset mounts is off your list\./)
 })
 
 check('leadContract({ deny: [] }) states no refusal clause at all', () => {
@@ -284,22 +324,22 @@ check('leadContract({ deny: [] }) states no refusal clause at all', () => {
   assert.equal(text.includes('wait_agent'), false)
   assert.equal(text.includes('subagent'), false)
   assert.equal(text.includes('list_subagent_models'), false)
-  assert.match(text, /You cannot run shell commands and you cannot write or edit files\./)
+  assert.match(text, /You cannot run shell commands, you cannot write or edit files, and you cannot read files, search the workspace, or view images\./)
   assert.match(text, /supersedes the Agent Teams instruction/i)
 })
 
 check('leadContract({ deny: ["subagent"] }) names only subagent and keeps the delegation clause', () => {
   const text = leadContract({ deny: ['subagent'] })
   assert.match(text, /`subagent` is refused/)
-  assert.match(text, /do not plan around one-shot delegation/)
+  assert.match(text, /do not count on one-shot delegation/)
   assert.equal(text.includes('wait_agent'), false, 'a tool outside `deny` must not be named')
   assert.equal(text.includes('list_subagent_models'), false)
-  assert.equal(text.includes('around waiting'), false, 'waiting is only refused while wait_agent is denied')
+  assert.equal(text.includes('count on waiting'), false, 'waiting is only refused while wait_agent is denied')
 })
 
 check('leadContract defaults follow the catalog; deny grammar and hidden flags are faithful', () => {
   const catalog = catalogDefaults()
-  assert.equal(leadContract({ deny: catalog.deny }), LEGACY_CONTRACT_TEXT, 'the catalog deny list must reproduce the legacy text')
+  assert.equal(leadContract({ deny: catalog.deny }), FROZEN_CONTRACT_TEXT, 'the catalog deny list must reproduce the frozen text')
   for (const denied of catalog.deny) {
     assert.equal(leadContract().includes(`\`${denied}\``), true, `the default text must name ${denied}`)
   }
@@ -308,11 +348,105 @@ check('leadContract defaults follow the catalog; deny grammar and hidden flags a
   assert.match(leadContract({ deny: ['subagent'] }), /`subagent` is refused/)
   assert.match(leadContract({ deny: ['wait_agent', 'subagent'] }), /`wait_agent` and `subagent` are refused/)
   const bare = leadContract({ deny: ['wait_agent'], shellHidden: false, writersHidden: false })
-  assert.match(bare, /`wait_agent` is refused — do not plan around waiting\./)
+  assert.match(bare, /`wait_agent` is refused — do not count on waiting\./)
   assert.equal(bare.includes('shell commands'), false, 'shellHidden: false must drop the shell claim')
   assert.equal(bare.includes('write or edit files'), false, 'writersHidden: false must drop the writer claim')
   // An unknown flag (anything but an explicit `false`) keeps the catalog text.
   assert.equal(leadContract({ deny: ['wait_agent'], shellHidden: undefined }), leadContract({ deny: ['wait_agent'] }))
+})
+
+check('the catalog defaults keep the user-facing tools, the planner, and present, in catalog order', () => {
+  const catalog = catalogDefaults()
+  assert.deepEqual(catalog.keep, ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present'])
+  assert.deepEqual(catalog.deny, ['wait_agent', 'subagent', 'list_subagent_models'], 'the guard default is unchanged')
+  const onRows = LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'whitelist' && entry.def).map(entry => entry.name)
+  assert.deepEqual(catalog.keep, onRows, 'the keep list must follow catalog order')
+  const resolved = resolveToolPolicy({})
+  assert.deepEqual(resolved.keep, catalog.keep)
+  assert.deepEqual(resolved.deny, catalog.deny)
+  assert.equal(resolved.keepConfigured, false)
+  assert.equal(resolved.denyConfigured, false)
+  // The four reading tools are OFF by default and stay `whitelist` rows.
+  // `exit_plan_mode` stays ON (making a plan is allowed; the contract simply
+  // never mentions it) and so does `present`.
+  for (const reader of ['read', 'read_image', 'glob', 'grep']) {
+    const entry = LEAD_TOOL_CATALOG.find(candidate => candidate.name === reader)
+    assert.equal(entry.klass, 'whitelist', `${reader} must stay a whitelist row`)
+    assert.equal(entry.def, false, `${reader} must default OFF`)
+  }
+  const planner = LEAD_TOOL_CATALOG.find(candidate => candidate.name === 'exit_plan_mode')
+  assert.equal(planner.klass, 'whitelist')
+  assert.equal(planner.def, true, 'exit_plan_mode must default ON')
+  const presenter = LEAD_TOOL_CATALOG.find(candidate => candidate.name === 'present')
+  assert.equal(presenter.klass, 'whitelist')
+  assert.equal(presenter.def, true, 'present must default ON')
+})
+
+check('the reading claim follows its flag, and no contract text mentions planning', () => {
+  const base = leadContract()
+  assert.equal(leadContract({}), base, 'an empty options object is the frozen text')
+  assert.equal(leadContract({ deny: catalogDefaults().deny }), base, 'the catalog deny list reproduces it')
+  // An unknown flag (anything but an explicit `false`) keeps the claim.
+  assert.equal(leadContract({ readersHidden: undefined }), base)
+
+  const readable = leadContract({ readersHidden: false })
+  assert.equal(readable.includes('read files'), false, 'readersHidden: false must drop the reading claim')
+  assert.equal(readable.includes('search the workspace'), false)
+  assert.equal(readable.includes('view images'), false)
+  assert.match(readable, /You cannot run shell commands, you cannot write or edit files, and `wait_agent`/)
+
+  const bare = leadContract({ readersHidden: false, shellHidden: false, writersHidden: false })
+  assert.equal(bare.includes('read files'), false)
+  assert.equal(bare.includes('shell commands'), false)
+  assert.equal(bare.includes('write or edit files'), false)
+  assert.match(bare, /You are a non-blocking Team Lead\. `wait_agent`/)
+
+  // No option drops the reconnaissance bullet, and `planEnabled` is not an
+  // option at all any more: none of these texts may mention planning.
+  for (const text of [base, readable, bare, leadContract({ deny: [] }), leadContract({ planEnabled: false })]) {
+    assert.equal(mentionsPlanning(text), false, 'no contract text may mention planning')
+    assert.match(text, /read-only task/, 'the reconnaissance-first bullet survives every flag combination')
+  }
+})
+
+check('the claim paragraph names the actual resolved tool list', () => {
+  const text = leadContract()
+  // Default: exactly the catalog ON list, in catalog order, plus the generic phrase.
+  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools;/)
+  assert.deepEqual(catalogDefaults().keep, ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present'])
+  // 1/2/many joining, in the order given, and never enumerating the Team tools.
+  assert.match(leadContract({ tools: ['todo_write'] }), /Your own tools are `todo_write`, plus the Team tools;/)
+  assert.match(leadContract({ tools: ['read', 'todo_write'] }), /Your own tools are `read` and `todo_write`, plus the Team tools;/)
+  assert.match(leadContract({ tools: ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present'] }), /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools;/)
+  assert.equal(text.includes('spawn_teammate'), false, 'the Team tools stay a generic phrase, never enumerated')
+  // An EMPTY resolved list must not print a dangling list.
+  const empty = leadContract({ tools: [] })
+  assert.equal(empty.includes('Your own tools are'), false)
+  assert.match(empty, /You keep none of the preset's tools, plus the Team tools; everything else the preset mounts is off your list\./)
+  assert.equal(/are\s*,/.test(empty), false, 'an empty list must not leave a dangling "are ,"')
+  // A non-array falls back to the catalog ON list.
+  assert.equal(leadContract({ tools: 'nope' }), text)
+  // The sentence follows the policy: re-enabling the reader drops the claim and names read.
+  const readable = leadContract({ tools: ['read', 'todo_write'], readersHidden: false })
+  assert.match(readable, /Your own tools are `read` and `todo_write`, plus the Team tools;/)
+  assert.equal(readable.includes('you cannot read files'), false, 're-enabling read must drop the reading claim')
+  // Dropping present removes it from the list.
+  const noPresent = leadContract({ tools: ['ask_user_question', 'todo_write', 'exit_plan_mode'] })
+  assert.match(noPresent, /Your own tools are `ask_user_question`, `todo_write`, and `exit_plan_mode`, plus the Team tools;/)
+  assert.equal(noPresent.includes('`present`'), false)
+  // The merged reconnaissance bullet is unchanged in every variant.
+  for (const variant of [text, empty, readable, noPresent]) {
+    assert.equal(variant.split(RECON_BULLET).length - 1, 1, 'exactly one merged brief bullet')
+  }
+})
+
+check('selectLeadTools drops exit_plan_mode when the scope does not mount it', () => {
+  const keep = catalogDefaults().keep
+  assert.deepEqual(selectLeadTools(keep, ['ask_user_question', 'todo_write', 'present']), ['ask_user_question', 'todo_write', 'present'])
+  assert.deepEqual(selectLeadTools(keep, ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present']), keep)
+  assert.deepEqual(selectLeadTools(keep, ['exit_plan_mode']), ['exit_plan_mode'])
+  assert.deepEqual(selectLeadTools(keep, ['present']), ['present'])
+  assert.deepEqual(selectLeadTools(keep, ['read', 'glob']), [], 'a scope with only the reading tools keeps none of them')
 })
 
 check('the registered contract follows the resolved policy (live-profile override shape)', () => {
@@ -327,10 +461,30 @@ check('the registered contract follows the resolved policy (live-profile overrid
   assert.equal(lead.deny('list_subagent_models'), undefined)
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
   const text = lead.sections.get('lead-agent-only-leads:contract').text
-  assert.match(text, /`wait_agent` is refused — do not plan around waiting\./)
+  assert.match(text, /`wait_agent` is refused — do not count on waiting\./)
   assert.equal(text.includes('list_subagent_models'), false, 'the prompt must not name a tool this policy allows')
   assert.equal(/`subagent`/.test(text), false, 'the prompt must not name `subagent` when it is allowed')
   assert.match(text, /cannot run shell commands/, 'the resolved allow list still hides bash/pwsh')
+  assert.match(text, /you cannot read files, search the workspace, or view images/, 'the resolved allow list hides the reading tools')
+  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools;/, 'the named list is the resolved allow list')
+  // `exit_plan_mode` stays in the resolved allow list, but the contract text
+  // never mentions it or planning at all.
+  assert.equal(lead.activeAllow().includes('exit_plan_mode'), true, 'making a plan stays allowed')
+  assert.equal(mentionsPlanning(text), false, 'the registered contract must not mention planning')
+  assert.equal(warnings.length, 0, `no warnings expected, got: ${warnings.join(' | ')}`)
+})
+
+check('a scope that does not mount exit_plan_mode names only the tools it really keeps', () => {
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
+  lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'exit_plan_mode'), ...AGENT_LAYER].map(name => ({ name }))
+  const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
+  apply(host, {})
+  assert.deepEqual(lead.activeAllow(), ['ask_user_question', 'todo_write', 'present'], 'the unmounted planner is pruned from the keep list')
+  const text = lead.sections.get('lead-agent-only-leads:contract').text
+  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, and `present`, plus the Team tools;/, 'the pruned tool is not named')
+  assert.equal(text.includes('exit_plan_mode'), false, 'the contract must not offer a tool this scope does not mount')
+  assert.match(text, /you cannot read files, search the workspace, or view images/, 'the reading claim is unaffected')
+  assert.equal(text.split(RECON_BULLET).length - 1, 1, 'the merged reconnaissance bullet is unaffected')
   assert.equal(warnings.length, 0, `no warnings expected, got: ${warnings.join(' | ')}`)
 })
 
@@ -430,7 +584,7 @@ check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope 
 
   assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the restriction is the configured keep list')
   const names = lead.names()
-  for (const hidden of ['bash', 'pwsh', 'write', 'edit', 'subagent_fork', 'workflow', 'present', 'plan_mode']) {
+  for (const hidden of ['bash', 'pwsh', 'write', 'edit', 'read', 'read_image', 'glob', 'grep', 'subagent_fork', 'workflow']) {
     assert.equal(names.includes(hidden), false, `${hidden} must be hidden from the Lead`)
   }
   for (const kept of [...KEPT_BY_DEFAULT, ...AGENT_LAYER]) {
@@ -446,7 +600,7 @@ check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope 
 
   const section = lead.sections.get('lead-agent-only-leads:contract')
   assert.notEqual(section, undefined, 'the Lead gets its own contract section')
-  assert.equal(section.text, LEGACY_CONTRACT_TEXT, 'the catalog default must register the frozen contract text')
+  assert.equal(section.text, FROZEN_CONTRACT_TEXT, 'the catalog default must register the frozen contract text')
   assert.equal(section.order > 600 && section.order < 800, true, 'it is ordered after TEAM_POLICY (600)')
   assert.equal(warnings.length, 0, `no warnings expected, got: ${warnings.join(' | ')}`)
 

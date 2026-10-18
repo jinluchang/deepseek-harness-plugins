@@ -12,8 +12,10 @@
  *
  * - Tools a preset mounts live in an ANCESTOR layer of the Agent's scope, so
  *   `tools.restrict()` on the Agent's own scope hides them for that Agent alone.
- *   The Lead loses the shell, the file writers, delegation-to-subagents, the web,
- *   jobs, scheduling, and plan mode; teammates keep all of it.
+ *   The Lead loses the shell, the file readers and writers, delegation-to-
+ *   subagents, the web, jobs, and scheduling; it keeps `exit_plan_mode` as an
+ *   enabled tool, though this contract does not mention or encourage making a
+ *   plan. Teammates keep all of it.
  * - The Agent's OWN layer is exempt from restrictions. The Agent Teams tools are
  *   registered there, which is why restricting the Lead cannot — and should not —
  *   hide `spawn_teammate`, `send_message`, `list_agents`, or the shared task
@@ -100,17 +102,18 @@ export const schemaLibrary = resolveSchemaLibrary()
 const PRESET_ID = 'lead-agent-only-leads'
 
 /**
- * Tools a Lead keeps from the preset surface, in the order they are listed for
- * the model. Reading is how a Lead writes an accurate brief; the rest is how it
- * talks to the user and the Team. Everything else the preset mounts is hidden.
+ * The catalog's whitelist-ON default keep list, in catalog order, and the
+ * fallback `nameList()` uses for a MALFORMED legacy `leadTools` value — a key
+ * that is present but not an array. An absent key always resolves from
+ * `LEAD_TOOL_CATALOG`, which is the source of truth; mirroring it here, in the
+ * same order, is what stops the fallback and the real default policy from
+ * disagreeing. The reading tools are deliberately not on it: teammates read.
  */
 const DEFAULT_LEAD_TOOLS = Object.freeze([
-  'read',
-  'read_image',
-  'glob',
-  'grep',
   'ask_user_question',
   'todo_write',
+  'exit_plan_mode',
+  'present',
 ])
 
 /**
@@ -140,10 +143,10 @@ const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent', 'subagent', 'list_suba
  */
 export const LEAD_TOOL_CATALOG = Object.freeze([
   // whitelist (34)
-  { name: 'read', klass: 'whitelist', def: true },
-  { name: 'read_image', klass: 'whitelist', def: true },
-  { name: 'glob', klass: 'whitelist', def: true },
-  { name: 'grep', klass: 'whitelist', def: true },
+  { name: 'read', klass: 'whitelist', def: false },
+  { name: 'read_image', klass: 'whitelist', def: false },
+  { name: 'glob', klass: 'whitelist', def: false },
+  { name: 'grep', klass: 'whitelist', def: false },
   { name: 'ask_user_question', klass: 'whitelist', def: true },
   { name: 'todo_write', klass: 'whitelist', def: true },
   { name: 'bash', klass: 'whitelist', def: false },
@@ -161,12 +164,12 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'get_goal', klass: 'whitelist', def: false },
   { name: 'create_goal', klass: 'whitelist', def: false },
   { name: 'update_goal', klass: 'whitelist', def: false },
-  { name: 'exit_plan_mode', klass: 'whitelist', def: false },
+  { name: 'exit_plan_mode', klass: 'whitelist', def: true },
   { name: 'subagent_fork', klass: 'whitelist', def: false },
   { name: 'workflow', klass: 'whitelist', def: false },
   { name: 'web_search', klass: 'whitelist', def: false },
   { name: 'web_fetch', klass: 'whitelist', def: false },
-  { name: 'present', klass: 'whitelist', def: false },
+  { name: 'present', klass: 'whitelist', def: true },
   { name: 'session_search', klass: 'whitelist', def: false },
   { name: 'session_event_search', klass: 'whitelist', def: false },
   { name: 'session_event_read', klass: 'whitelist', def: false },
@@ -246,6 +249,20 @@ export const name = 'lead-agent-only-leads'
 export const inject = ['agents', 'tools', 'systemPrompt']
 
 /**
+ * Join already-formatted names the way the contract reads them: `A`, `A and B`,
+ * or `A, B, and C`. Empty input yields an empty string, so a caller can omit the
+ * whole clause instead of printing a dangling list.
+ * @param {readonly string[]} names - the formatted names, in display order.
+ * @returns {string} the joined list, or `''` for no names.
+ */
+function joinQuoted(names) {
+  if (names.length === 0) return ''
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+}
+
+/**
  * Prompt text that turns the generic Agent Teams policy into this preset's
  * contract. It states behaviour, not mechanism, and says each fact once.
  *
@@ -256,17 +273,31 @@ export const inject = ['agents', 'tools', 'systemPrompt']
  *   tools (0/1/many grammar) and disappears when the list is empty. The
  *   follow-on clause mentions waiting only while `wait_agent` is denied and
  *   one-shot delegation only while `subagent` is.
- * - `shellHidden` / `writersHidden` gate the "cannot run shell commands" and
- *   "cannot write or edit files" claims on whether `bash`/`pwsh` and
- *   `write`/`edit` are actually off the Lead's resolved allow list.
+ * - `shellHidden` / `writersHidden` / `readersHidden` gate the "cannot run shell
+ *   commands", "cannot write or edit files", and "cannot read files, search the
+ *   workspace, or view images" claims on whether `bash`/`pwsh`, `write`/`edit`,
+ *   and `read`/`read_image`/`glob`/`grep` are actually off the Lead's resolved
+ *   allow list.
+ *
+ * The text never mentions plan mode: `exit_plan_mode` stays an enabled catalog
+ * tool (making a plan is allowed), but this contract neither advertises nor
+ * encourages it.
+ *
+ * The closing sentence of the claim paragraph names the Lead's ACTUAL tools,
+ * derived from the resolved allow list rather than hardcoded, so the text cannot
+ * go stale when the catalog changes. The Team tools stay a generic trailing
+ * phrase: they are the Lead's own-scope coordination surface, already governed by
+ * the refusal clause, not preset tools to enumerate.
  *
  * Every argument falls back to the catalog default, so a call with NO arguments
- * returns the pre-options text byte for byte, and a fact the caller cannot
- * supply never fails a boot.
+ * returns the frozen catalog-default text byte for byte, and a fact the caller
+ * cannot supply never fails a boot.
  * @param {object} [options] - the resolved policy.
  * @param {readonly string[]} [options.deny] - denied tools; defaults to the catalog guard defaults.
  * @param {boolean} [options.shellHidden] - whether `bash`/`pwsh` are hidden; defaults true.
  * @param {boolean} [options.writersHidden] - whether `write`/`edit` are hidden; defaults true.
+ * @param {boolean} [options.readersHidden] - whether `read`/`read_image`/`glob`/`grep` are hidden; defaults true.
+ * @param {readonly string[]} [options.tools] - the resolved allow list, named as the Lead's own tools; defaults to the catalog ON list.
  * @returns {string} the section text.
  */
 export function leadContract(options = {}) {
@@ -275,44 +306,54 @@ export function leadContract(options = {}) {
   const deny = Array.isArray(options?.deny)
     ? [...new Set(options.deny.filter(entry => typeof entry === 'string' && entry.length > 0))]
     : DEFAULT_DENIED_TOOLS
+  // The resolved allow list named as the Lead's own tools. An absent or
+  // unreadable one falls back to the catalog ON list, the same conservative
+  // stance the boolean flags take.
+  const tools = Array.isArray(options?.tools)
+    ? [...new Set(options.tools.filter(entry => typeof entry === 'string' && entry.length > 0))]
+    : DEFAULT_LEAD_TOOLS
   // Only an explicit `false` drops a claim: an unknown flag keeps today's text.
   const shellHidden = options?.shellHidden !== false
   const writersHidden = options?.writersHidden !== false
+  const readersHidden = options?.readersHidden !== false
 
   const quoted = deny.map(entry => `\`${entry}\``)
-  const refused = quoted.length === 0
-    ? ''
-    : quoted.length === 1
-      ? `${quoted[0]} is refused`
-      : quoted.length === 2
-        ? `${quoted[0]} and ${quoted[1]} are refused`
-        : `${quoted.slice(0, -1).join(', ')}, and ${quoted[quoted.length - 1]} are refused`
+  const refused = quoted.length === 0 ? '' : `${joinQuoted(quoted)} ${quoted.length === 1 ? 'is' : 'are'} refused`
   const followOn = [
     deny.includes('wait_agent') ? 'waiting' : undefined,
     deny.includes('subagent') ? 'one-shot delegation' : undefined,
   ].filter(Boolean)
   const refusal = refused === '' || followOn.length === 0
     ? refused
-    : `${refused} — do not plan around ${followOn.join(' or around ')}`
+    : `${refused} — do not count on ${followOn.join(' or on ')}`
 
   const claims = []
   if (shellHidden) claims.push('You cannot run shell commands')
   if (writersHidden) claims.push('you cannot write or edit files')
+  if (readersHidden) claims.push('you cannot read files, search the workspace, or view images')
   if (refusal !== '') claims.push(refusal)
   const joined = claims.length <= 1
     ? claims.join('')
     : `${claims.slice(0, -1).join(', ')}${claims.length > 2 ? ',' : ''} and ${claims[claims.length - 1]}`
   const restriction = joined === '' ? '' : ` ${joined[0].toUpperCase()}${joined.slice(1)}.`
 
+  // Name the Lead's actual tools, derived from the resolved allow list, so the
+  // text cannot go stale when the catalog changes. An empty list must not leave
+  // a dangling "are , plus".
+  const toolList = joinQuoted(tools.map(entry => `\`${entry}\``))
+  const ownTools = toolList === ''
+    ? "You keep none of the preset's tools, plus the Team tools; everything else the preset mounts is off your list."
+    : `Your own tools are ${toolList}, plus the Team tools; everything else the preset mounts is off your list.`
+
   return `Non-blocking Lead
 
-You are a non-blocking Team Lead.${restriction} This supersedes the Agent Teams instruction to wait for teammates before answering.
+You are a non-blocking Team Lead.${restriction} ${ownTools} This supersedes the Agent Teams instruction to wait for teammates before answering.
 
 Hand every part of the job out, and answer the user as soon as it is out.
-- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result.
+- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.
 - Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.
 - Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.
-- Use read, glob, and grep to inspect the workspace before and while briefing, and ask_user_question when the decision is the user's to make. Teammates do the writing.
+- Teammates do the reading, searching, and writing; you brief and coordinate. Use ask_user_question when the decision is the user's to make.
 - Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn.`
 }
 
@@ -592,20 +633,25 @@ function constrain(agent, config, ctx) {
   }
 
   // The contract has to describe the surface the Lead really has: `deny` is the
-  // resolved deny list, and the shell/write claims follow the resolved allow
-  // list (`reachable === undefined` = unreadable scope, so keep the catalog text).
+  // resolved deny list, the shell/write/reading claims and the named tool list
+  // follow the resolved allow list (`reachable === undefined` = unreadable scope,
+  // so keep the catalog text).
   const shellHidden = reachable === undefined
     ? true
     : !reachable.includes('bash') && !reachable.includes('pwsh')
   const writersHidden = reachable === undefined
     ? true
     : !reachable.includes('write') && !reachable.includes('edit')
+  const readersHidden = reachable === undefined
+    ? true
+    : !reachable.includes('read') && !reachable.includes('read_image')
+      && !reachable.includes('glob') && !reachable.includes('grep')
 
   try {
     disposers.push(prompt.section({
       name: SECTION_NAME,
       order: SECTION_ORDER,
-      text: leadContract({ deny: policy.deny, shellHidden, writersHidden }),
+      text: leadContract({ deny: policy.deny, shellHidden, writersHidden, readersHidden, tools: reachable }),
     }))
   } catch (error) {
     warn(ctx, `${name}: the Lead contract section was not registered: ${error instanceof Error ? error.message : String(error)}`)

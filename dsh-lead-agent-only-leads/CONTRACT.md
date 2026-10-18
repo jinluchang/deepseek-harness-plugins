@@ -51,8 +51,24 @@ mounts. `verify.mjs` fails if the preset's row list ever drifts from the shipped
 
 ## The Lead's surface
 
-Kept from the preset (the catalog `whitelist` default): `read`, `read_image`,
-`glob`, `grep`, `ask_user_question`, `todo_write`.
+Kept from the preset (the catalog `whitelist` default): `ask_user_question`,
+`todo_write`, `exit_plan_mode`, `present`. The Lead cannot read, search, or view
+images: what it needs to know arrives in a teammate's report. `exit_plan_mode`
+stays an enabled tool — making a plan is allowed — but the contract never mentions
+plan mode or planning: it only names the tool inside the resolved tool list. Plan
+mode itself is session state the user enters (the `/plan` command or the composer).
+`present` lets a Lead show the finished work as a file or image card in the
+conversation.
+
+A Lead's briefs are written in two steps, because the Lead cannot inspect anything
+itself. The brief bullet therefore carries the reconnaissance flow: when the Lead does
+not yet know a brief's exact files, write scopes, or checks, it **may create a
+reconnaissance task** — one teammate on a read-only task, recorded on the shared task
+board like any other task, that states the question and asks for the facts (where the
+code lives, which files a change touches, how the result should be verified). The
+Lead then ends its turn; the report arrives as its next turn, and it splits and briefs
+the real work from what the report establishes. Nothing blocks: the Lead never waits
+on the scout.
 
 Kept from the Agent Teams layer: `spawn_teammate`, `send_message`, `list_agents`,
 `interrupt_agent`, `team_task_create`, `team_task_list`, `team_task_get`,
@@ -69,19 +85,27 @@ override can shrink it (the live `web` profile patch sets `subagent: true` and
 contract is generated from the policy `constrain()` actually resolved, so it
 cannot contradict the Lead's own permissions: its refusal sentence names only the
 tools present in the resolved deny list (singular/plural grammar, and the clause
-is omitted entirely for an empty list), its "do not plan around waiting" clause
+is omitted entirely for an empty list), its "do not count on waiting" clause
 appears only while `wait_agent` is denied, its "one-shot delegation" clause only
 while `subagent` is, and its "cannot run shell commands" / "cannot write or edit
-files" claims appear only while `bash`/`pwsh` and `write`/`edit` are off the
-resolved allow list. `leadContract()` called with no arguments still returns the
-catalog-default text byte for byte.
+files" / "cannot read files, search the workspace, or view images" claims appear
+only while `bash`/`pwsh`, `write`/`edit`, and
+`read`/`read_image`/`glob`/`grep` are off the resolved allow list. The closing
+sentence of that paragraph names the Lead's **actual** tools, derived from the same
+resolved allow list (1/2/many joining; the Team tools stay a generic trailing phrase),
+and an empty list is stated as "none of the preset's tools" rather than a dangling
+list. The text never mentions plan mode: `exit_plan_mode` appears only as a tool name
+inside that list, whatever the resolved list keeps. `leadContract()` called with no
+arguments still returns the catalog-default text byte for byte.
 
 Hidden, because the preset mounts them and the restriction filters them:
-`bash`, `pwsh`, `write`, `edit`, `job_*`, `schedule_*`, `web_search`,
-`web_fetch`, `subagent_fork`, `workflow`, `skill`, `present`, `plan_mode`. A tool
-that is not visible is also absent from the prompt, because each tool's own
+`read`, `read_image`, `glob`, `grep`, `bash`, `pwsh`, `write`, `edit`, `job_*`,
+`schedule_*`, `web_search`, `web_fetch`, `subagent_fork`, `workflow`, `skill`. A
+tool that is not visible is also absent from the prompt, because each tool's own
 prompt section gates on its visibility. (`subagent_fork` stays hidden: it is a
-separate preset-layer row, not an own-scope registration.)
+separate preset-layer row, not an own-scope registration. Plan mode is not in this
+list and not in the text: making a plan stays allowed through `exit_plan_mode`,
+which the contract never advertises.)
 
 ## Per-tool toggles (the settings page)
 
@@ -96,13 +120,15 @@ verbatim and `verify.mjs` deep-compares the two.
 | `guard` | 11 | OFF ⇒ denied by the guard while still listed; ON ⇒ no denial. |
 | `none` | 6 | No effect. Rendered inoperative: `/goal`, `/plan`, `/compact` (commands, not tools), `plugin_manager`, `plugin_market` (disabled rows), `structured_output` (child-only). |
 
-Defaults — ON is what the Lead can use today (6 + 8):
+Defaults — ON is what the Lead can use today (4 + 8):
 
-- ON: `read`, `read_image`, `glob`, `grep`, `ask_user_question`, `todo_write`
-  (whitelist) and `spawn_teammate`, `send_message`, `list_agents`,
-  `interrupt_agent`, `team_task_create`, `team_task_list`, `team_task_get`,
-  `team_task_update` (guard).
-- OFF: `wait_agent`, `subagent`, `list_subagent_models` (guard).
+- ON: `ask_user_question`, `todo_write`, `exit_plan_mode`, `present` (whitelist)
+  and `spawn_teammate`, `send_message`, `list_agents`, `interrupt_agent`,
+  `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update`
+  (guard).
+- OFF: `read`, `read_image`, `glob`, `grep` and every other `whitelist` row
+  except the four above; `wait_agent`, `subagent`, `list_subagent_models`
+  (guard).
 
 Semantics. A `whitelist` tool is kept iff `tools[name] ?? def`; a `guard` tool is
 denied iff `tools[name] ?? def` is OFF. The page writes one dictionary key per
@@ -185,8 +211,15 @@ page is absent because no namespace is served.
    after `TEAM_POLICY` (600), which is where the generic "The Lead must wait for
    required teammates before giving the final answer" lives. The section names
    that instruction and supersedes it. Its body is generated from the resolved
-   keep/deny lists, so it describes the surface the Lead actually has; the
-   no-argument `leadContract()` text is the frozen catalog-default text.
+   keep/deny lists, so it describes the surface the Lead actually has: the
+   refusal sentence, the shell/writer/reading claims, and the resolved tool list it
+   closes with each follow the policy `constrain()` resolved, and an unreadable
+   scope keeps the conservative catalog wording. The text never mentions plan mode
+   (only the `exit_plan_mode` tool name may appear, inside that list). The
+   no-argument `leadContract()` text is the frozen catalog-default text (1688 UTF-8
+   bytes, sha256
+   `b9ac0d72c75c6e9e214fb155b3fdc0a80bffc24201f8bd10635b3f1e00dc175b`), and
+   `verify.mjs` asserts those exact values.
 6. The plugin fails safe. A configured name the registry rejects is dropped and
    the remaining allow list still applies. Everything that resolves to "keep
    nothing" restricts the Lead to nothing rather than leaving it unrestricted: an
@@ -204,5 +237,7 @@ page is absent because no namespace is served.
   Team tools here, changing every other session's Team tools for one catalog
   entry that is already refused.
 - It does not stop teammates from waiting on each other. That is their job.
-- It does not hide file content from the Lead: `read`/`glob`/`grep` stay, so the
-  Lead can still see what it is briefing.
+- It does not make the Lead permanently blind. `read`, `read_image`, `glob`, and
+  `grep` stay in the catalog and on the settings page, so a profile can turn them
+  back on for the Lead; by default they are OFF, and a teammate does the reading
+  and searching.

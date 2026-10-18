@@ -1,0 +1,38 @@
+{
+  "name": "@local/dsh-compaction-tuner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "One settings page that tunes compaction-basic for every agent preset in the active profile.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "verify.mjs",
+    "locale/*.json",
+    "README.md",
+    "CONTRACT.md"
+  ],
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  }
+}

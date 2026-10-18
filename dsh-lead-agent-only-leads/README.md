@@ -2,16 +2,19 @@
 
 A DeepSeek Harness bundle that adds a **Lead agent only leads** preset: a Team Lead
 that hands every job to teammates and stays available to the user. By default it
-cannot run shell commands, cannot write files, cannot wait for a teammate to
-finish, and cannot start a one-shot `subagent` — but it keeps every tool it needs
-to delegate, steer, and answer:
+cannot run shell commands, cannot read or search the workspace, cannot view
+images, cannot write files, cannot wait for a teammate to finish, and cannot start
+a one-shot `subagent` — but it keeps every tool it needs to delegate, steer,
+present, and answer:
 
 | | Standard Lead | Lead agent only leads |
 | --- | --- | --- |
 | Shell (`bash`), file writes (`write`, `edit`) | yes | **no** |
-| Jobs, scheduling, web, `subagent_fork`, workflow, plan mode | yes | **no** |
-| `read`, `read_image`, `glob`, `grep` | yes | yes |
+| Reading and search (`read`, `read_image`, `glob`, `grep`) | yes | **no** |
+| Jobs, scheduling, web, `subagent_fork`, workflow | yes | **no** |
 | `ask_user_question`, `todo_write` | yes | yes |
+| Plan mode (`exit_plan_mode`) | yes | yes — the tool stays enabled; the contract neither mentions nor encourages planning |
+| `present` (file and image cards) | yes | yes |
 | `spawn_teammate`, `send_message`, `list_agents`, `interrupt_agent`, task board | yes | yes |
 | `wait_agent`, `subagent`, `list_subagent_models` | yes | listed; **refused** by default |
 | Teammates | standard | **standard** |
@@ -24,9 +27,14 @@ away, and each refusal names the replacement (`spawn_teammate` / `send_message`)
 A profile `tools` override changes the default: the live `web` profile patch sets
 `tools: { subagent: true, list_subagent_models: true }`, so there the guard refuses
 only `wait_agent`. The Lead's **prompt contract is generated from the resolved
-policy**, so its refusal sentence names only the tools actually denied and its
-shell/write claims follow the resolved allow list; it never contradicts the
-permissions the Lead really has. Note also that `list_subagent_models` is
+policy**, so its refusal sentence names only the tools actually denied, its shell,
+writer, and reading claims follow the resolved allow list, and its closing claim
+sentence names the Lead's **actual** tools — derived from that same allow list, with
+the Team tools kept as a generic phrase — so the text cannot go stale when the
+catalog changes. It never contradicts the permissions the Lead really has.
+`exit_plan_mode` stays an enabled tool — making a plan is allowed — but the contract
+never mentions plan mode or planning; it only names the tool inside the resolved
+list. Note also that `list_subagent_models` is
 registered only when a preset mounts the delegation tool with
 `modelSelectionSettings: true`; with no per-session model-selection policy it is
 not in any Agent's tool list, so naming it would describe a tool that does not
@@ -55,6 +63,15 @@ seat lists it as *Lead agent only leads*). The Lead will delegate: give it a tas
 briefs a teammate and comes straight back to you. Teammate reports arrive as new
 turns, so you can keep talking while work is in flight.
 
+Because the Lead cannot read, search, or list the repository, it may not know a
+brief's exact files or checks up front. Its contract therefore folds reconnaissance
+into the brief bullet: to know those files or checks it **may create a reconnaissance
+task** — one teammate on a **read-only task**, recorded on the shared board like any
+other task, that states the question and asks for the facts (where the code lives,
+which files a change touches, how the result should be verified). The Lead then ends
+its turn: the report arrives as its next turn, and it splits and briefs the real work
+from what that report establishes. Nothing blocks: the Lead never waits on the scout.
+
 ## Settings page
 
 The bundle ships a **Lead agent only leads** page under Settings (section id
@@ -63,8 +80,9 @@ The bundle ships a **Lead agent only leads** page under Settings (section id
 per-row description and its default, and writes one dictionary key per toggle:
 
 - **Whitelist** (34) — preset/global-layer tools. ON keeps the tool, OFF hides
-  it. Defaults ON: `read`, `read_image`, `glob`, `grep`, `ask_user_question`,
-  `todo_write`; every other row defaults OFF.
+  it. Defaults ON: `ask_user_question`, `todo_write`, `exit_plan_mode`,
+  `present`; every other row — the four reading tools (`read`, `read_image`,
+  `glob`, `grep`) included — defaults OFF.
 - **Guard** (11) — own-scope tools a restriction cannot reach, so OFF denies
   them through the guard. Defaults ON: the eight Team tools. Defaults OFF:
   `wait_agent`, `subagent`, `list_subagent_models`.
@@ -121,7 +139,7 @@ are the manual equivalent:
     preset: lead-agent-only-leads     # which preset gets the contract
     tools:                            # per-tool toggles; absent key = catalog default
       bash: true
-    leadTools: [read, glob, grep]     # legacy: explicit keep list, wins wholesale
+    leadTools: [ask_user_question, todo_write]   # legacy: explicit keep list, wins wholesale
     denyTools: []                     # legacy: explicit deny list; [] removes the guard
 ```
 
@@ -136,18 +154,22 @@ restrict is pruned rather than fatal; an explicit empty `leadTools` keeps
 node verify.mjs
 ```
 
-Thirty-nine checks on a checkout whose `js-yaml` is reachable: the pure helpers,
-the `Config` schema shape, the catalog, the config-aware contract text (the frozen
-no-argument bytes, an empty deny list, a `subagent`-only deny, the gated
-shell/write claims, and the text the plugin actually registers under the live
-profile's override shape), the plugin's behaviour against a model of
-the two scope layers (preset-inherited vs. Agent-owned), the toggle→keep/deny
-mapping including the all-off and unknown-names cases, a deep-parse of the patch
-that also proves this preset mounts exactly the shipped `standard` rows, and a
-real load of `client.js` through a stubbed module loader that deep-compares the
-host and client catalogs. The suite needs no live Host; it reads the harness
-checkout for `js-yaml` and `standard.patch.yml`, and the one aggregate
-deep-parse check is skipped when the checkout is unreachable.
+Forty-four checks on a checkout whose `js-yaml` is reachable: the pure helpers,
+the `Config` schema shape, the catalog and its defaults (the reading tools off,
+`exit_plan_mode` and `present` on, in catalog order), the config-aware contract text
+(the frozen no-argument bytes and hash, the no-plan-mode invariant, the merged
+reconnaissance bullet asserted byte for byte, the resolved-tool-list sentence and its
+1/2/many/empty renderings, an empty deny list, a `subagent`-only deny, the gated
+shell/writer/reading claims, and the text the plugin
+actually registers under the live profile's override shape), the plugin's
+behaviour against a model of the two scope layers (preset-inherited vs.
+Agent-owned, including a scope that does not mount `exit_plan_mode`), the
+toggle→keep/deny mapping including the all-off and unknown-names cases, a
+deep-parse of the patch that also proves this preset mounts exactly the shipped
+`standard` rows, and a real load of `client.js` through a stubbed module loader
+that deep-compares the host and client catalogs. The suite needs no live Host; it
+reads the harness checkout for `js-yaml` and `standard.patch.yml`, and the one
+aggregate deep-parse check is skipped when the checkout is unreachable.
 
 ## Why it is built this way
 
