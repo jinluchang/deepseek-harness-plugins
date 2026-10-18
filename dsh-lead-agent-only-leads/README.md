@@ -93,6 +93,20 @@ per-row description and its default, and writes one dictionary key per toggle:
   render a `default on/off` line: that label was inert, because the plugin
   ignores `none` entries entirely, so only togglable rows show their default.
 
+The page **leads with the Lead contract prompt the current selection produces**, shown as a
+quote above the groups: it is the text `constrain()` hands the Lead's system prompt, so the
+page can be read as "this is what the Lead will be told". `client.js` mirrors the host's
+`leadContract()` and the same keep/deny resolution (catalog toggles, or a legacy
+`leadTools`/`denyTools` array wholesale — the quote follows that override too, because the
+toggles stop driving policy then), and `verify.mjs` compares the two builders byte for byte for
+the catalog default, an `ask_user_question`-off selection, a `bash`-on selection, a `grep`-only
+selection (which pins the `readersHidden` branch), and a legacy
+override. Honest limit: the client derives the three capability claims and the named tool list
+from this page's catalog plus the toggles and cannot read the host's live `reachable` scope, so
+a tool the profile does not mount still appears in the preview, where the live prompt drops it.
+The quote updates with every toggle, because it is computed from the same live snapshot the rows
+render.
+
 Toggles are **volatile**: an edit is committed into the running config without
 remounting the plugin, so it applies to **Leads created afterwards**; a Lead
 that is already running keeps the surface it was constrained with. The first

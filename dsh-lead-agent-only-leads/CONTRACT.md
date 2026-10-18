@@ -140,6 +140,22 @@ Precedence. An explicitly configured legacy `leadTools`/`denyTools` array wins
 Absence of the key — not an empty array — is what selects the catalog, which is
 why both keys are declared volatile and **without** a schema default.
 
+Prompt preview. The page leads with the contract text the current selection
+produces, quoted above the toggle groups. `client.js` carries a hand-kept mirror
+of `leadContract()` plus a mirror of the keep/deny resolution (catalog toggles, or
+a legacy `leadTools`/`denyTools` array wholesale — the quote follows the override,
+since the toggles do not drive policy then), and `verify.mjs` asserts the two
+builders agree byte for byte — the frozen no-argument text included — for the
+catalog default, an `ask_user_question`-off selection, a `bash`-on selection, a
+`grep`-only selection (which pins the `readersHidden` branch), and
+a legacy override. Honest limitation: the host derives
+`shellHidden`/`writersHidden`/`readersHidden` and the named tool list from the
+live `reachable` scope `constrain()` reads, which the client cannot see; the
+preview reports the resolved keep list as if every name were mounted, so it can
+name a tool the profile does not mount, while the live prompt drops it. The
+preview is a reading aid, not a second source of policy: nothing reads it back and
+it changes no behaviour.
+
 Apply timing. `tools` (and the two legacy keys) are volatile, so a page edit is
 committed into the running config in place and does not remount the plugin. The
 keep and deny lists are resolved inside `constrain()` from that live config, so a

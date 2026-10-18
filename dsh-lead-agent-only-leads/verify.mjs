@@ -900,6 +900,8 @@ if (yaml === undefined) {
 // with the host's, so the two halves cannot drift. A stub React suffices —
 // nothing renders here.
 const CLIENT_PATH = join(HERE, 'client.js')
+/** Label for the client-side contract-preview parity result below. */
+const CONTRACT_PREVIEW_LABEL = 'the client contract preview mirrors the host builder (5 selection cases)'
 if (!existsSync(CLIENT_PATH)) {
   results.push({ label: 'Host and client LEAD_TOOL_CATALOG are deep-equal (skipped: client.js is absent)', ok: true, skipped: true })
 } else {
@@ -930,6 +932,39 @@ if (!existsSync(CLIENT_PATH)) {
     assert.notEqual(face?.LEAD_TOOL_CATALOG, undefined, 'the client module face must expose LEAD_TOOL_CATALOG')
     assert.deepEqual(face.LEAD_TOOL_CATALOG, LEAD_TOOL_CATALOG, 'the host and client catalogs must be identical')
     results.push({ label: 'Host and client LEAD_TOOL_CATALOG are deep-equal (51 entries, same order)', ok: true })
+    // The page quotes the contract, so the client mirror must reproduce the host
+    // builder byte for byte, and its selection resolution must match the host's
+    // (the host derives the three hides from its live `reachable` scope; the
+    // client approximates that scope with the resolved keep list).
+    try {
+      assert.equal(face.contractPreview(), FROZEN_CONTRACT_TEXT, 'the no-argument preview must be the frozen catalog-default text')
+      const cases = [
+        { label: 'catalog default', config: {} },
+        { label: 'ask_user_question OFF', config: { tools: { ask_user_question: false } } },
+        { label: 'bash ON', config: { tools: { bash: true } } },
+        // Keeps `grep` as the ONLY reader, so the readersHidden branch is covered:
+        // without this case, dropping a term from that flag's `&&` chain would not
+        // change any of the other four texts.
+        { label: 'grep ON only', config: { tools: { grep: true, glob: false, read: false, read_image: false } } },
+        { label: 'legacy leadTools/denyTools override', config: { leadTools: ['read', 'bash'], denyTools: [] } },
+      ]
+      for (const { label, config } of cases) {
+        const policy = resolveToolPolicy(config)
+        const inputs = {
+          deny: policy.deny,
+          shellHidden: !policy.keep.includes('bash') && !policy.keep.includes('pwsh'),
+          writersHidden: !policy.keep.includes('write') && !policy.keep.includes('edit'),
+          readersHidden: !policy.keep.includes('read') && !policy.keep.includes('read_image')
+            && !policy.keep.includes('glob') && !policy.keep.includes('grep'),
+          tools: policy.keep,
+        }
+        assert.equal(face.contractPreview(inputs), leadContract(inputs), `${label}: the client builder must mirror leadContract byte for byte`)
+        assert.equal(face.contractPreviewFor(config), leadContract(inputs), `${label}: the client selection preview must match the host contract`)
+      }
+      results.push({ label: CONTRACT_PREVIEW_LABEL, ok: true })
+    } catch (error) {
+      results.push({ label: CONTRACT_PREVIEW_LABEL, ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
   } catch (error) {
     results.push({
       label: 'Host and client LEAD_TOOL_CATALOG are deep-equal (51 entries, same order)',

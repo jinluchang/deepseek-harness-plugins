@@ -118,6 +118,8 @@ window.__ModuleLoader__.load({
       'title': 'Lead agent only leads',
       'intro': 'Choose which tools a Team Lead may use under the Lead agent only leads preset. The rest of the Team always keeps the standard surface.',
       'applyNote': 'Changes apply to Leads created after the change. A running Lead keeps the tools it already has until its next session.',
+      'contract.title': 'Lead contract prompt for the current selection',
+      'contract.note': 'Preview only. This is the prompt a Lead of this preset receives. It is derived from this page\'s catalog and toggles, so it cannot know which of these tools the running profile actually mounts.',
       'overridden': 'This profile sets leadTools or denyTools explicitly, which overrides every toggle on this page. Remove those keys to use the toggles.',
       'unavailable': 'The Lead plugin is not serving its settings in this profile.',
       'loading': 'Loading settings…',
@@ -192,6 +194,8 @@ window.__ModuleLoader__.load({
       'title': 'Lead 只负责带领',
       'intro': '选择「Lead 只负责带领」预设下 Team Lead 可以使用的工具。Team 其他成员始终保持标准工具面。',
       'applyNote': '更改仅对之后创建的 Lead 生效。正在运行的 Lead 会保留已有工具，直到下一次会话。',
+      'contract.title': '当前选择对应的 Lead 契约提示词',
+      'contract.note': '仅为预览。这是该预设下的 Lead 实际收到的提示词；它由本页的目录与开关推导，无法得知运行中的 Profile 实际挂载了哪些工具。',
       'overridden': '该 Profile 显式设置了 leadTools 或 denyTools，会整体覆盖本页的所有开关。移除这些键后开关才会生效。',
       'unavailable': '该 Profile 中 Lead 插件未提供设置。',
       'loading': '正在加载设置…',
@@ -268,6 +272,10 @@ window.__ModuleLoader__.load({
       '.dll-intro { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
       '.dll-note { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
       '.dll-notice { box-sizing: border-box; padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }',
+      '.dll-quote { box-sizing: border-box; margin: 0; padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l2); border-left: 3px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-module-platform); }',
+      '.dll-quote-title { margin: 0 0 6px; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 20px; font-weight: 500; }',
+      '.dll-quote-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }',
+      '.dll-quote-note { margin: 6px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
       '.dll-alert { margin: 0; color: var(--dsw-alias-state-error-primary); font-size: 12px; line-height: 18px; }',
       '.dll-group { display: flex; flex-direction: column; }',
       '.dll-group-title { margin: 0; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; font-weight: 500; }',
@@ -298,6 +306,169 @@ window.__ModuleLoader__.load({
      */
     function descKey(name) {
       return name.startsWith('/') ? `cmd.${name.slice(1)}.desc` : `tool.${name}.desc`;
+    }
+
+    /**
+     * The catalog-derived defaults, mirroring the host's `catalogDefaults()` and
+     * its `DEFAULT_LEAD_TOOLS`/`DEFAULT_DENIED_TOOLS` constants (which mirror the
+     * same filters). Deriving them here keeps the two halves from drifting: the
+     * catalogs are deep-compared, so these lists are equal by construction.
+     */
+    const DEFAULT_LEAD_TOOLS = Object.freeze(
+      LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'whitelist' && entry.def).map(entry => entry.name));
+    const DEFAULT_DENIED_TOOLS = Object.freeze(
+      LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'guard' && !entry.def).map(entry => entry.name));
+
+    /**
+     * Normalize a configured or defaulted name list, mirroring the host's
+     * `nameList()`: unique, non-empty names in first-seen order.
+     * @param value - the configured value, honoured only when it is an array.
+     * @param fallback - names used when `value` is absent.
+     * @returns the normalized names.
+     */
+    function nameList(value, fallback) {
+      const source = Array.isArray(value) ? value : fallback;
+      return [...new Set(source.filter(entry => typeof entry === 'string' && entry.length > 0))];
+    }
+
+    /**
+     * Unwrap a possibly-volatile field, mirroring the host's `volatileValue()`.
+     * @param value - the raw or wrapped config field.
+     * @returns the underlying value, or `undefined` when absent.
+     */
+    function plainValue(value) {
+      if (value === undefined || value === null) return undefined;
+      return typeof value === 'object' && typeof value.get === 'function' ? value.get() : value;
+    }
+
+    /**
+     * Resolve a row config into its effective keep and deny lists, mirroring the
+     * host's `resolveToolPolicy()`: a `whitelist` tool is kept iff
+     * `tools[name] ?? def` and a `guard` tool is denied iff that is OFF, while an
+     * explicitly configured legacy `leadTools`/`denyTools` array wins wholesale
+     * for its own list.
+     * @param config - a `{ tools, leadTools, denyTools }` row config.
+     * @returns `{ keep, deny, keepConfigured, denyConfigured }`.
+     */
+    function resolvePreviewPolicy(config = {}) {
+      const tools = plainValue(config.tools) ?? {};
+      const legacyKeep = plainValue(config.leadTools);
+      const legacyDeny = plainValue(config.denyTools);
+      const keepConfigured = Array.isArray(legacyKeep);
+      const denyConfigured = Array.isArray(legacyDeny);
+      const on = entry => tools[entry.name] ?? entry.def;
+      const catalogKeep = LEAD_TOOL_CATALOG
+        .filter(entry => entry.klass === 'whitelist' && on(entry))
+        .map(entry => entry.name);
+      const catalogDeny = LEAD_TOOL_CATALOG
+        .filter(entry => entry.klass === 'guard' && !on(entry))
+        .map(entry => entry.name);
+      return {
+        keep: keepConfigured ? nameList(legacyKeep, DEFAULT_LEAD_TOOLS) : catalogKeep,
+        deny: denyConfigured ? nameList(legacyDeny, DEFAULT_DENIED_TOOLS) : catalogDeny,
+        keepConfigured,
+        denyConfigured,
+      };
+    }
+
+    /**
+     * Join already-formatted names the way the contract reads them, mirroring the
+     * host's `joinQuoted()`: `A`, `A and B`, or `A, B, and C`.
+     * @param names - the formatted names, in display order.
+     * @returns the joined list, or `''` for no names.
+     */
+    function joinQuoted(names) {
+      if (names.length === 0) return '';
+      if (names.length === 1) return names[0];
+      if (names.length === 2) return `${names[0]} and ${names[1]}`;
+      return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+    }
+
+    /**
+     * The Lead contract prompt for one resolved policy, mirroring the host's
+     * `leadContract()` line for line — same refusal clause, same 0/1/many grammar,
+     * same resolved-tools sentence, same fixed template, same defaults. The two
+     * halves share no module and the plugin has no build step, so they are kept in
+     * sync by hand and `verify.mjs` compares them byte for byte.
+     * @param options - the resolved policy: `deny`, `tools`, and the three hides.
+     * @returns the contract text.
+     */
+    function contractPreview(options = {}) {
+      // An unknown fact (a non-array `deny`) falls back to the catalog defaults
+      // rather than guessing, which is also the pre-options text.
+      const deny = Array.isArray(options?.deny)
+        ? [...new Set(options.deny.filter(entry => typeof entry === 'string' && entry.length > 0))]
+        : DEFAULT_DENIED_TOOLS
+      // The resolved allow list named as the Lead's own tools. An absent or
+      // unreadable one falls back to the catalog ON list, the same conservative
+      // stance the boolean flags take.
+      const tools = Array.isArray(options?.tools)
+        ? [...new Set(options.tools.filter(entry => typeof entry === 'string' && entry.length > 0))]
+        : DEFAULT_LEAD_TOOLS
+      // Only an explicit `false` drops a claim: an unknown flag keeps today's text.
+      const shellHidden = options?.shellHidden !== false
+      const writersHidden = options?.writersHidden !== false
+      const readersHidden = options?.readersHidden !== false
+
+      const quoted = deny.map(entry => `\`${entry}\``)
+      const refused = quoted.length === 0 ? '' : `${joinQuoted(quoted)} ${quoted.length === 1 ? 'is' : 'are'} refused`
+      const followOn = [
+        deny.includes('wait_agent') ? 'waiting' : undefined,
+        deny.includes('subagent') ? 'one-shot delegation' : undefined,
+      ].filter(Boolean)
+      const refusal = refused === '' || followOn.length === 0
+        ? refused
+        : `${refused} — do not count on ${followOn.join(' or on ')}`
+
+      const claims = []
+      if (shellHidden) claims.push('You cannot run shell commands')
+      if (writersHidden) claims.push('you cannot write or edit files')
+      if (readersHidden) claims.push('you cannot read files, search the workspace, or view images')
+      if (refusal !== '') claims.push(refusal)
+      const joined = claims.length <= 1
+        ? claims.join('')
+        : `${claims.slice(0, -1).join(', ')}${claims.length > 2 ? ',' : ''} and ${claims[claims.length - 1]}`
+      const restriction = joined === '' ? '' : ` ${joined[0].toUpperCase()}${joined.slice(1)}.`
+
+      // Name the Lead's actual tools, derived from the resolved allow list, so the
+      // text cannot go stale when the catalog changes. An empty list must not leave
+      // a dangling "are , plus".
+      const toolList = joinQuoted(tools.map(entry => `\`${entry}\``))
+      const ownTools = toolList === ''
+        ? "You keep none of the preset's tools, plus the Team tools; everything else the preset mounts is off your list."
+        : `Your own tools are ${toolList}, plus the Team tools; everything else the preset mounts is off your list.`
+
+      return `Non-blocking Lead
+
+You are a non-blocking Team Lead.${restriction} ${ownTools} This supersedes the Agent Teams instruction to wait for teammates before answering.
+
+Hand every part of the job out, and answer the user as soon as it is out.
+- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.
+- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.
+- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.
+- Teammates do the reading, searching, and writing; you brief and coordinate. Use ask_user_question when the decision is the user's to make.
+- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn.`
+    }
+
+    /**
+     * The contract text a selection produces: resolve the keep and deny lists from
+     * the row config, then derive the three hide flags from the keep list the way
+     * the host derives them from its live `reachable` scope. The client cannot read
+     * that scope, so a keep name the profile does not mount still counts here.
+     * @param config - a `{ tools, leadTools, denyTools }` row config.
+     * @returns the contract text the current selection produces.
+     */
+    function contractPreviewFor(config = {}) {
+      const policy = resolvePreviewPolicy(config);
+      const keep = policy.keep;
+      return contractPreview({
+        deny: policy.deny,
+        shellHidden: !keep.includes('bash') && !keep.includes('pwsh'),
+        writersHidden: !keep.includes('write') && !keep.includes('edit'),
+        readersHidden: !keep.includes('read') && !keep.includes('read_image')
+          && !keep.includes('glob') && !keep.includes('grep'),
+        tools: keep,
+      });
     }
 
     /**
@@ -403,12 +574,24 @@ window.__ModuleLoader__.load({
       const tools = (snapshot.value !== undefined && snapshot.value !== null && typeof snapshot.value.tools === 'object' && snapshot.value.tools !== null)
         ? snapshot.value.tools
         : {};
+      // The quote reflects the selection the rows below show; when a legacy
+      // `leadTools`/`denyTools` override is present the toggles do not drive
+      // policy, so the quote is derived from those keys instead — the lists the
+      // Lead actually receives.
+      const contractText = contractPreviewFor(overridden
+        ? { leadTools: snapshot.user.leadTools, denyTools: snapshot.user.denyTools }
+        : { tools });
 
       return h('div', { className: 'dll-page' },
         h('style', null, STYLE_TEXT),
         h('div', null,
           h('h2', { className: 'dll-title' }, t('title')),
           h('p', { className: 'dll-intro' }, t('intro')),
+          h('blockquote', { className: 'dll-quote' },
+            h('p', { className: 'dll-quote-title' }, t('contract.title')),
+            h('div', { className: 'dll-quote-body' }, contractText),
+            h('p', { className: 'dll-quote-note' }, t('contract.note')),
+          ),
           h('p', { className: 'dll-note' }, t('applyNote')),
         ),
         overridden ? h('div', { className: 'dll-notice', role: 'status' }, t('overridden')) : null,
@@ -435,6 +618,16 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'locale', 'configForms'],
       /** Shared catalog; verify.mjs deep-compares it against the host half. */
       LEAD_TOOL_CATALOG,
+      /**
+       * The contract builder the page quotes; verify.mjs compares it with the
+       * host's `leadContract()` byte for byte.
+       */
+      contractPreview,
+      /**
+       * The contract text one row config produces: the selection-derived preview
+       * the page renders, resolvable without a React render.
+       */
+      contractPreviewFor,
       /**
        * Register the dictionaries, follow the Host namespace, and mount the page.
        * @param ctx - client root context.
