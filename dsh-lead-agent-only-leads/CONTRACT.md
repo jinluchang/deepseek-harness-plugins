@@ -1,6 +1,6 @@
-# CONTRACT — dsh-lead-only-leads
+# CONTRACT — dsh-lead-agent-only-leads
 
-Frozen interface of the `Lead only leads` preset and the host plugin that keeps a
+Frozen interface of the `Lead agent only leads` preset and the host plugin that keeps a
 Team Lead non-blocking. Public names here are referenced by the profile's
 `package.json` and by the preset picker in the Web UI.
 
@@ -8,7 +8,7 @@ Team Lead non-blocking. Public names here are referenced by the profile's
 
 A Team Lead that can block is a Team Lead the user cannot talk to. `wait_agent`,
 a long `bash` job, or a half-written file all hold the turn open, and the user's
-next message has to wait behind them. The `Lead only leads` preset exists to remove
+next message has to wait behind them. The `Lead agent only leads` preset exists to remove
 that: the Lead hands work out and returns to the user immediately.
 
 ## Why the preset carries the whole standard environment
@@ -46,8 +46,8 @@ mounts. `verify.mjs` fails if the preset's row list ever drifts from the shipped
 
 | Row id | Plugin | Purpose |
 | --- | --- | --- |
-| `lead-only-leads` | `@local/dsh-lead-only-leads` | Applies the contract to each Lead of the preset. |
-| `preset-lead-only-leads` | `@deepseek-ai/dsh-agent-preset` | Declares the `lead-only-leads` preset (`Lead only leads`, order 5). |
+| `lead-agent-only-leads` | `@local/dsh-lead-agent-only-leads` | Applies the contract to each Lead of the preset. |
+| `preset-lead-agent-only-leads` | `@deepseek-ai/dsh-agent-preset` | Declares the `lead-agent-only-leads` preset (`Lead agent only leads`, order 5). |
 
 ## The Lead's surface
 
@@ -139,7 +139,7 @@ a zero result means:
   about a scope the plugin did not choose, so the preset surface is left intact
   and a warning is logged.
 
-The page is `settings.section` id `lead-only-leads-tools`, registered by the client
+The page is `settings.section` id `lead-agent-only-leads-tools`, registered by the client
 half; the Host suppresses the auto-generated generic config page for this row
 (`settings.configure({ auto: false })`, `index.js`).
 
@@ -161,7 +161,7 @@ page is absent because no namespace is served.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `preset` | `string` | `lead-only-leads` | Preset whose Leads get the contract. |
+| `preset` | `string` | `lead-agent-only-leads` | Preset whose Leads get the contract. |
 | `tools` | `Record<string, boolean>` (volatile) | `{}` — catalog defaults | Per-tool overrides; an absent key means "use the catalog default". |
 | `leadTools` | `string[]` (volatile, no default) | catalog whitelist ON | Legacy explicit keep list; wins wholesale when present. Names the scope cannot restrict are pruned. An explicit empty array keeps nothing. |
 | `denyTools` | `string[]` (volatile, no default) | catalog guard OFF (`wait_agent`, `subagent`, `list_subagent_models`) | Legacy explicit deny list; wins wholesale when present. `[]` removes the guard. |
@@ -181,7 +181,7 @@ page is absent because no namespace is served.
    "wait_agent is disabled for a non-blocking Lead: end your turn instead." A
    profile `tools` override that turns it back on removes both the denial and the
    contract's refusal sentence.
-5. The Lead's prompt section is named `lead-only-leads:contract` and ordered 650 —
+5. The Lead's prompt section is named `lead-agent-only-leads:contract` and ordered 650 —
    after `TEAM_POLICY` (600), which is where the generic "The Lead must wait for
    required teammates before giving the final answer" lives. The section names
    that instruction and supersedes it. Its body is generated from the resolved

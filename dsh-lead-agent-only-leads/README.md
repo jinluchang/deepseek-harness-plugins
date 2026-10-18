@@ -1,12 +1,12 @@
-# dsh-lead-only-leads
+# dsh-lead-agent-only-leads
 
-A DeepSeek Harness bundle that adds a **Lead only leads** agent preset: a Team Lead
+A DeepSeek Harness bundle that adds a **Lead agent only leads** preset: a Team Lead
 that hands every job to teammates and stays available to the user. By default it
 cannot run shell commands, cannot write files, cannot wait for a teammate to
 finish, and cannot start a one-shot `subagent` — but it keeps every tool it needs
 to delegate, steer, and answer:
 
-| | Standard Lead | Lead only leads |
+| | Standard Lead | Lead agent only leads |
 | --- | --- | --- |
 | Shell (`bash`), file writes (`write`, `edit`) | yes | **no** |
 | Jobs, scheduling, web, `subagent_fork`, workflow, plan mode | yes | **no** |
@@ -41,25 +41,25 @@ scope only, so nothing else in the profile changes.
 The bundle is a normal workspace plugin. Point the installer at the directory:
 
 ```
-plugin_manager({ action: "install_bundle", target: "/home/user/Public/deepseek-harness-plugins/dsh-lead-only-leads" })
+plugin_manager({ action: "install_bundle", target: "/home/user/Public/deepseek-harness-plugins/dsh-lead-agent-only-leads" })
 ```
 
 That registers the bundle in the profile, links the package, and appends its
 patch. Bundles apply to **new sessions**: restart the Host, then pick
-**Lead only leads** when starting a session in the Web UI.
+**Lead agent only leads** when starting a session in the Web UI.
 
 ## Use
 
-Start a new session and choose the `Lead only leads` preset (the composer's preset
-seat lists it as *Lead only leads*). The Lead will delegate: give it a task, and it
+Start a new session and choose the `Lead agent only leads` preset (the composer's preset
+seat lists it as *Lead agent only leads*). The Lead will delegate: give it a task, and it
 briefs a teammate and comes straight back to you. Teammate reports arrive as new
 turns, so you can keep talking while work is in flight.
 
 ## Settings page
 
-The bundle ships a **Lead tools** page under Settings (section id
-`lead-only-leads-tools`), driven by the Host's `configForms` namespace for the
-`lead-only-leads` row. It lists the whole tool universe grouped by mechanism, with a
+The bundle ships a **Lead agent only leads** page under Settings (section id
+`lead-agent-only-leads-tools`), driven by the Host's `configForms` namespace for the
+`lead-agent-only-leads` row. It lists the whole tool universe grouped by mechanism, with a
 per-row description and its default, and writes one dictionary key per toggle:
 
 - **Whitelist** (34) — preset/global-layer tools. ON keeps the tool, OFF hides
@@ -104,7 +104,7 @@ notice while one is set.
 | --- | --- |
 | `cordis.patch.yml` | Two host rows: the plugin, and the preset declaration. |
 | `index.js` | The plugin: per-Agent restriction, denial guard, prompt contract, catalog, `Config`. |
-| `client.js` | Client half: the `Lead tools` settings page and the mirrored `LEAD_TOOL_CATALOG`. |
+| `client.js` | Client half: the `Lead agent only leads` settings page and the mirrored `LEAD_TOOL_CATALOG`. |
 | `locale/*.json` | Marketplace metadata (title/description). |
 | `verify.mjs` | Offline check suite — `node verify.mjs`. |
 | `CONTRACT.md` | Frozen interface, invariants, non-goals. |
@@ -116,9 +116,9 @@ Row config, in the profile patch. The settings page writes `tools`; these keys
 are the manual equivalent:
 
 ```yaml
-- id: lead-only-leads
+- id: lead-agent-only-leads
   config:
-    preset: lead-only-leads                # which preset gets the contract
+    preset: lead-agent-only-leads     # which preset gets the contract
     tools:                            # per-tool toggles; absent key = catalog default
       bash: true
     leadTools: [read, glob, grep]     # legacy: explicit keep list, wins wholesale

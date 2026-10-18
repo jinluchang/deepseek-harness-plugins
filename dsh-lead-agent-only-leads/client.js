@@ -1,36 +1,36 @@
 /**
- * Client half of @local/dsh-lead-only-leads: one settings PAGE that toggles which
+ * Client half of @local/dsh-lead-agent-only-leads: one settings PAGE that toggles which
  * tools a non-blocking Lead may use.
  *
  * Plain browser bundle (no build step): it self-registers with the page's
  * module loader and requests React, the only module-table entry it needs.
- * State lives in the Host's `configForms` namespace for the `lead-only-leads`
+ * State lives in the Host's `configForms` namespace for the `lead-agent-only-leads`
  * profile row; each toggle is one dictionary-key write
  * (`{ op: 'set', path: ['tools', <name>], value: <bool> }`), the shipped
  * tested dict-edit path. The page only registers while the Host serves that
  * namespace (`configForms.whileServed`), so a composition without the plugin
  * shows no trace of it.
  *
- * `LEAD_TOOL_CATALOG` mirrors the host half (`dsh-lead-only-leads/index.js`)
+ * `LEAD_TOOL_CATALOG` mirrors the host half (`dsh-lead-agent-only-leads/index.js`)
  * one-to-one — same names, same order, same `{ name, klass, def }` — and is
  * exposed on the object this factory returns so the bundle's offline suite can
  * deep-compare the two catalogs.
  *
- * @module @local/dsh-lead-only-leads/client
+ * @module @local/dsh-lead-agent-only-leads/client
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-lead-only-leads',
+  id: '@local/dsh-lead-agent-only-leads',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
     const { useCallback, useState } = React;
 
     /** Settings namespace: the Host profile row id that carries the `tools` map. */
-    const HOST_NS = 'lead-only-leads';
+    const HOST_NS = 'lead-agent-only-leads';
     /** Locale dictionary namespace. */
-    const NS = 'lead-only-leads';
+    const NS = 'lead-agent-only-leads';
     /** Settings section key (drives the shell's `only` filtering). */
-    const SECTION_ID = 'lead-only-leads-tools';
+    const SECTION_ID = 'lead-agent-only-leads-tools';
     /** Nav position: after Models (20), keeping the deployment-shaping pages together. */
     const SECTION_ORDER = 30;
 
@@ -114,9 +114,9 @@ window.__ModuleLoader__.load({
     const GROUPS = ['whitelist', 'guard', 'none'];
 
     const en = {
-      'nav': 'Lead tools',
-      'title': 'Lead tools',
-      'intro': 'Choose which tools a Team Lead may use under this preset. The rest of the Team always keeps the standard surface.',
+      'nav': 'Lead agent only leads',
+      'title': 'Lead agent only leads',
+      'intro': 'Choose which tools a Team Lead may use under the Lead agent only leads preset. The rest of the Team always keeps the standard surface.',
       'applyNote': 'Changes apply to Leads created after the change. A running Lead keeps the tools it already has until its next session.',
       'overridden': 'This profile sets leadTools or denyTools explicitly, which overrides every toggle on this page. Remove those keys to use the toggles.',
       'unavailable': 'The Lead plugin is not serving its settings in this profile.',
@@ -188,9 +188,9 @@ window.__ModuleLoader__.load({
     };
 
     const zh = {
-      'nav': 'Lead 工具',
-      'title': 'Lead 工具',
-      'intro': '选择该预设下 Team Lead 可以使用的工具。Team 其他成员始终保持标准工具面。',
+      'nav': 'Lead 只负责带领',
+      'title': 'Lead 只负责带领',
+      'intro': '选择「Lead 只负责带领」预设下 Team Lead 可以使用的工具。Team 其他成员始终保持标准工具面。',
       'applyNote': '更改仅对之后创建的 Lead 生效。正在运行的 Lead 会保留已有工具，直到下一次会话。',
       'overridden': '该 Profile 显式设置了 leadTools 或 denyTools，会整体覆盖本页的所有开关。移除这些键后开关才会生效。',
       'unavailable': '该 Profile 中 Lead 插件未提供设置。',
@@ -365,7 +365,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The Lead tools page: every catalog tool grouped by class, each row with
+     * The "Lead agent only leads" settings page: every catalog tool grouped by class, each row with
      * its description, its default, and its toggle.
      * @param props - slot owner props, the injected face, and localized copy.
      * @returns the page element tree.
@@ -431,7 +431,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      name: '@local/dsh-lead-only-leads',
+      name: '@local/dsh-lead-agent-only-leads',
       inject: ['slots', 'locale', 'configForms'],
       /** Shared catalog; verify.mjs deep-compares it against the host half. */
       LEAD_TOOL_CATALOG,
@@ -440,10 +440,10 @@ window.__ModuleLoader__.load({
        * @param ctx - client root context.
        */
       apply(ctx) {
-        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-lead-only-leads: dictionaries');
+        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-lead-agent-only-leads: dictionaries');
         const form = ctx.configForms.get(HOST_NS);
         const store = createFormStore(form);
-        ctx.effect(() => () => store.dispose(), '@local/dsh-lead-only-leads: form state');
+        ctx.effect(() => () => store.dispose(), '@local/dsh-lead-agent-only-leads: form state');
         ctx.effect(() => ctx.configForms.whileServed([HOST_NS], () => ctx.slots.inject('settings.section',
           () => ctx.slots.register({
             name: 'settings.section',
@@ -455,7 +455,7 @@ window.__ModuleLoader__.load({
               hooks: { leadTools: store },
               setTool: (name, next) => form.mutate([{ op: 'set', path: ['tools', name], value: next }]),
             }),
-          }, LeadToolsPage))), '@local/dsh-lead-only-leads: tools page');
+          }, LeadToolsPage))), '@local/dsh-lead-agent-only-leads: tools page');
       },
     };
   },

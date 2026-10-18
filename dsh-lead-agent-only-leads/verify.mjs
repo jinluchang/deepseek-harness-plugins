@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Offline verification for `dsh-lead-only-leads`.
+ * Offline verification for `dsh-lead-agent-only-leads`.
  *
  * Runs without a live Host and checks three things:
  *
@@ -18,7 +18,7 @@
  *
  * Usage: `node verify.mjs` — exit code 0 means every check passed.
  *
- * @module dsh-lead-only-leads/verify
+ * @module dsh-lead-agent-only-leads/verify
  */
 
 import assert from 'node:assert/strict'
@@ -91,7 +91,7 @@ let sequence = 0
  * @param {object} [options] - preset id, Team role, extra session header.
  * @returns {object} the agent plus readers for what was registered on it.
  */
-function makeAgent({ preset = 'lead-only-leads', role = 'lead', header = {} } = {}) {
+function makeAgent({ preset = 'lead-agent-only-leads', role = 'lead', header = {} } = {}) {
   let allow
   const guards = []
   const sections = new Map()
@@ -316,7 +316,7 @@ check('leadContract defaults follow the catalog; deny grammar and hidden flags a
 })
 
 check('the registered contract follows the resolved policy (live-profile override shape)', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   // Exactly the live `web` profile patch: the guard keeps `subagent` and
   // `list_subagent_models`, so only `wait_agent` may be refused, and the prompt
@@ -326,7 +326,7 @@ check('the registered contract follows the resolved policy (live-profile overrid
   assert.equal(lead.deny('subagent'), undefined, 'an allowed guard tool must not be denied')
   assert.equal(lead.deny('list_subagent_models'), undefined)
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
-  const text = lead.sections.get('lead-only-leads:contract').text
+  const text = lead.sections.get('lead-agent-only-leads:contract').text
   assert.match(text, /`wait_agent` is refused — do not plan around waiting\./)
   assert.equal(text.includes('list_subagent_models'), false, 'the prompt must not name a tool this policy allows')
   assert.equal(/`subagent`/.test(text), false, 'the prompt must not name `subagent` when it is allowed')
@@ -424,7 +424,7 @@ check('toolToggleMap reads through a live volatile wrapper on every call', () =>
 // --- behaviour on a Lead ----------------------------------------------------
 
 check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope tools denied', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, {})
 
@@ -444,7 +444,7 @@ check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope 
   assert.equal(lead.deny('read'), undefined, 'the guard denies one tool, not every tool')
   assert.equal(lead.deny('spawn_teammate'), undefined)
 
-  const section = lead.sections.get('lead-only-leads:contract')
+  const section = lead.sections.get('lead-agent-only-leads:contract')
   assert.notEqual(section, undefined, 'the Lead gets its own contract section')
   assert.equal(section.text, LEGACY_CONTRACT_TEXT, 'the catalog default must register the frozen contract text')
   assert.equal(section.order > 600 && section.order < 800, true, 'it is ordered after TEAM_POLICY (600)')
@@ -461,7 +461,7 @@ check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope 
 })
 
 check('Teammate inherits the full standard surface, untouched', () => {
-  const mate = makeAgent({ preset: 'lead-only-leads', role: 'teammate', header: { parentSession: 'session-0' } })
+  const mate = makeAgent({ preset: 'lead-agent-only-leads', role: 'teammate', header: { parentSession: 'session-0' } })
   const { host } = makeHost({ agents: [mate.agent], presets: presetRegistry, teams: roster })
   apply(host, {})
   assert.equal(mate.activeAllow(), undefined)
@@ -487,7 +487,7 @@ check('A live re-preset applies and lifts the contract', () => {
   apply(host, {})
   assert.equal(agent.activeAllow(), undefined)
 
-  agent.agent.ctx.__preset = 'lead-only-leads'
+  agent.agent.ctx.__preset = 'lead-agent-only-leads'
   host.emit('agent-preset/selected', agent.agent.id)
   assert.deepEqual(agent.activeAllow(), KEPT_BY_DEFAULT)
 
@@ -499,8 +499,8 @@ check('A live re-preset applies and lifts the contract', () => {
 })
 
 check('Without a Team service, only a root Session is a Lead', () => {
-  const root = makeAgent({ preset: 'lead-only-leads', header: {} })
-  const child = makeAgent({ preset: 'lead-only-leads', header: { parentSession: 'session-0' } })
+  const root = makeAgent({ preset: 'lead-agent-only-leads', header: {} })
+  const child = makeAgent({ preset: 'lead-agent-only-leads', header: { parentSession: 'session-0' } })
   const { host } = makeHost({ agents: [root.agent, child.agent], presets: presetRegistry })
   apply(host, {})
   assert.deepEqual(root.activeAllow(), KEPT_BY_DEFAULT)
@@ -508,7 +508,7 @@ check('Without a Team service, only a root Session is a Lead', () => {
 })
 
 check('Config can narrow the keep list and drop the guard', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { leadTools: ['read', 'glob'], denyTools: [] })
   assert.deepEqual(lead.activeAllow(), ['read', 'glob'])
@@ -516,7 +516,7 @@ check('Config can narrow the keep list and drop the guard', () => {
 })
 
 check('A keep list naming a scope-registered tool is pruned, not fatal', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { leadTools: ['read', 'list_agents', 'glob'] })
   assert.deepEqual(lead.activeAllow(), ['read', 'glob'])
@@ -532,7 +532,7 @@ check('A keep list naming a scope-registered tool is pruned, not fatal', () => {
 // warns", whose scenario is now case (b).
 
 check('(b) LEGACY leadTools naming only absent tools keeps the preset tools and warns', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   lead.agent.ctx.tools.schemas = () => [...AGENT_LAYER].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { leadTools: ['pwsh'] })
@@ -542,7 +542,7 @@ check('(b) LEGACY leadTools naming only absent tools keeps the preset tools and 
 })
 
 check('(a) TOGGLE-derived keep list of only absent tools restricts the Lead to nothing', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   // A scope without `pwsh` (platform-conditional row) alongside the own-scope tools.
   lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'pwsh'), ...AGENT_LAYER].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
@@ -558,7 +558,7 @@ check('(a) TOGGLE-derived keep list of only absent tools restricts the Lead to n
 })
 
 check('(c) MIXED toggle list of known and absent tools restricts to the known name only', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'pwsh'), ...AGENT_LAYER].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { ...ALL_WHITELIST_OFF, read: true, pwsh: true } })
@@ -567,7 +567,7 @@ check('(c) MIXED toggle list of known and absent tools restricts to the known na
 })
 
 check('ALL-OFF intent: an empty keep list restricts to nothing instead of failing open', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: ALL_WHITELIST_OFF })
   assert.deepEqual(lead.activeAllow(), [], 'a user-intent keep list resolving to zero names must call restrict({ allow: [] })')
@@ -582,15 +582,15 @@ check('ALL-OFF intent: an empty keep list restricts to nothing instead of failin
 })
 
 check('ZERO RESTRICTABLE: a keep list of only own-scope names keeps none of the preset tools', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { leadTools: ['list_agents', 'wait_agent'] })
   assert.deepEqual(lead.activeAllow(), [], 'non-empty intent with zero restrictable names must keep nothing')
-  assert.match(warnings.join(' | '), /none of 2 configured Lead tools is restrictable/)
+  assert.match(warnings.join(' | '), /none of 2 configured tools for the Lead is restrictable/)
 })
 
 check('an explicit empty legacy leadTools now keeps nothing (documented change)', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { leadTools: [] })
   assert.deepEqual(lead.activeAllow(), [], 'an explicit empty keep list is a "keep nothing" intent')
@@ -599,7 +599,7 @@ check('an explicit empty legacy leadTools now keeps nothing (documented change)'
 // --- per-tool toggles drive the two lists ------------------------------------
 
 check('a whitelist toggle ON joins the keep list and OFF leaves it', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { bash: true, read: false } })
   const allow = lead.activeAllow()
@@ -608,7 +608,7 @@ check('a whitelist toggle ON joins the keep list and OFF leaves it', () => {
 })
 
 check('a guard toggle ON removes the denial and OFF adds it', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { wait_agent: true, spawn_teammate: false } })
   assert.equal(lead.deny('wait_agent'), undefined, 'wait_agent toggled ON must not be denied')
@@ -616,7 +616,7 @@ check('a guard toggle ON removes the denial and OFF adds it', () => {
 })
 
 check('a class-none toggle has no effect on either list', () => {
-  const lead = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { '/plan': true, plugin_manager: true, structured_output: true } })
   assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT)
@@ -626,7 +626,7 @@ check('a class-none toggle has no effect on either list', () => {
 check('a volatile toggle edit reaches a Lead created afterwards, without a remount', () => {
   let live = {}
   const config = { tools: { get: () => live } }
-  const first = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const first = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const agents = [first.agent]
   const { host } = makeHost({ agents, presets: presetRegistry, teams: roster })
   apply(host, config)
@@ -635,14 +635,14 @@ check('a volatile toggle edit reaches a Lead created afterwards, without a remou
   // not re-run, so the running Lead must keep its surface.
   live = { bash: true }
   assert.deepEqual(first.activeAllow(), KEPT_BY_DEFAULT, 'a running Lead must not be re-reconciled')
-  const second = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const second = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   agents.push(second.agent)
   host.emit('agent/created', { agent: second.agent })
   assert.ok(second.activeAllow().includes('bash'), 'a Lead created after the edit must see the toggled tool')
 })
 
 check('apply suppresses the automatic settings page only when a settings service is mounted', () => {
-  const withSettings = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const withSettings = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const mounted = makeHost({ agents: [withSettings.agent], presets: presetRegistry, teams: roster, settings: {} })
   apply(mounted.host, {})
   assert.equal(mounted.presentations.length, 1, 'the auto-generated page must be suppressed for this row instance')
@@ -652,7 +652,7 @@ check('apply suppresses the automatic settings page only when a settings service
   assert.equal(mounted.presentations.length, 0, 'unload must release the page policy')
 
   // A composition without the settings service must still boot cleanly.
-  const bare = makeAgent({ preset: 'lead-only-leads', role: 'lead' })
+  const bare = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const without = makeHost({ agents: [bare.agent], presets: presetRegistry, teams: roster })
   apply(without.host, {})
   assert.equal(without.presentations.length, 0)
@@ -664,12 +664,12 @@ check('apply suppresses the automatic settings page only when a settings service
 check('Patch declares both rows and no leftover of the standard preset', () => {
   const text = readFileSync(join(HERE, 'cordis.patch.yml'), 'utf8')
   for (const needle of [
-    '- id: lead-only-leads',
-    "name: '@local/dsh-lead-only-leads'",
-    '- id: preset-lead-only-leads',
+    '- id: lead-agent-only-leads',
+    "name: '@local/dsh-lead-agent-only-leads'",
+    '- id: preset-lead-agent-only-leads',
     "name: '@deepseek-ai/dsh-agent-preset'",
-    'id: lead-only-leads',
-    'name: Lead only leads',
+    'id: lead-agent-only-leads',
+    'name: Lead agent only leads',
     'order: 5',
   ]) {
     assert.equal(text.includes(needle), true, `patch must contain ${JSON.stringify(needle)}`)
@@ -714,17 +714,17 @@ function flatten(plugins) {
 if (yaml === undefined) {
   results.push({ label: 'Deep patch parse (skipped: js-yaml not reachable from the harness checkout)', ok: true, skipped: true })
 } else {
-  check('Patch deep-parses into two rows with the Lead only leads preset', () => {
+  check('Patch deep-parses into two rows with the Lead agent only leads preset', () => {
     const doc = loadPatch(join(HERE, 'cordis.patch.yml'))
     assert.equal(Array.isArray(doc), true)
     const rows = doc[0].insert
     assert.deepEqual(rows.map(row => [row.id, row.name]), [
-      ['lead-only-leads', '@local/dsh-lead-only-leads'],
-      ['preset-lead-only-leads', '@deepseek-ai/dsh-agent-preset'],
+      ['lead-agent-only-leads', '@local/dsh-lead-agent-only-leads'],
+      ['preset-lead-agent-only-leads', '@deepseek-ai/dsh-agent-preset'],
     ])
     const config = rows[1].config
-    assert.equal(config.id, 'lead-only-leads')
-    assert.equal(config.name, 'Lead only leads')
+    assert.equal(config.id, 'lead-agent-only-leads')
+    assert.equal(config.name, 'Lead agent only leads')
     assert.equal(config.order, 5)
     assert.equal(Array.isArray(config.plugins), true)
     assert.equal(config.plugins.every(row => row.group === true ? Array.isArray(row.config) : row.name !== undefined), true)
@@ -766,7 +766,7 @@ if (!existsSync(CLIENT_PATH)) {
       else Object.defineProperty(globalThis, 'window', previousWindow)
     }
     assert.notEqual(registration, undefined, 'client.js must self-register with window.__ModuleLoader__.load')
-    assert.equal(registration.id, '@local/dsh-lead-only-leads', 'the client bundle id must match the package name')
+    assert.equal(registration.id, '@local/dsh-lead-agent-only-leads', 'the client bundle id must match the package name')
     assert.equal(typeof registration.factory, 'function', 'the registration must expose a factory')
     const face = registration.factory(specifier => {
       required.push(specifier)
