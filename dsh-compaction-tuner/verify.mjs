@@ -119,6 +119,10 @@ function createReactStub() {
     useSyncExternalStoreCalls.push({ subscribe, getSnapshot })
     return getSnapshot()
   }
+  const useEffect = (effect, deps) => {
+    const [inst, slot] = slotOf()
+    inst.effects.set(slot, { effect, deps })
+  }
 
   const commit = inst => {
     const wanted = inst.store
@@ -134,8 +138,27 @@ function createReactStub() {
     inst.active = active
   }
 
+  /**
+   * Run each effect whose dependencies changed, cleaning up the previous run
+   * first — real React's run-and-cleanup ordering, which the restart effect
+   * relies on for its abort-on-unmount contract.
+   */
+  const commitEffects = inst => {
+    for (const [slot, entry] of inst.effects) {
+      const previous = inst.effectState.get(slot)
+      const unchanged = previous !== undefined
+        && Array.isArray(entry.deps) && Array.isArray(previous.deps)
+        && sameDeps(previous.deps, entry.deps)
+      if (unchanged) continue
+      if (previous !== undefined && typeof previous.cleanup === 'function') previous.cleanup()
+      const cleanup = entry.effect()
+      inst.effectState.set(slot, { deps: entry.deps, cleanup: typeof cleanup === 'function' ? cleanup : undefined })
+    }
+  }
+
   const render = inst => {
     inst.hookIndex = 0
+    inst.effects = new Map()
     current = inst
     try {
       inst.tree = inst.component(inst.props)
@@ -143,17 +166,38 @@ function createReactStub() {
       current = null
     }
     commit(inst)
+    commitEffects(inst)
     return inst.tree
   }
 
   const mount = (component, props) => {
-    const inst = { component, props, hooks: [], hookIndex: 0, tree: null, store: undefined, active: undefined }
+    const inst = {
+      component,
+      props,
+      hooks: [],
+      hookIndex: 0,
+      tree: null,
+      store: undefined,
+      active: undefined,
+      effects: new Map(),
+      effectState: new Map(),
+    }
     render(inst)
+    inst.unmount = () => {
+      for (const previous of inst.effectState.values()) {
+        if (typeof previous.cleanup === 'function') previous.cleanup()
+      }
+      inst.effectState = new Map()
+      if (inst.active !== undefined) {
+        inst.active.unsubscribe()
+        inst.active = undefined
+      }
+    }
     return inst
   }
 
   return {
-    React: { createElement, useCallback, useId, useRef, useState, useSyncExternalStore },
+    React: { createElement, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore },
     mount,
     useSyncExternalStoreCalls,
   }
@@ -212,11 +256,13 @@ function fakeClientContext() {
     effects: [],
     injections: [],
     formRequests: [],
+    connection: undefined,
   }
   const form = new BoundForm()
   const ctx = {
     state,
     form,
+    get: name => (name === 'connection' ? state.connection : undefined),
     effect(callback, label) {
       state.effects.push(label)
       const disposer = callback()
@@ -303,7 +349,7 @@ function typeInto(ui, index, text) {
 
 /** Click the Save action and let its promise settle. */
 async function clickSave(ui) {
-  findAll(ui.tree(), node => node.type === 'button')[0].props.onClick()
+  ui.saveButton().props.onClick()
   await flush()
 }
 
@@ -316,7 +362,24 @@ const clientSource = read('client.js')
 const react = createReactStub()
 let captured
 const requested = []
-const clientVm = createContext({ window: { __ModuleLoader__: { load: options => { captured = options } } }, console })
+/**
+ * The page's `window` double. Everything the client reads at call time stays
+ * mutable per mount, and the timer seats forward to `globalThis` so the fake
+ * clock the retry checks install also governs the page's own polls.
+ */
+const clientWindow = {
+  __ModuleLoader__: { load: options => { captured = options } },
+  AbortController,
+  URL: globalThis.URL,
+  setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+  clearTimeout: id => globalThis.clearTimeout(id),
+  fetch: () => Promise.resolve({ ok: true }),
+  location: { href: 'http://127.0.0.1:3080/', reload: () => { clientWindow.__reloads += 1 } },
+  __reloads: 0,
+}
+// `Date` is handed in as the HOST's Date, so the virtual clock the recovery
+// checks install also governs the budget arithmetic inside the vm realm.
+const clientVm = createContext({ window: clientWindow, console, Date: globalThis.Date })
 runInContext(clientSource, clientVm, { filename: 'client.js' })
 const clientContext = fakeClientContext()
 const clientPlugin = captured.factory(specifier => {
@@ -326,15 +389,43 @@ const clientPlugin = captured.factory(specifier => {
 })
 clientPlugin.apply(clientContext)
 
+/** One entry of the registered English copy table. */
+const enCopy = key => clientContext.state.dictionaries[0].dictionary.en[key]
+
+/** Locate a button by its visible copy, so the restart action cannot shadow Save. */
+const buttonWithText = (tree, keys) => findAll(
+  tree,
+  node => node.type === 'button' && keys.some(key => directText(node) === enCopy(key)),
+)[0]
+
 /**
  * Mount a fresh copy of the section against a fresh form double.
  * @param snapshot - the config-form snapshot to serve.
- * @param options - `nextResult` seeds what `mutate` resolves.
- * @returns the mounted double plus its recorders.
+ * @param options - `nextResult` seeds what `mutate` resolves; `call` is the raw
+ *   `/backend-restart` RPC implementation; `fetch` is the document-root probe.
+ * @returns the mounted double plus its recorders and drivers.
  */
-function mountSection(snapshot, { nextResult = true } = {}) {
+function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl } = {}) {
+  const calls = []
+  const impl = call ?? ((channel, endpoint) => Promise.resolve(
+    endpoint === 'status' ? { ok: true, value: { restartable: true } } : { ok: true },
+  ))
+  let fetchCalls = 0
+  clientWindow.__reloads = 0
+  clientWindow.fetch = (...args) => {
+    fetchCalls += 1
+    return (fetchImpl ?? (() => Promise.resolve({ ok: true })))(...args)
+  }
   const ctx = fakeClientContext()
   ctx.form.set(snapshot, nextResult)
+  ctx.state.connection = {
+    rpc: {
+      call: (channel, endpoint, payload, signal) => {
+        calls.push({ channel, endpoint, payload, signal })
+        return impl(channel, endpoint, payload, signal)
+      },
+    },
+  }
   clientPlugin.apply(ctx)
   const registration = ctx.state.registered[0]
   const face = registration.options.inject()
@@ -344,8 +435,18 @@ function mountSection(snapshot, { nextResult = true } = {}) {
     ctx,
     form: ctx.form,
     registration,
+    inst,
     tree: () => inst.tree,
-    button: () => findAll(inst.tree, node => node.type === 'button')[0],
+    settle: drain,
+    unmount: () => inst.unmount(),
+    calls: () => calls,
+    fetchCalls: () => fetchCalls,
+    reloads: () => clientWindow.__reloads,
+    saveButton: () => buttonWithText(inst.tree, ['action.save', 'action.saving']),
+    restartButton: () => buttonWithText(inst.tree, ['restart.action', 'restart.restarting']),
+    cancelButton: () => buttonWithText(inst.tree, ['restart.cancel']),
+    confirmButton: () => buttonWithText(inst.tree, ['restart.confirmAction']),
+    reloadButton: () => buttonWithText(inst.tree, ['restart.reload']),
     inputs: () => findAll(inst.tree, node => node.type === 'input'),
     alerts: () => findAll(inst.tree, node => node.props?.role === 'alert'),
     subscribeCalls: () => react.useSyncExternalStoreCalls.slice(start),
@@ -361,7 +462,7 @@ await check('the manifest declares the frozen identity, bundle patch, and web cl
   assert.equal(manifest.type, 'module', `type drifted to ${String(manifest.type)}`)
   assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml', `dsh.bundle.patch drifted to ${String(manifest.dsh?.bundle?.patch)}`)
   assert.equal(manifest.dsh?.client?.platform, 'web', `dsh.client.platform drifted to ${String(manifest.dsh?.client?.platform)}`)
-  for (const dependency of ['@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-ui-settings']) {
+  for (const dependency of ['@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-connection']) {
     assert.ok(manifest.dsh.client.inject.includes(dependency), `dsh.client.inject is missing ${dependency}`)
   }
   assert.equal(manifest.scripts?.verify, 'node verify.mjs', `scripts.verify drifted to ${String(manifest.scripts?.verify)}`)
@@ -989,7 +1090,7 @@ await check('a ready snapshot renders three labelled inputs seeded from the snap
     assert.ok(labels.some(label => label.props.htmlFor === input.props.id), `no <label for> points at input ${String(input.props.id)}`)
     assert.equal(input.props.disabled, false, 'a writable ready snapshot must not disable its inputs')
   }
-  assert.equal(ui.button().props.disabled, true, 'Save must be disabled while the draft equals the snapshot')
+  assert.equal(ui.saveButton().props.disabled, true, 'Save must be disabled while the draft equals the snapshot')
   assert.equal(renderedText(ui.tree()).includes('«missing:'), false, `the page rendered a missing dictionary key: ${renderedText(ui.tree())}`)
 })
 
@@ -1009,7 +1110,7 @@ await check('useSyncExternalStore gets one stable useCallback-wrapped bound pair
 await check('a valid draft issues exactly ONE mutate with the three set ops and the snapshot revision', async () => {
   const ui = mountSection(readySnapshot(7))
   typeInto(ui, 1, '0.1')
-  assert.equal(ui.button().props.disabled, false, 'Save must enable once the draft differs from the snapshot')
+  assert.equal(ui.saveButton().props.disabled, false, 'Save must enable once the draft differs from the snapshot')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 1, `expected exactly one mutate call, got ${ui.form.writes.length}`)
   const write = ui.form.writes[0]
@@ -1060,7 +1161,7 @@ await check('a non-writable snapshot disables every input and Save and writes no
   snapshot.writable = false
   const ui = mountSection(snapshot)
   for (const input of ui.inputs()) assert.equal(input.props.disabled, true, 'a read-only snapshot must disable its inputs')
-  assert.equal(ui.button().props.disabled, true, 'a read-only snapshot must disable Save')
+  assert.equal(ui.saveButton().props.disabled, true, 'a read-only snapshot must disable Save')
   typeInto(ui, 1, '0.1')
   await clickSave(ui)
   assert.equal(ui.form.writes.length, 0, 'a read-only snapshot performed a write')
@@ -1102,10 +1203,12 @@ await check('no rendered copy is missing from the dictionary in any state', asyn
 function installClock() {
   const realSetTimeout = globalThis.setTimeout
   const realClearTimeout = globalThis.clearTimeout
+  const realNow = Date.now
   const timers = new Map()
   const cleared = new Set()
   const delays = []
   let nextId = 1
+  let now = realNow()
   globalThis.setTimeout = (callback, delay = 0) => {
     const id = nextId
     nextId += 1
@@ -1114,25 +1217,42 @@ function installClock() {
     return id
   }
   globalThis.clearTimeout = id => { cleared.add(id); timers.delete(id) }
+  // The recovery budget is measured with `Date.now()`, so the clock has to move
+  // with the timers or a bounded poll would spin against real time.
+  Date.now = () => now
   const ordered = () => [...timers.values()].sort((left, right) => left.id - right.id)
+  const fire = async next => {
+    timers.delete(next.id)
+    now += next.delay
+    next.callback()
+    await drain()
+  }
   return {
     delays,
     cleared,
     pending: ordered,
     pendingDelays: () => ordered().map(timer => timer.delay),
     retryDelays: () => delays.filter(delay => delay !== 0),
-    // Run the oldest pending timer, then let any async pass it started settle.
+    // Run the oldest pending timer, then let any async work it started settle.
     async runOldest() {
       const next = ordered()[0]
       if (next === undefined) return false
-      timers.delete(next.id)
-      next.callback()
-      await drain()
+      await fire(next)
       return true
+    },
+    /** Fire pending timers until none are left, so a bounded poll can expire. */
+    async runUntilIdle(maxSteps = 400) {
+      for (let step = 0; step < maxSteps; step += 1) {
+        const next = ordered()[0]
+        if (next === undefined) return step
+        await fire(next)
+      }
+      return maxSteps
     },
     restore() {
       globalThis.setTimeout = realSetTimeout
       globalThis.clearTimeout = realClearTimeout
+      Date.now = realNow
     },
   }
 }
@@ -1382,6 +1502,199 @@ await check('a candidate whose configuration() throws is skipped and the next on
     assert.equal(ui.warnings.filter(message => message.includes('the retune pass failed')).length, 0, `the throw escaped the walk: ${JSON.stringify(ui.warnings)}`)
     assert.equal(clock.retryDelays().length, 0, 'a retry was armed although a later candidate found rows')
   } finally { clock.restore() }
+})
+
+/* ══ 9. the restart notice, action, confirm and recovery ═══════════════════ */
+
+/** A `/backend-restart` implementation whose `status` answers `restartable`. */
+const statusCall = (restartable, restartReply = { ok: true }) => (channel, endpoint) => Promise.resolve(
+  endpoint === 'status' ? { ok: true, value: { restartable } } : restartReply,
+)
+
+await check('the client injects the connection service at runtime and still requests only react', () => {
+  assert.ok(Array.isArray(clientPlugin.inject), 'the client plugin exposes no inject array')
+  assert.ok(clientPlugin.inject.includes('connection'), `the runtime inject list is missing connection: ${JSON.stringify(clientPlugin.inject)}`)
+  assert.deepEqual([...clientPlugin.inject].sort(), ['configForms', 'connection', 'locale', 'slots'], `the runtime inject list drifted: ${JSON.stringify(clientPlugin.inject)}`)
+  assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-connection'), 'the manifest client inject is missing @deepseek-ai/dsh-client-connection')
+  assert.deepEqual(requested, ['react'], `the factory requested ${JSON.stringify(requested)} from the module table`)
+})
+
+await check('the restart-required notice is a real <strong> in the ready, unavailable and loading states', async () => {
+  const states = [
+    ['ready', mountSection(readySnapshot(7))],
+    ['unavailable', mountSection({ status: 'unavailable', revision: 0, writable: false })],
+    ['loading', mountSection({ status: 'loading', revision: 0 })],
+  ]
+  for (const [label, ui] of states) {
+    await ui.settle()
+    const strong = findAll(ui.tree(), node => node.type === 'strong')
+    assert.equal(strong.length, 1, `${label}: expected exactly one <strong> note, rendered ${strong.length}`)
+    assert.equal(directText(strong[0]), enCopy('restart.note'), `${label}: the bold note copy drifted: ${directText(strong[0])}`)
+  }
+})
+
+await check('the restart action renders enabled when the probe reports restartable', async () => {
+  const ui = mountSection(readySnapshot(7), { call: statusCall(true) })
+  await ui.settle()
+  const action = ui.restartButton()
+  assert.ok(action !== undefined, 'the restart action is not rendered')
+  assert.equal(action.props.disabled, false, 'the restart action is disabled although the backend is restartable')
+  assert.equal(action.props.type, 'button', 'the restart action is not a plain button')
+})
+
+await check('the action degrades to the manual copy on restartable:false and after a rejecting probe retries', async () => {
+  const clock = installClock()
+  try {
+    const manual = mountSection(readySnapshot(7), { call: statusCall(false) })
+    await manual.settle()
+    assert.equal(manual.restartButton().props.disabled, true, 'restartable:false must disable the action')
+    assert.ok(renderedText(manual.tree()).includes(enCopy('restart.manual')), 'the manual copy is not rendered')
+
+    let attempts = 0
+    const rejecting = mountSection(readySnapshot(7), { call: () => { attempts += 1; return Promise.reject(new Error('no channel')) } })
+    await rejecting.settle()
+    await clock.runUntilIdle()
+    await rejecting.settle()
+    assert.equal(attempts, 3, `the probe attempted ${attempts} time(s), expected the three bounded attempts`)
+    assert.equal(rejecting.restartButton().props.disabled, true, 'a rejected probe must leave the action disabled')
+    assert.ok(renderedText(rejecting.tree()).includes(enCopy('restart.manual')), 'the manual copy is missing after a rejected probe')
+    assert.equal(rejecting.reloads(), 0, 'a rejected probe reloaded the page')
+  } finally { clock.restore() }
+})
+
+await check('the inline confirm is not a native dialog: Cancel calls nothing and Confirm calls /backend-restart once', async () => {
+  const clock = installClock()
+  try {
+    const ui = mountSection(readySnapshot(7), { call: statusCall(true) })
+    await ui.settle()
+    const statusCalls = ui.calls().length
+    assert.equal(statusCalls, 1, `expected one status probe, got ${statusCalls}`)
+    ui.restartButton().props.onClick()
+    assert.ok(renderedText(ui.tree()).includes(enCopy('restart.confirm')), 'activating the action did not show the confirm copy')
+    assert.ok(ui.cancelButton() !== undefined, 'the Cancel action is not rendered')
+    assert.ok(ui.confirmButton() !== undefined, 'the Confirm action is not rendered')
+    ui.cancelButton().props.onClick()
+    assert.equal(ui.calls().length, statusCalls, `Cancel issued ${ui.calls().length - statusCalls} channel call(s)`)
+    assert.equal(ui.restartButton().props.disabled, false, 'Cancel did not return the action to the ready state')
+    ui.restartButton().props.onClick()
+    ui.confirmButton().props.onClick()
+    await ui.settle()
+    const restarts = ui.calls().filter(entry => entry.endpoint === 'restart')
+    assert.equal(restarts.length, 1, `Confirm issued ${restarts.length} restart call(s)`)
+    assert.equal(restarts[0].channel, '/backend-restart', `the restart went to ${String(restarts[0].channel)}`)
+    assert.equal(ui.calls().filter(entry => entry.endpoint === 'status').length, 1, 'Confirm re-probed status')
+  } finally { clock.restore() }
+})
+
+await check('an ok:true reply enters recovery and a reject-then-resolve poll reloads the page', async () => {
+  const clock = installClock()
+  try {
+    let fetches = 0
+    const ui = mountSection(readySnapshot(7), {
+      call: statusCall(true),
+      fetch: () => {
+        fetches += 1
+        return fetches === 1 ? Promise.reject(new Error('the old listener is gone')) : Promise.resolve({ ok: true })
+      },
+    })
+    await ui.settle()
+    ui.restartButton().props.onClick()
+    ui.confirmButton().props.onClick()
+    await ui.settle()
+    assert.ok(renderedText(ui.tree()).includes(enCopy('restart.restarting')), 'the restarting copy is not rendered')
+    assert.equal(ui.reloads(), 1, `location.reload was called ${ui.reloads()} time(s), expected once`)
+    assert.equal(ui.fetchCalls() >= 2, true, `the recovery probed the root ${ui.fetchCalls()} time(s)`)
+  } finally { clock.restore() }
+})
+
+await check('a transport rejection also enters recovery, because the process may exit before replying', async () => {
+  const clock = installClock()
+  try {
+    let fetches = 0
+    const ui = mountSection(readySnapshot(7), {
+      call: (channel, endpoint) => (endpoint === 'status'
+        ? Promise.resolve({ ok: true, value: { restartable: true } })
+        : Promise.reject(new Error('the transport died with the process'))),
+      fetch: () => {
+        fetches += 1
+        return fetches === 1 ? Promise.reject(new Error('gone')) : Promise.resolve({ ok: true })
+      },
+    })
+    await ui.settle()
+    ui.restartButton().props.onClick()
+    ui.confirmButton().props.onClick()
+    await ui.settle()
+    assert.ok(renderedText(ui.tree()).includes(enCopy('restart.restarting')), 'a transport rejection did not enter the restarting state')
+    assert.equal(ui.reloads(), 1, `location.reload was called ${ui.reloads()} time(s) after a transport rejection`)
+  } finally { clock.restore() }
+})
+
+await check('a timed-out recovery shows the manual reload affordance instead of a dead page', async () => {
+  const clock = installClock()
+  try {
+    const ui = mountSection(readySnapshot(7), {
+      call: statusCall(true),
+      fetch: () => Promise.resolve({ ok: true }),
+    })
+    await ui.settle()
+    ui.restartButton().props.onClick()
+    ui.confirmButton().props.onClick()
+    await ui.settle()
+    await clock.runUntilIdle(400)
+    await ui.settle()
+    assert.ok(renderedText(ui.tree()).includes(enCopy('restart.timeout')), `the timeout copy is not rendered; visible copy starts: ${renderedText(ui.tree()).slice(0, 160)}`)
+    assert.ok(ui.reloadButton() !== undefined, 'the manual reload affordance is missing')
+    assert.equal(ui.reloads(), 0, 'the page reloaded even though the successor never answered')
+    const strong = findAll(ui.tree(), node => node.type === 'strong')
+    assert.equal(directText(strong[0]), enCopy('restart.note'), 'the bold note vanished in the timeout state')
+  } finally { clock.restore() }
+})
+
+await check('unmounting the section aborts the recovery poll', async () => {
+  const clock = installClock()
+  try {
+    const ui = mountSection(readySnapshot(7), { call: statusCall(true), fetch: () => Promise.resolve({ ok: true }) })
+    await ui.settle()
+    ui.restartButton().props.onClick()
+    ui.confirmButton().props.onClick()
+    await ui.settle()
+    const before = ui.fetchCalls()
+    assert.ok(before >= 1, 'the recovery poll never started')
+    ui.unmount()
+    await clock.runUntilIdle(400)
+    await ui.settle()
+    assert.equal(ui.reloads(), 0, 'the aborted poll reloaded the page')
+    assert.equal(ui.fetchCalls(), before, `the aborted poll kept probing (${ui.fetchCalls() - before} extra call(s))`)
+  } finally { clock.restore() }
+})
+
+await check('a refusal maps to localized copy with no diagnostic text and no recovery poll', async () => {
+  const ui = mountSection(readySnapshot(7), {
+    call: statusCall(true, { ok: false, error: { code: 'backend-restart/busy', message: 'DIAGNOSTIC-ONLY-9f2' } }),
+  })
+  await ui.settle()
+  ui.restartButton().props.onClick()
+  ui.confirmButton().props.onClick()
+  await ui.settle()
+  const text = renderedText(ui.tree())
+  assert.ok(text.includes(enCopy('restart.error.busy')), `the busy copy is not rendered: ${text}`)
+  assert.equal(text.includes('DIAGNOSTIC-ONLY-9f2'), false, 'the diagnostic message leaked into the UI')
+  assert.equal(ui.fetchCalls(), 0, `a refusal started a recovery poll (${ui.fetchCalls()} probe(s))`)
+  assert.equal(ui.reloads(), 0, 'a refusal reloaded the page')
+  assert.equal(ui.restartButton().props.disabled, false, 'the refusal did not re-enable the action')
+})
+
+await check('an unknown refusal code falls back to the generic localized copy', async () => {
+  const ui = mountSection(readySnapshot(7), {
+    call: statusCall(true, { ok: false, error: { code: 'backend-restart/never-heard-of-it', message: 'DIAGNOSTIC-ONLY-77' } }),
+  })
+  await ui.settle()
+  ui.restartButton().props.onClick()
+  ui.confirmButton().props.onClick()
+  await ui.settle()
+  const text = renderedText(ui.tree())
+  assert.ok(text.includes(enCopy('restart.error.generic')), `the generic copy is not rendered: ${text}`)
+  assert.equal(text.includes('DIAGNOSTIC-ONLY-77'), false, 'the unknown code leaked its diagnostic message')
 })
 
 /* ══ summary ═══════════════════════════════════════════════════════════════ */

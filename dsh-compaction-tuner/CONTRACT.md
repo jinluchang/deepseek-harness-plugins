@@ -23,12 +23,13 @@ setting.
 | Settings namespace | `compaction-tuner` — the same id, read with `ctx.configForms.get('compaction-tuner')` |
 | Locale namespace | `compaction-tuner` |
 | Host `name` export | `compaction-tuner` (`index.js:153`) |
-| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`client.js:21`) |
-| Client plugin `name` | `@local/dsh-compaction-tuner` (`client.js:356`) |
-| Host ↔ Client wire | **No RPC channel.** The wire is the ui-settings form mirror: `configForms.get('compaction-tuner')` whose `mutate()` calls the Host's `ctx.remote.settings.mutate('compaction-tuner', ops, revision)` (`packages/client/ui-settings/src/client/config-form.ts:134`). |
+| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`client.js:32`) |
+| Client plugin `name` | `@local/dsh-compaction-tuner` (`client.js:715`) |
+| Host ↔ Client wire | **No RPC channel of its own.** The tuner's values travel over the ui-settings form mirror: `configForms.get('compaction-tuner')` whose `mutate()` calls the Host's `ctx.remote.settings.mutate('compaction-tuner', ops, revision)` (`packages/client/ui-settings/src/client/config-form.ts:134`). The restart action separately calls a sibling-owned channel — see *Restart action (soft dependency)*. |
 | Host `inject` | `['configEditor', 'loader']` (`index.js:156`) |
-| Client `inject` | `['slots', 'locale', 'configForms']` (`client.js:357`) |
-| Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`client.js:367-375`) |
+| Client `inject` | `['slots', 'locale', 'configForms', 'connection']` (`client.js:716`) |
+| Restart channel | `/backend-restart`, owned by `@local/dsh-backend-restart`, called through `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` (`client.js:735`) |
+| Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`client.js:737-745`) |
 
 The two halves never import each other's values. The Host owns the numbers; the Client reads and
 writes them only through the config-form service.
@@ -116,7 +117,8 @@ retry**: the loop's own view and the surrounding probe disagree about rows that 
 present. The plugin **cannot address this from its side**, and the cause is unidentified.
 
 Operational guidance: the save persists and applies to the tuner's own namespace, and preset
-propagation is reliably effective at the **next boot** only — so edit the values, then restart the Host.
+propagation is reliably effective at the **next boot** only — so edit the values, then restart the
+backend (the page's **Restart backend** action, or your own restart).
 `applies:"live"` describes the settings write, not the presets.
 
 Two gaps are recorded rather than papered over: **arm B (the pre-fix baseline) was never measured**, and
@@ -209,30 +211,35 @@ boot — `index.js:512-519`), because the bundle ships its own page.
 ## Client contract
 
 Module artifact: one `window.__ModuleLoader__.load({ id: '@local/dsh-compaction-tuner', factory })`
-closure (`client.js:20-24`). The factory requests exactly one module-table entry, `react`
-(`client.js:23`), and returns `{ name, inject, apply }`.
+closure (`client.js:31-36`). The factory requests exactly one module-table entry, `react`
+(`client.js:34`), and returns `{ name, inject, apply }` with
+`inject = ['slots', 'locale', 'configForms', 'connection']` (`client.js:716`).
 
 `apply(ctx)`:
 
 1. `ctx.effect(() => ctx.locale.register('compaction-tuner', { en, zh }), ...)` registers the
-   complete English + Chinese dictionary (`client.js:364`).
-2. `const form = ctx.configForms.get('compaction-tuner')` (`client.js:365`).
-3. Registers the section with a `label` function (required; an omitted label renders an empty nav row),
-   `locale: 'compaction-tuner'`, and an inject face exposing `{ form, t }` (`client.js:367-375`).
+   complete English + Chinese dictionary (`client.js:725`).
+2. `const form = ctx.configForms.get('compaction-tuner')` (`client.js:726`).
+3. Resolves the restart caller lazily (`callBackend`, `client.js:728-736`): it reads
+   `ctx.get('connection')` on every call and rejects when the service or `connection.rpc.call` is
+   absent, so a composition without the connection service still registers the page.
+4. Registers the section with a `label` function (required; an omitted label renders an empty nav row),
+   `locale: 'compaction-tuner'`, and an inject face exposing `{ form, t, callBackend }`
+   (`client.js:737-745`).
 
-The page (`TunerSection`, `client.js:187-353`):
+The page (`TunerSection`, `client.js:413-712`):
 
 - State comes from `React.useSyncExternalStore(form.subscribe, form.getSnapshot)`, with the two
-  methods memoized per form so the subscribe identity is stable (`client.js:192-194`).
+  methods memoized per form so the subscribe identity is stable (`client.js:418-420`).
 - `status === 'loading'` renders the localized loading text; `status === 'unavailable'` renders the
   localized note with all inputs disabled and **never attempts a write**; `ready` renders three
   labelled numeric inputs seeded from `snapshot.value`.
-- **One atomic write.** The draft is validated locally first (`validateDraft()`, `client.js:160-175`:
+- **One atomic write.** The draft is validated locally first (`validateDraft()`, `client.js:230-245`:
   each ratio in `(0, 1]`, `retainRatio < thresholdRatio`, retries a non-negative integer). On failure
   the page shows the matching localized message and calls **no** Host method. On success it calls
-  `form.mutate([...exactly the three `set` ops...], snapshot.revision)` **once** (`client.js:263-267`).
+  `form.mutate([...exactly the three `set` ops...], snapshot.revision)` **once** (`client.js:511-515`).
 - The Save action is disabled while the namespace is unwritable, while a write is in flight, and while
-  the draft equals the snapshot (`client.js:347`).
+  the draft equals the snapshot (`client.js:706`).
 - `mutate` resolving `true` shows the localized saved confirmation; resolving `false` (or rejecting)
   shows the localized refused copy in a `role="alert"`, and the draft is re-seeded from whatever the
   Host reports next — the controller performs its own recovery read
@@ -242,15 +249,65 @@ The page (`TunerSection`, `client.js:187-353`):
 - Accessibility: real `htmlFor`/`id` pairs via `React.useId()`, `role="alert"` for failures,
   `role="status"` for the confirmation, no colour-only signalling.
 - Styling is a component-local `<style>` string inside the section tree, class names namespaced
-  `dct-`, and only `--dsw-alias-*` host theme tokens (`client.js:96-115`).
+  `dct-`, and only `--dsw-alias-*` host theme tokens (`client.js:154-185`).
 - `close` is passed by the shell but this page never calls it.
+
+### Restart contract (Client)
+
+- **Bold notice in every state.** The restart-required fact renders as a real `<strong>`
+  (`client.js:594`, class `dct-restart-note`) inside `restartBlock`, which is returned in the
+  `confirming`, `timeout`, and default (ready/manual/restarting) states alike (`client.js:620-640`),
+  and is also part of the `loading` return (`client.js:642-648`) and the main render
+  (`client.js:692`). The English copy is `restart.note` — "Saving stores the values, but they reach the
+  agent presets only after the DSH backend restarts." (`client.js:84`); the Chinese copy is
+  `client.js:124`.
+- **Availability probe.** On mount an effect owns an `AbortController` (`client.js:445-457`) and calls
+  `probeRestartable()` (`client.js:323-334`): `status` on `/backend-restart`, retried up to
+  `STATUS_ATTEMPTS = 3` times (`client.js:68`) at `STATUS_RETRY_MS = 1000` ms (`client.js:69`) on a
+  transport miss only. A resolved reply is judged by `statusOutcome()` (`client.js:284-288`): only
+  `ok:true` with `value.restartable === true` yields `ready`; anything else yields `manual`, and the
+  action is disabled with the localized manual copy beside it (`restart.manual`, `client.js:86`;
+  rendered at `client.js:604-606`).
+- **Inline confirmation.** The action opens a `role="group"` confirm block
+  (`client.js:607-615`); no native dialog is used. Cancel leaves the channel untouched
+  (`cancelRestart()`, `client.js:541-543`).
+- **Exactly one `restart` call.** Confirm (`confirmRestart()`, `client.js:565-591`) calls `restart`
+  once on `/backend-restart` with the mount controller's signal.
+- **Refusals are localized, diagnostics never rendered.** `restartFailureKey()` (`client.js:270-277`)
+  maps `backend-restart/busy`, `.../unsupported`, `.../spawn-failed` to their copy and everything else
+  to a generic message; the channel's `message` field is never product text. The refusal renders in a
+  `role="alert"` (`client.js:595-597`).
+- **Transport rejection means possibly-restarting.** A rejected `restart` call enters recovery rather
+  than reporting failure (`client.js:584-589`), because the process may exit before its reply arrives —
+  the rule `dsh-backend-restart/CONTRACT.md:52` sets for that channel's own client.
+- **Bounded recovery.** `recover()` (`client.js:553-562`) runs `awaitSuccessor()` (`client.js:370-399`):
+  poll the document root (`probeRoot()`, `client.js:342-362`; GET, `cache:'no-store'`, same-origin, 5 s
+  probe timeout) until the old listener stops answering, for up to `DOWN_BUDGET_MS = 20000`
+  (`client.js:61`), then until the successor answers, for up to `UP_BUDGET_MS = 60000`
+  (`client.js:62`), at `POLL_INTERVAL_MS = 500` (`client.js:63`). `ready` calls
+  `window.location.reload()` (`client.js:546`); `timeout` renders the manual **Reload page** block
+  (`client.js:616-619`).
+- **Unmount aborts.** The mount effect's cleanup aborts the controller (`client.js:453-456`), and every
+  call and poll rides that signal: `delay()` and `probeRoot()` forward the abort
+  (`client.js:296-313`, `client.js:342-362`), and `recover()` ignores a result after an abort
+  (`client.js:554-555`).
+
+## Restart action (soft dependency)
+
+The restart action calls the authenticated Connection channel `/backend-restart`
+(`dsh-backend-restart/CONTRACT.md:19`), owned and registered by `@local/dsh-backend-restart` and frozen
+in that package's CONTRACT.md (`status` / `restart`). This is a **soft runtime dependency, not a
+required one**: nothing is imported from that package, the host half never references it, this plugin
+loads and its page renders without it, and only the restart action degrades — to the localized manual
+copy with the action disabled. The manifest declares the connection client in `dsh.client.inject`
+(`package.json`) and the client half injects `connection` (`client.js:716`).
 
 ## Honest limits
 
 - **The cross-field rule is not in the schema.** `retainRatio < thresholdRatio` cannot be expressed in
   schemastery without breaking the settings form, because `volatileForm()` only descends a plain
   object root (`packages/settings/settings/src/schema.ts:37-47`). It is enforced by the page before it
-  writes (`client.js:169`) and by the tuner before it pushes (`index.js:263-265`). A direct
+  writes (`client.js:239`) and by the tuner before it pushes (`index.js:263-265`). A direct
   `settings.mutate` that bypasses the page can therefore persist an inconsistent pair in the tuner's
   own row — the Host schema validates each field in isolation. The tuner then refuses to push that
   pair into any preset and logs the reason (`refused`).
@@ -259,7 +316,11 @@ The page (`TunerSection`, `client.js:187-353`):
   refused by the Host with the generic refused copy.
 - **Reload semantics.** New sessions get the new tune once the preset rows carry it; a session already
   running keeps the retired revision (`TODO.md` §3.8). Because live propagation does not work, edit the
-  values and restart the Host: a saved value is reliably in force at the next boot.
+  values and restart the backend (the page's **Restart backend** action, or your own restart): a saved
+  value is reliably in force at the next boot.
+- **The restart path has not been exercised end to end.** The element tree, the channel calls, the
+  recovery sequencing and the abort contract are pinned by the hermetic stub suite, but no real browser
+  render, no real process restart and no real `location.reload()` have been exercised on a live profile.
 - **The live-save failure is long-lived, not transient, and is downstream of editor selection.** In the
   measured failing round 16 empty passes in 30 s returned that empty result, while a probe 0–1 ms away
   reported 214 editor rows containing the 5 preset rows the loop filters for. The loop's view and the
@@ -285,9 +346,10 @@ The page (`TunerSection`, `client.js:187-353`):
   by a `--patch` overlay.
 - **Still unconfirmed.** A reliable live-save path (no cause identified); arm B (never measured); the
   breakdown of the four non-empty passes; the browser/GUI path (real DOM render, nav row, page-driven
-  save round-trip); `TODO.md` §7 question 8 (HMR for a `link:`ed client bundle); question 2's
-  live-session case; and question 5. The hermetic `verify.mjs` suite is green (60/60) but starts no
-  Host, so it says nothing about the live path; see `README.md` → Verify.
+  save round-trip); a real process restart and a real `location.reload()` on a live profile; `TODO.md`
+  §7 question 8 (HMR for a `link:`ed client bundle); question 2's live-session case; and question 5.
+  The hermetic `verify.mjs` suite is green (71/71) but is stub-driven and starts no Host, so it says
+  nothing about the live path or a real browser; see `README.md` → Verify.
 
 ## Build rules
 
@@ -296,6 +358,9 @@ The page (`TunerSection`, `client.js:187-353`):
 - The client artifact is hand-rolled: a CJS closure factory around
   `window.__ModuleLoader__.load({ id, factory })`. Keep the baseline externals out — `client.js`
   requests only `react`.
+- The restart action is a soft dependency: the manifest declares the `connection` client in
+  `dsh.client.inject` and the client half injects `connection`, but nothing is imported from
+  `@local/dsh-backend-restart`; only its `/backend-restart` channel is called at runtime.
 - `locale/en.json` and `locale/zh.json` carry plugin **display metadata** only
   (`meta.title`, `meta.description`); UI copy comes from the dictionary registered by the client half.
 - Style only with `--dsw-alias-*` host theme tokens; do not import Harness client packages.
