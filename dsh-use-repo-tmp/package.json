@@ -1,0 +1,26 @@
+{
+  "name": "@local/dsh-use-repo-tmp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Prompt guidance that points scratch files at <workspace>/tmp instead of /tmp.",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "verify.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "CONTRACT.md"
+  ],
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

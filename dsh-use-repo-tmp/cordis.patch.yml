@@ -1,0 +1,9 @@
+# Bundle patch for dsh-use-repo-tmp: one top-level insert.
+#
+# The row is inserted at the bundle layer, not into a preset, so the policy and
+# the resolved scratch directory reach every Agent in the composition —
+# subagents, teammates, and any future preset — instead of only the Agents of
+# one preset.
+- insert:
+    - id: use-repo-tmp
+      name: '@local/dsh-use-repo-tmp'
