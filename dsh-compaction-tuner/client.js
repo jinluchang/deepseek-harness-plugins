@@ -1474,17 +1474,17 @@ window.__ModuleLoader__.load({
          * @returns the Remote result envelope.
          */
         const readCatalog = () => {
-          const remote = ctx.get('remote');
-          if (remote === undefined || remote === null
-            || remote.session === undefined || remote.session === null
-            || typeof remote.session.modelCatalog !== 'function') {
+          // Nested namespace: reading `.session` off the parent proxy throws without an inject.
+          const session = ctx.get('remote.session');
+          if (session === undefined || session === null
+            || typeof session.modelCatalog !== 'function') {
             return Promise.resolve({
               ok: false,
               error: { code: 'compaction-tuner/remote-unavailable', message: 'the client Remote service does not expose session.modelCatalog' },
             });
           }
           try {
-            return Promise.resolve(remote.session.modelCatalog());
+            return Promise.resolve(session.modelCatalog());
           } catch (error) {
             return Promise.reject(error);
           }

@@ -100,8 +100,8 @@ stored tune starts at these defaults and the page shows them until a value is ed
 | `auto` | Automatic step-boundary pressure and overflow-recovery listeners. | true or false | `true` |
 
 `modelPolicies` is the one structured option, and the page edits it without any JSON: the **provider**
-and **model** selects are populated from the deployment's own model catalog (read through the client
-`remote` service, `ctx.remote.session.modelCatalog()` — no provider or model id is hardcoded), **Add
+and **model** selects are populated from the deployment's own model catalog (read through the nested
+`ctx.get('remote.session')` namespace, `session.modelCatalog()` — no provider or model id is hardcoded), **Add
 override** appends the selected pair, and each override card carries one labelled box for each of the
 nine policy keys —
 

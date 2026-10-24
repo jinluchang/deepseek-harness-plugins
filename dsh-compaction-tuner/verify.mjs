@@ -245,6 +245,23 @@ class BoundForm {
 }
 
 /**
+ * The `ctx.get('remote')` double. The real Remote service is a tracked proxy:
+ * reading a nested namespace off it (`remote.session`) resolves the dotted
+ * service `'remote.session'` through the context, which throws unless the
+ * plugin injected that exact key. Exposing a plain nested object here is what
+ * let the missing `'remote.session'` inject pass the suite and ship the dead
+ * model picker.
+ * @returns the Remote namespace double, whose `.session` access throws.
+ */
+function remoteNamespaceDouble() {
+  return {
+    get session() {
+      throw new Error('cannot get property "remote.session" without inject')
+    },
+  }
+}
+
+/**
  * Build a fake client root context with the services the client half injects.
  * @returns the context double plus its recording state.
  */
@@ -258,6 +275,10 @@ function fakeClientContext() {
     formRequests: [],
     connection: undefined,
     remote: undefined,
+    /** The dotted `'remote.session'` service, seeded by `mountSection`. */
+    remoteSession: undefined,
+    /** Every service key `ctx.get()` was asked for, in call order. */
+    serviceReads: [],
     catalogCalls: 0,
   }
   const form = new BoundForm()
@@ -266,7 +287,14 @@ function fakeClientContext() {
   const ctx = {
     state,
     form,
-    get: name => (name === 'connection' ? state.connection : name === 'remote' ? state.remote : undefined),
+    /** Service resolution, faithful to cordis: only exact keys resolve. */
+    get(name) {
+      state.serviceReads.push(name)
+      if (name === 'connection') return state.connection
+      if (name === 'remote') return state.remote
+      if (name === 'remote.session') return state.remoteSession
+      return undefined
+    },
     on(event, listener) {
       const listeners = events.get(event) ?? new Set()
       listeners.add(listener)
@@ -556,7 +584,7 @@ const CATALOG_OK = () => Promise.resolve({ ok: true, value: { groups: CATALOG_GR
  * @param options - `nextResult` seeds what `mutate` resolves; `call` is the raw
  *   `/backend-restart` RPC implementation; `fetch` is the document-root probe;
  *   `catalog` is the injected `session.modelCatalog()` implementation;
- *   `remoteUnavailable` omits the Remote service entirely.
+ *   `remoteUnavailable` omits the Remote service and its dotted namespace.
  * @returns the mounted double plus its recorders and drivers.
  */
 function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl, catalog, remoteUnavailable = false } = {}) {
@@ -580,13 +608,16 @@ function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl, cat
       },
     },
   }
+  // Real cordis semantics: `remote.session` is a dotted service resolved
+  // through the context, so only `ctx.get('remote.session')` reaches it; the
+  // injected `remote` object's own `.session` access throws. The namespace is
+  // seeded under the dotted key, never as a nested property of the double.
   if (!remoteUnavailable) {
-    ctx.state.remote = {
-      session: {
-        modelCatalog: () => {
-          ctx.state.catalogCalls += 1
-          return (catalog ?? CATALOG_OK)()
-        },
+    ctx.state.remote = remoteNamespaceDouble()
+    ctx.state.remoteSession = {
+      modelCatalog: () => {
+        ctx.state.catalogCalls += 1
+        return (catalog ?? CATALOG_OK)()
       },
     }
   }
@@ -606,6 +637,8 @@ function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl, cat
     calls: () => calls,
     fetchCalls: () => fetchCalls,
     reloads: () => clientWindow.__reloads,
+    /** Every service key the plugin asked the context for, in call order. */
+    serviceReads: () => ctx.state.serviceReads,
     saveButton: () => buttonWithText(inst.tree, ['action.save', 'action.saving']),
     restartButton: () => buttonWithText(inst.tree, ['restart.action', 'restart.restarting']),
     cancelButton: () => buttonWithText(inst.tree, ['restart.cancel']),
@@ -2701,6 +2734,43 @@ await check('the catalog is read at mount through the injected Remote service, r
     assert.equal(renderedText(flaky.tree()).includes(enCopy('perModel.error')), false, 'the recovered page still shows the load-error note')
     assert.ok(perModelSelect(flaky, 'provider') !== undefined, 'the recovered catalog did not render the picker')
   } finally { clock.restore() }
+})
+
+// Regression seat for the shipped "per-model picker cannot list models" bug:
+// `readCatalog()` read `ctx.get('remote').session`, but the plugin never
+// injected `remote.session`, so cordis' proxy threw and the picker stayed on
+// its load-error note. The fake now throws on `.session` exactly like the real
+// proxy, so this check fails for any reader that does not ask the context for
+// the dotted service key.
+await check('the catalog is read through the dotted remote.session service key, never off the injected remote namespace object', async () => {
+  const ready = mountSection(readySnapshot(7))
+  assert.notEqual(ready.ctx.state.remoteSession, undefined, 'the fixture does not seed the nested remote.session service')
+  assert.throws(
+    () => ready.ctx.state.remote.session,
+    /cannot get property "remote\.session" without inject/,
+    'the remote double no longer throws on `.session` the way the cordis proxy does',
+  )
+  await ready.settle()
+  assert.ok(
+    ready.serviceReads().includes('remote.session'),
+    `the catalog was not read via ctx.get('remote.session'); service keys requested: ${JSON.stringify(ready.serviceReads())}`,
+  )
+  assert.ok(ready.ctx.state.catalogCalls >= 1, 'the mount effect never called session.modelCatalog() through the dotted key')
+  const provider = perModelSelect(ready, 'provider')
+  const model = perModelSelect(ready, 'model')
+  assert.ok(provider !== undefined && model !== undefined, 'a healthy remote.session catalog did not render the provider/model selects')
+  assert.deepEqual(
+    findAll(provider, node => node.type === 'option').map(option => option.props.value),
+    ['openai', 'anthropic'],
+    'the provider select is not the catalog provider list',
+  )
+  assert.deepEqual(
+    findAll(model, node => node.type === 'option').map(option => option.props.value),
+    ['gpt-5', 'gpt-5-mini'],
+    'the model select is not the first provider group\'s model list',
+  )
+  assert.equal(renderedText(ready.tree()).includes(enCopy('perModel.error')), false, 'the picker kept its load-error note although remote.session answered')
+  assert.equal(renderedText(ready.tree()).includes(enCopy('perModel.unavailable')), false, 'the picker kept its unavailable note although remote.session is present')
 })
 
 await check('the restart-required notice is a real <strong> in the ready, unavailable and loading states', async () => {

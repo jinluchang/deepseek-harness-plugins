@@ -376,7 +376,9 @@ Module artifact: one `window.__ModuleLoader__.load({ id: '@local/dsh-compaction-
 closure (`__ModuleLoader__.load` `client.js:54`). The factory requests exactly one module-table entry, `react`
 (`React` `client.js:57`), and returns `{ name, inject, apply }` with
 `inject = ['slots', 'locale', 'configForms', 'connection', 'remote']` (`inject` `client.js:1448`).
-`remote` is the client Remote service; the plugin reads only `ctx.remote.session.modelCatalog()` from it.
+`remote` is the client Remote parent service; the plugin resolves the nested session catalog through
+`ctx.get('remote.session')` rather than `ctx.get('remote').session`, which cordis rejects with
+`cannot get property "remote.session" without inject`.
 
 `apply(ctx)`:
 
@@ -386,9 +388,10 @@ closure (`__ModuleLoader__.load` `client.js:54`). The factory requests exactly o
 3. Resolves the restart caller lazily (`callBackend`, `client.js:1460`): it reads
    `ctx.get('connection')` on every call and rejects when the service or `connection.rpc.call` is
    absent, so a composition without the connection service still registers the page.
-4. Wraps the model-catalog read lazily (`readCatalog`, `client.js:1476`): it reads `ctx.get('remote')`
-   and resolves a refusal envelope when `remote.session.modelCatalog` is absent, so a composition
-   without the Remote service still registers the page and renders the "catalog not available" note.
+4. Wraps the model-catalog read lazily (`readCatalog`, `client.js:1476`): it reads
+   `ctx.get('remote.session')` and resolves a refusal envelope when `session.modelCatalog` is absent,
+   so a composition without the Remote session service still registers the page and renders the
+   "catalog not available" note.
 5. Registers the section with a `label` function (required; an omitted label renders an empty nav row),
    `locale: 'compaction-tuner'`, and an inject face exposing `{ form, t, callBackend, readCatalog }`
    (`ctx.slots.register` `client.js:1492`).
