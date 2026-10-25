@@ -124,7 +124,7 @@ than repeating a seed; `verify.mjs` checks the note against that rule.
 The eleven values live in the **tuner row's `config`** — `compaction-tuner` — in the active profile's
 `cordis.patch.yml`. The bundle mount patch seeds nothing, so a fresh install stores no values and the
 tuner runs the upstream code defaults; the first save writes the edited values into the profile's own
-patch file, which is `PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:40`).
+patch file, which is `PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:41`).
 A profile that installed an earlier revision still stores the legacy seed `0.5 / 0.15 / 2` in its own
 patch file, and there is **no automatic migration** (see *Install behaviour change* and *Reset to system
 defaults*).
@@ -165,7 +165,7 @@ The tuner then projects the same values into the preset rows the resolved editor
   removes. Every other child row, every other key of the compaction child, and every
   `{__jsExpr: "..."}` expression map is preserved verbatim; `deepClone()` passes any value with a
   non-plain prototype through untouched. On write, the editor turns single-key `{__jsExpr}` maps back
-  into `!!js` tags (`visit(document` `packages/boot/config-editor/src/index.ts:129-134`).
+  into `!!js` tags (`visit(document` `packages/boot/config-editor/src/index.ts:128-134`).
 - `projectedTune(values)` is the exact key set written: the live/default value of each owned key, the
   retention pair resolved to exactly one form, and `maxTokens` resolved as
   `liveMaxTokens ?? liveHeadroomTokens` — upstream's derivation order (`config.maxTokens ?? headroomTokens` `config.ts:76`) applied to the
@@ -287,7 +287,7 @@ apart from "already in tune".
    (counted in `skipped`, no write, no warning). The tuner pushes into an existing child and never
    inserts rows into a preset.
 4. **Isolation.** A rejected `edit()` — for example an id owned by a home patch or a `--patch` overlay
-   (`effective` `packages/boot/config-editor/src/index.ts:139-141`) — is caught, logged as a warning naming the
+   (`effective` `packages/boot/config-editor/src/index.ts:137-139`) — is caught, logged as a warning naming the
    entry id, and does **not** stop the remaining rows.
 5. **Match by plugin name, never by preset id.** No shipped preset id is hardcoded, so any preset row
    in the profile is tuned, including presets a later bundle adds.
@@ -345,7 +345,7 @@ regardless (see *Live save behaviour*).
 - `loader/volatile-update`, which the loader dispatches to the **owning fiber only**, i.e. this
   plugin's own volatile commits. A save on the Settings page is what this carries.
 - `app-boot/config-reload`, the profile-reconcile completion signal (declared at
-  `packages/boot/app-boot/src/index.ts:54`, emitted by `ctx.emit` at `:411`), so a live save is followed even when
+  `packages/boot/app-boot/src/index.ts:53`, emitted by `ctx.emit` at `:406`), so a live save is followed even when
   the volatile-diff branch never reports it; the settings service consumes the same event
   (`ctx.on` `packages/settings/settings/src/index.ts:234`).
 - `loader/entry-init` for a row whose `name` is `@deepseek-ai/dsh-agent-preset`, so a preset that
@@ -525,7 +525,7 @@ copy with the action disabled. The manifest declares the connection client in `d
   replaces it. There is deliberately no "clear every preset's table" expression. The page checks the
   picker's box values (including each entry's resolved cap), and `tuneProblem()` re-checks it Host-side before any
   write, mirroring `resolveConfig()`'s per-entry cap resolution (`policy.maxTokens` `config.ts:83-90`), so an accepted
-  table cannot abort compaction-basic load at the next boot (`constructor` `index.ts:137-141`) — a property that no
+  table cannot abort compaction-basic load at the next boot (`constructor` `index.ts:136-140`) — a property that no
   longer depends on `projectedTune()` happening to emit a top-level `maxTokens`.
 - **The integer range is narrower than upstream's.** Every integer field, and the DERIVED `maxTokens`
   value, is checked with `Number.isSafeInteger` Host-side and page-side, so `9007199254740993` and `1e21`
