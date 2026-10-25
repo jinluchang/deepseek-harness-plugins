@@ -22,8 +22,8 @@ they may block, they may wait on each other, they write the files.
 So the asymmetry is not in the preset. The preset is the `standard` row list
 verbatim — same plugins, same order, same configs — and the Lead-only reduction
 is applied per **Agent scope** at runtime, by the host plugin this bundle also
-mounts. `verify.mjs` fails if the preset's row list ever drifts from the shipped
-`standard` preset's.
+mounts. `verify.mjs` fails if the preset's rows or their configs ever drift from the
+shipped `standard` preset's.
 
 ## Why per-Agent scope is the right seam
 
@@ -33,12 +33,13 @@ mounts. `verify.mjs` fails if the preset's row list ever drifts from the shipped
   Lead and from nobody else.
 - A scope's **own** layer is exempt from its own restriction — that is where the
   Agent Teams tools are registered. Handing work out is the Lead's whole job, so
-  those tools must survive, and they do. The delegation tool is the second
-  contributor to that layer: when the preset mounts it with
-  `modelSelectionSettings: true`, it installs `subagent` and
-  `list_subagent_models` into each Agent's own scope. The cost of the exemption
-  is therefore `wait_agent`, `subagent`, and `list_subagent_models`: all three
-  are Agent-layer tools, so no restriction can hide them.
+  those tools must survive, and they do. The cost of the exemption is therefore
+  `wait_agent`: it is an Agent-layer tool, so no restriction can hide it.
+- The delegation tools are **not** own-scope: the preset mounts `tool-subagent`
+  with `modelSelection: true` and `modelDiscovery: true`, which registers
+  `subagent` and `list_subagent_models` in the preset generation scope — an
+  ancestor layer the Lead's restriction reaches. They are ordinary `whitelist`
+  rows: OFF (the default) hides them, ON keeps them.
 - A guard can only deny. Nothing after this plugin can turn the Lead's refusal
   to wait back into a permission.
 
@@ -74,21 +75,21 @@ Kept from the Agent Teams layer: `spawn_teammate`, `send_message`, `list_agents`
 `interrupt_agent`, `team_task_create`, `team_task_list`, `team_task_get`,
 `team_task_update`.
 
-Refused while they stay listed (the catalog `guard` default): `wait_agent`,
-`subagent`, and `list_subagent_models`. The Agent Teams tools and the delegation
-tool both register into the Agent's **own** layer, which a restriction cannot
-reach, so a monotonic guard is the only seam that can take these three away.
+Refused while it stays listed (the catalog `guard` default): `wait_agent`. The
+Agent Teams tools register into the Agent's **own** layer, which a restriction
+cannot reach, so a monotonic guard is the only seam that can take `wait_agent`
+away.
 
-That three-name list is the catalog default, not a fixed law: a profile `tools`
-override can shrink it (the live `web` profile patch sets `subagent: true` and
-`list_subagent_models: true`, leaving only `wait_agent` denied). The Lead's prompt
+That one-name list is the catalog default, not a fixed law: a profile `tools`
+override can empty it. The Lead's prompt
 contract is generated from the policy `constrain()` actually resolved, so it
 cannot contradict the Lead's own permissions: its refusal sentence names only the
 tools present in the resolved deny list (singular/plural grammar, and the clause
 is omitted entirely for an empty list), its "do not count on waiting" clause
 appears only while `wait_agent` is denied, its "one-shot delegation" clause only
-while `subagent` is, and its "cannot run shell commands" / "cannot write or edit
-files" / "cannot read files, search the workspace, or view images" claims appear
+while `subagent` is (a legacy `denyTools` can name it), and its "cannot run shell
+commands" / "cannot write or edit files" / "cannot read files, search the
+workspace, or view images" claims appear
 only while `bash`/`pwsh`, `write`/`edit`, and
 `read`/`read_image`/`glob`/`grep` are off the resolved allow list. The closing
 sentence of that paragraph names the Lead's **actual** tools, derived from the same
@@ -100,10 +101,12 @@ arguments still returns the catalog-default text byte for byte.
 
 Hidden, because the preset mounts them and the restriction filters them:
 `read`, `read_image`, `glob`, `grep`, `bash`, `pwsh`, `write`, `edit`, `job_*`,
-`schedule_*`, `web_search`, `web_fetch`, `subagent_fork`, `workflow`, `skill`. A
+`schedule_*`, `web_search`, `web_fetch`, `subagent`, `subagent_fork`,
+`list_subagent_models`, `workflow`, `skill`. A
 tool that is not visible is also absent from the prompt, because each tool's own
-prompt section gates on its visibility. (`subagent_fork` stays hidden: it is a
-separate preset-layer row, not an own-scope registration. Plan mode is not in this
+prompt section gates on its visibility. (`subagent`, `subagent_fork`, and
+`list_subagent_models` stay hidden: they are preset-layer rows, not own-scope
+registrations. Plan mode is not in this
 list and not in the text: making a plan stays allowed through `exit_plan_mode`,
 which the contract never advertises.)
 
@@ -116,8 +119,8 @@ verbatim and `verify.mjs` deep-compares the two.
 
 | Class | Count | Toggle effect |
 | --- | --- | --- |
-| `whitelist` | 34 | ON ⇒ the name joins the Lead's allow list; OFF ⇒ omitted (the allow list hides it). |
-| `guard` | 11 | OFF ⇒ denied by the guard while still listed; ON ⇒ no denial. |
+| `whitelist` | 36 | ON ⇒ the name joins the Lead's allow list; OFF ⇒ omitted (the allow list hides it). |
+| `guard` | 9 | OFF ⇒ denied by the guard while still listed; ON ⇒ no denial. |
 | `none` | 6 | No effect. Rendered inoperative: `/goal`, `/plan`, `/compact` (commands, not tools), `plugin_manager`, `plugin_market` (disabled rows), `structured_output` (child-only). |
 
 Defaults — ON is what the Lead can use today (4 + 8):
@@ -126,9 +129,8 @@ Defaults — ON is what the Lead can use today (4 + 8):
   and `spawn_teammate`, `send_message`, `list_agents`, `interrupt_agent`,
   `team_task_create`, `team_task_list`, `team_task_get`, `team_task_update`
   (guard).
-- OFF: `read`, `read_image`, `glob`, `grep` and every other `whitelist` row
-  except the four above; `wait_agent`, `subagent`, `list_subagent_models`
-  (guard).
+- OFF: `read`, `read_image`, `glob`, `grep`, `subagent`, `list_subagent_models`
+  and every other `whitelist` row except the four above; `wait_agent` (guard).
 
 Semantics. A `whitelist` tool is kept iff `tools[name] ?? def`; a `guard` tool is
 denied iff `tools[name] ?? def` is OFF. The page writes one dictionary key per
@@ -206,7 +208,7 @@ page is absent because no namespace is served.
 | `preset` | `string` | `lead-agent-only-leads` | Preset whose Leads get the contract. |
 | `tools` | `Record<string, boolean>` (volatile) | `{}` — catalog defaults | Per-tool overrides; an absent key means "use the catalog default". |
 | `leadTools` | `string[]` (volatile, no default) | catalog whitelist ON | Legacy explicit keep list; wins wholesale when present. Names the scope cannot restrict are pruned. An explicit empty array keeps nothing. |
-| `denyTools` | `string[]` (volatile, no default) | catalog guard OFF (`wait_agent`, `subagent`, `list_subagent_models`) | Legacy explicit deny list; wins wholesale when present. `[]` removes the guard. |
+| `denyTools` | `string[]` (volatile, no default) | catalog guard OFF (`wait_agent`) | Legacy explicit deny list; wins wholesale when present. `[]` removes the guard. |
 
 ## Invariants
 
@@ -232,9 +234,9 @@ page is absent because no namespace is served.
    closes with each follow the policy `constrain()` resolved, and an unreadable
    scope keeps the conservative catalog wording. The text never mentions plan mode
    (only the `exit_plan_mode` tool name may appear, inside that list). The
-   no-argument `leadContract()` text is the frozen catalog-default text (1688 UTF-8
+   no-argument `leadContract()` text is the frozen catalog-default text (1621 UTF-8
    bytes, sha256
-   `b9ac0d72c75c6e9e214fb155b3fdc0a80bffc24201f8bd10635b3f1e00dc175b`), and
+   `70981d4fa57a6f4481a66ff11bba315d70068f0735dee5021936e4e0b3fdaf1e`), and
    `verify.mjs` asserts those exact values.
 6. The plugin fails safe. A configured name the registry rejects is dropped and
    the remaining allow list still applies. Everything that resolves to "keep

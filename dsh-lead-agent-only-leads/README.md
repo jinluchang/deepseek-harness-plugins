@@ -16,29 +16,33 @@ present, and answer:
 | Plan mode (`exit_plan_mode`) | yes | yes — the tool stays enabled; the contract neither mentions nor encourages planning |
 | `present` (file and image cards) | yes | yes |
 | `spawn_teammate`, `send_message`, `list_agents`, `interrupt_agent`, task board | yes | yes |
-| `wait_agent`, `subagent`, `list_subagent_models` | yes | listed; **refused** by default |
+| `wait_agent` | yes | listed; **refused** by default |
+| `subagent`, `list_subagent_models` | yes | **hidden** by default |
 | Teammates | standard | **standard** |
 
-`wait_agent`, `subagent`, and `list_subagent_models` stay in the Lead's tool list
-but are refused by the guard **by default** — that is the catalog `guard` default,
-not a fixed law. They register into the Agent's **own** scope, which
-`tools.restrict()` cannot reach, so the guard is the only seam that takes them
-away, and each refusal names the replacement (`spawn_teammate` / `send_message`).
-A profile `tools` override changes the default: the live `web` profile patch sets
-`tools: { subagent: true, list_subagent_models: true }`, so there the guard refuses
-only `wait_agent`. The Lead's **prompt contract is generated from the resolved
-policy**, so its refusal sentence names only the tools actually denied, its shell,
-writer, and reading claims follow the resolved allow list, and its closing claim
-sentence names the Lead's **actual** tools — derived from that same allow list, with
-the Team tools kept as a generic phrase — so the text cannot go stale when the
-catalog changes. It never contradicts the permissions the Lead really has.
-`exit_plan_mode` stays an enabled tool — making a plan is allowed — but the contract
-never mentions plan mode or planning; it only names the tool inside the resolved
-list. Note also that `list_subagent_models` is
+`wait_agent` stays in the Lead's tool list but is refused by the guard
+**by default** — that is the catalog `guard` default, not a fixed law. It
+registers into the Agent's **own** scope, which `tools.restrict()` cannot reach,
+so the guard is the only seam that takes it away, and the refusal names the
+replacement (`send_message` / ending the turn).
+
+`subagent` and `list_subagent_models` need no guard: in the current DSH the
+preset mounts the delegation tool with `modelSelection: true` and
+`modelDiscovery: true`, which registers both tools in the preset generation
+scope — an **ancestor** layer the Lead's restriction reaches. They are ordinary
+`whitelist` rows: OFF by default (hidden by the allow list), and a profile
+`tools` override that turns one on keeps it. The Lead's **prompt contract is
+generated from the resolved policy**, so its refusal sentence names only the
+tools actually denied, its shell, writer, and reading claims follow the resolved
+allow list, and its closing claim sentence names the Lead's **actual** tools —
+derived from that same allow list, with the Team tools kept as a generic phrase —
+so the text cannot go stale when the catalog changes. It never contradicts the
+permissions the Lead really has. `exit_plan_mode` stays an enabled tool — making
+a plan is allowed — but the contract never mentions plan mode or planning; it
+only names the tool inside the resolved list. `list_subagent_models` is
 registered only when a preset mounts the delegation tool with
-`modelSelectionSettings: true`; with no per-session model-selection policy it is
-not in any Agent's tool list, so naming it would describe a tool that does not
-exist.
+`modelDiscovery: true`; a profile whose delegation row omits it has no such tool,
+so the Lead never names it.
 
 Teammates are ordinary agents: they may block, they may wait on each other, and
 they do the writing. The restriction and the guard apply to the Lead's own Agent
@@ -55,6 +59,15 @@ plugin_manager({ action: "install_bundle", target: "/home/user/Public/deepseek-h
 That registers the bundle in the profile, links the package, and appends its
 patch. Bundles apply to **new sessions**: restart the Host, then pick
 **Lead agent only leads** when starting a session in the Web UI.
+
+**Upgrading an installed profile.** The Web editor writes a full
+`preset-lead-agent-only-leads` row (its `config.plugins` list included) into the
+profile's own `cordis.patch.yml`, and that user layer overrides the bundle row by
+id. A row saved under an earlier bundle revision keeps the retired
+`tool-subagent-list-agents` row and the old `modelSelectionSettings` config, so
+delete that row from the profile patch (or re-save the preset in the Web editor)
+after upgrading. The bundle patch itself already carries the current `standard`
+rows and configs.
 
 ## Use
 
@@ -79,13 +92,13 @@ The bundle ships a **Lead agent only leads** page under Settings (section id
 `lead-agent-only-leads` row. It lists the whole tool universe grouped by mechanism, with a
 per-row description and its default, and writes one dictionary key per toggle:
 
-- **Whitelist** (34) — preset/global-layer tools. ON keeps the tool, OFF hides
-  it. Defaults ON: `ask_user_question`, `todo_write`, `exit_plan_mode`,
-  `present`; every other row — the four reading tools (`read`, `read_image`,
-  `glob`, `grep`) included — defaults OFF.
-- **Guard** (11) — own-scope tools a restriction cannot reach, so OFF denies
+- **Whitelist** (36) — preset/global-layer tools, the two delegation tools
+  included. ON keeps the tool, OFF hides it. Defaults ON: `ask_user_question`,
+  `todo_write`, `exit_plan_mode`, `present`; every other row — the four reading
+  tools (`read`, `read_image`, `glob`, `grep`) included — defaults OFF.
+- **Guard** (9) — own-scope tools a restriction cannot reach, so OFF denies
   them through the guard. Defaults ON: the eight Team tools. Defaults OFF:
-  `wait_agent`, `subagent`, `list_subagent_models`.
+  `wait_agent`.
 - **No effect** (6) — `/goal`, `/plan`, `/compact` (commands, not tools),
   `plugin_manager`, `plugin_market` (not mounted in this profile), and
   `structured_output` (only appears inside a delegated child). Shown disabled,
@@ -168,19 +181,20 @@ restrict is pruned rather than fatal; an explicit empty `leadTools` keeps
 node verify.mjs
 ```
 
-Forty-four checks on a checkout whose `js-yaml` is reachable: the pure helpers,
+Forty-five checks on a checkout whose `js-yaml` is reachable: the pure helpers,
 the `Config` schema shape, the catalog and its defaults (the reading tools off,
 `exit_plan_mode` and `present` on, in catalog order), the config-aware contract text
 (the frozen no-argument bytes and hash, the no-plan-mode invariant, the merged
 reconnaissance bullet asserted byte for byte, the resolved-tool-list sentence and its
 1/2/many/empty renderings, an empty deny list, a `subagent`-only deny, the gated
 shell/writer/reading claims, and the text the plugin
-actually registers under the live profile's override shape), the plugin's
+actually registers under a delegation opt-in override shape), the plugin's
 behaviour against a model of the two scope layers (preset-inherited vs.
 Agent-owned, including a scope that does not mount `exit_plan_mode`), the
 toggle→keep/deny mapping including the all-off and unknown-names cases, a
 deep-parse of the patch that also proves this preset mounts exactly the shipped
-`standard` rows, and a real load of `client.js` through a stubbed module loader
+`standard` rows and configs, and a real load of `client.js` through a stubbed
+module loader
 that deep-compares the host and client catalogs. The suite needs no live Host; it
 reads the harness checkout for `js-yaml` and `standard.patch.yml`, and the one
 aggregate deep-parse check is skipped when the checkout is unreachable.
@@ -191,5 +205,5 @@ The preset deliberately duplicates the `standard` plugin list instead of being
 narrow. A teammate inherits the Lead's preset generation, so a narrow preset
 would make the teammates non-standard too; the reduction has to happen per Agent
 scope at runtime. `CONTRACT.md` explains the seam, what it can and cannot do, and
-why the catalog refuses `wait_agent`, `subagent`, and `list_subagent_models` with
-a guard rather than deleting them from the catalog.
+why the catalog refuses `wait_agent` with a guard while keeping `subagent` and
+`list_subagent_models` as ordinary whitelist rows hidden by the restriction.

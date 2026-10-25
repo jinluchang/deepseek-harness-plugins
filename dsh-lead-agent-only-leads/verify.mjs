@@ -58,24 +58,26 @@ const {
  * Tool names the `standard` preset mounts, which an Agent of it inherits. The
  * plan-mode row registers only `exit_plan_mode`: plan mode itself is session
  * state the user enters (the `/plan` command or the composer), not a tool.
+ * `subagent` and `list_subagent_models` are preset-mounted too: the delegation
+ * row sets `modelSelection: true` and `modelDiscovery: true`, and both tools are
+ * registered in the preset generation scope, which is an ancestor of every
+ * Agent scope — so a restriction reaches them.
  */
 const PRESET_SURFACE = [
   'bash', 'pwsh', 'read', 'read_image', 'write', 'edit', 'glob', 'grep',
   'job_list', 'job_output', 'job_kill', 'schedule_create', 'schedule_list',
-  'subagent_fork', 'workflow', 'todo_write', 'ask_user_question',
-  'web_search', 'web_fetch', 'present', 'skill', 'exit_plan_mode',
+  'subagent', 'subagent_fork', 'list_subagent_models', 'workflow', 'todo_write',
+  'ask_user_question', 'web_search', 'web_fetch', 'present', 'skill', 'exit_plan_mode',
 ]
 
 /**
  * Tool names registered into an Agent's own layer, which a restriction cannot
- * reach: the Agent Teams tools, plus the delegation tool's `subagent` and
- * `list_subagent_models` (a preset with `modelSelectionSettings: true` installs
- * them per Agent). The guard has to deny the ones a Lead cannot keep.
+ * reach: the Agent Teams tools (including `wait_agent`). The guard has to deny
+ * the ones a Lead cannot keep; only `wait_agent` is denied by default.
  */
 const AGENT_LAYER = [
   'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
   'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',
-  'subagent', 'list_subagent_models',
 ]
 
 /**
@@ -86,7 +88,7 @@ const AGENT_LAYER = [
 const KEPT_BY_DEFAULT = ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present']
 
 /** The catalog's guard-off defaults, i.e. the deny list a fresh Lead gets. */
-const DENIED_BY_DEFAULT = ['wait_agent', 'subagent', 'list_subagent_models']
+const DENIED_BY_DEFAULT = ['wait_agent']
 
 /** Every class-`whitelist` toggle turned OFF — the all-off intent. */
 const ALL_WHITELIST_OFF = Object.fromEntries(
@@ -278,7 +280,7 @@ check('leadContract states the non-blocking contract and supersedes the wait rul
  * `leadContract({})`, and `leadContract({ deny: catalog.deny })` must all return
  * it byte for byte.
  */
-const FROZEN_CONTRACT_TEXT = "Non-blocking Lead\n\nYou are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, you cannot read files, search the workspace, or view images, and `wait_agent`, `subagent`, and `list_subagent_models` are refused — do not count on waiting or on one-shot delegation. Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools; everything else the preset mounts is off your list. This supersedes the Agent Teams instruction to wait for teammates before answering.\n\nHand every part of the job out, and answer the user as soon as it is out.\n- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.\n- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.\n- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.\n- Teammates do the reading, searching, and writing; you brief and coordinate. Use ask_user_question when the decision is the user's to make.\n- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn."
+const FROZEN_CONTRACT_TEXT = "Non-blocking Lead\n\nYou are a non-blocking Team Lead. You cannot run shell commands, you cannot write or edit files, you cannot read files, search the workspace, or view images, and `wait_agent` is refused — do not count on waiting. Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools; everything else the preset mounts is off your list. This supersedes the Agent Teams instruction to wait for teammates before answering.\n\nHand every part of the job out, and answer the user as soon as it is out.\n- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.\n- Record ownership and dependencies on the shared task board (team_task_*), and use list_agents to see who is running.\n- Use send_message to steer a teammate or to wake an inactive one; a teammate report arrives as a new turn, and the next user message can arrive at any time.\n- Teammates do the reading, searching, and writing; you brief and coordinate. Use ask_user_question when the decision is the user's to make.\n- Assemble the final answer from teammate reports. When a report you need is missing, send_message that teammate and end your turn."
 
 /** The user's exact reconnaissance wording, embedded so it is asserted byte for byte. */
 const RECON_BULLET = '- Give each teammate a brief that states the goal, the exact files it may write, and how it must verify the result. To know those files or checks, you may create a reconnaissance task: deploy one teammate on a read-only task — recorded on the shared board like any other task — that states the question and asks for the facts (where the code lives, which files a change touches, how the result should be verified). End your turn; the report arrives as your next turn, and you split and brief the real work from it.'
@@ -301,8 +303,8 @@ function mentionsPlanning(text) {
 check('leadContract() with no arguments is the frozen catalog-default text', () => {
   const text = leadContract()
   assert.equal(text, FROZEN_CONTRACT_TEXT)
-  assert.equal(Buffer.byteLength(text, 'utf8'), 1688, 'the frozen text is 1688 UTF-8 bytes')
-  assert.equal(createHash('sha256').update(text, 'utf8').digest('hex'), 'b9ac0d72c75c6e9e214fb155b3fdc0a80bffc24201f8bd10635b3f1e00dc175b')
+  assert.equal(Buffer.byteLength(text, 'utf8'), 1621, 'the frozen text is 1621 UTF-8 bytes')
+  assert.equal(createHash('sha256').update(text, 'utf8').digest('hex'), '70981d4fa57a6f4481a66ff11bba315d70068f0735dee5021936e4e0b3fdaf1e')
   assert.equal(leadContract({}), FROZEN_CONTRACT_TEXT, 'an empty options object must also keep the frozen text')
   // The contract must not read as if it mentioned or encouraged planning, even
   // though `exit_plan_mode` stays an enabled catalog tool and is therefore named
@@ -358,7 +360,7 @@ check('leadContract defaults follow the catalog; deny grammar and hidden flags a
 check('the catalog defaults keep the user-facing tools, the planner, and present, in catalog order', () => {
   const catalog = catalogDefaults()
   assert.deepEqual(catalog.keep, ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present'])
-  assert.deepEqual(catalog.deny, ['wait_agent', 'subagent', 'list_subagent_models'], 'the guard default is unchanged')
+  assert.deepEqual(catalog.deny, ['wait_agent'], 'only the own-scope Team tool is denied by default')
   const onRows = LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'whitelist' && entry.def).map(entry => entry.name)
   assert.deepEqual(catalog.keep, onRows, 'the keep list must follow catalog order')
   const resolved = resolveToolPolicy({})
@@ -449,24 +451,26 @@ check('selectLeadTools drops exit_plan_mode when the scope does not mount it', (
   assert.deepEqual(selectLeadTools(keep, ['read', 'glob']), [], 'a scope with only the reading tools keeps none of them')
 })
 
-check('the registered contract follows the resolved policy (live-profile override shape)', () => {
+check('the registered contract follows the resolved policy (delegation opt-in shape)', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
-  // Exactly the live `web` profile patch: the guard keeps `subagent` and
-  // `list_subagent_models`, so only `wait_agent` may be refused, and the prompt
-  // must not claim a refusal this policy does not enforce.
+  // A profile `tools` override re-enables the two preset-scope delegation tools:
+  // they join the allow list, only `wait_agent` is denied, and the prompt names
+  // the tools the Lead actually keeps.
   apply(host, { tools: { subagent: true, list_subagent_models: true } })
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT)
-  assert.equal(lead.deny('subagent'), undefined, 'an allowed guard tool must not be denied')
+  assert.deepEqual(lead.activeAllow(), [
+    'ask_user_question', 'todo_write', 'exit_plan_mode', 'subagent', 'list_subagent_models', 'present',
+  ])
+  assert.equal(lead.deny('subagent'), undefined, 'a whitelisted delegation tool is not denied')
   assert.equal(lead.deny('list_subagent_models'), undefined)
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
   const text = lead.sections.get('lead-agent-only-leads:contract').text
   assert.match(text, /`wait_agent` is refused — do not count on waiting\./)
-  assert.equal(text.includes('list_subagent_models'), false, 'the prompt must not name a tool this policy allows')
-  assert.equal(/`subagent`/.test(text), false, 'the prompt must not name `subagent` when it is allowed')
+  assert.match(text, /`subagent`/, 'the prompt names a delegation tool this policy keeps')
+  assert.match(text, /`list_subagent_models`/)
   assert.match(text, /cannot run shell commands/, 'the resolved allow list still hides bash/pwsh')
   assert.match(text, /you cannot read files, search the workspace, or view images/, 'the resolved allow list hides the reading tools')
-  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, and `present`, plus the Team tools;/, 'the named list is the resolved allow list')
+  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, `subagent`, `list_subagent_models`, and `present`, plus the Team tools;/, 'the named list is the resolved allow list')
   // `exit_plan_mode` stays in the resolved allow list, but the contract text
   // never mentions it or planning at all.
   assert.equal(lead.activeAllow().includes('exit_plan_mode'), true, 'making a plan stays allowed')
@@ -529,8 +533,8 @@ check('Config declares a volatile tools dict and default-free volatile legacy ke
 check('LEAD_TOOL_CATALOG has the frozen shape, classes, defaults, and order', () => {
   assert.equal(LEAD_TOOL_CATALOG.length, 51)
   const by = klass => LEAD_TOOL_CATALOG.filter(entry => entry.klass === klass)
-  assert.equal(by('whitelist').length, 34)
-  assert.equal(by('guard').length, 11)
+  assert.equal(by('whitelist').length, 36)
+  assert.equal(by('guard').length, 9)
   assert.equal(by('none').length, 6)
   for (const entry of LEAD_TOOL_CATALOG) {
     assert.deepEqual(Object.keys(entry).sort(), ['def', 'klass', 'name'], `entry ${entry.name} must be exactly {name, klass, def}`)
@@ -584,17 +588,16 @@ check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope 
 
   assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the restriction is the configured keep list')
   const names = lead.names()
-  for (const hidden of ['bash', 'pwsh', 'write', 'edit', 'read', 'read_image', 'glob', 'grep', 'subagent_fork', 'workflow']) {
+  for (const hidden of ['bash', 'pwsh', 'write', 'edit', 'read', 'read_image', 'glob', 'grep', 'subagent', 'subagent_fork', 'list_subagent_models', 'workflow']) {
     assert.equal(names.includes(hidden), false, `${hidden} must be hidden from the Lead`)
   }
   for (const kept of [...KEPT_BY_DEFAULT, ...AGENT_LAYER]) {
     assert.equal(names.includes(kept), true, `${kept} must stay visible`)
   }
   assert.equal(names.includes('wait_agent'), true, 'wait_agent is an Agent-layer tool, so the restriction cannot hide it')
-  assert.equal(names.includes('subagent'), true, 'subagent is an Agent-layer tool, so the restriction cannot hide it')
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
-  assert.match(lead.deny('subagent'), /spawn_teammate/, 'the subagent denial points at spawn_teammate')
-  assert.match(lead.deny('list_subagent_models'), /spawn_teammate/, 'the list_subagent_models denial points at spawn_teammate')
+  assert.equal(lead.deny('subagent'), undefined, 'subagent is restricted away by the allow list, not denied')
+  assert.equal(lead.deny('list_subagent_models'), undefined, 'list_subagent_models is restricted away by the allow list, not denied')
   assert.equal(lead.deny('read'), undefined, 'the guard denies one tool, not every tool')
   assert.equal(lead.deny('spawn_teammate'), undefined)
 
@@ -856,15 +859,6 @@ function loadPatch(path) {
   return yaml.load(readFileSync(path, 'utf8'), { schema })
 }
 
-/**
- * Every row id in a preset plugin list, groups included.
- * @param {object[]} plugins - the preset's `config.plugins`.
- * @returns {string[]} ids in mount order.
- */
-function flatten(plugins) {
-  return plugins.flatMap(row => row.group === true ? [row.id, ...flatten(row.config)] : [row.id])
-}
-
 if (yaml === undefined) {
   results.push({ label: 'Deep patch parse (skipped: js-yaml not reachable from the harness checkout)', ok: true, skipped: true })
 } else {
@@ -885,10 +879,10 @@ if (yaml === undefined) {
     assert.equal(config.plugins.find(row => row.id === 'tool-bash').disabled.js, "process.platform === 'win32'", 'the platform guard survives as a JS expression')
   })
 
-  check('This preset mounts the shipped standard rows, in the same order', () => {
+  check('This preset mounts the shipped standard rows, in the same order and config', () => {
     const ours = loadPatch(join(HERE, 'cordis.patch.yml'))[0].insert[1].config.plugins
     const standard = loadPatch(STANDARD_PRESET)[0].insert[0].config.plugins
-    assert.deepEqual(flatten(ours), flatten(standard), 'teammates inherit this preset, so it must stay the standard environment')
+    assert.deepEqual(ours, standard, 'teammates inherit this preset, so it must stay the standard environment')
   })
 }
 

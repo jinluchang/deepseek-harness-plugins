@@ -19,18 +19,20 @@
  * - The Agent's OWN layer is exempt from restrictions. The Agent Teams tools are
  *   registered there, which is why restricting the Lead cannot — and should not —
  *   hide `spawn_teammate`, `send_message`, `list_agents`, or the shared task
- *   board: handing work out is the Lead's entire job. The same exemption covers
- *   the delegation tool whenever the preset mounts it with
- *   `modelSelectionSettings: true`: `subagent` and `list_subagent_models` are
- *   installed into each Agent's own scope, so no restriction can hide them
- *   either. `wait_agent`, `subagent`, and `list_subagent_models` are therefore
- *   taken away by a monotonic execution guard that denies them instead.
+ *   board: handing work out is the Lead's entire job. `wait_agent` is the one
+ *   own-scope tool a Lead must not keep, so a monotonic execution guard denies it
+ *   instead of a restriction.
  * - A guard only denies; it cannot re-allow. Nothing downstream can turn the
  *   Lead's refusal to wait back into a permission.
  *
- * That deny list is the CATALOG default, not a fixed law: a profile `tools`
- * override can re-enable a guard tool (the live `web` profile patch re-enables
- * `subagent` and `list_subagent_models`), so the prompt contract below is built
+ * The delegation tools are NOT own-scope: the preset mounts `tool-subagent` with
+ * `modelSelection: true` and `modelDiscovery: true`, which registers `subagent`
+ * and `list_subagent_models` in the preset generation scope — an ancestor layer
+ * the Lead's restriction reaches. They are therefore ordinary `whitelist` rows:
+ * OFF (the default) hides them and ON keeps them.
+ *
+ * The deny list is the CATALOG default, not a fixed law: a profile `tools`
+ * override can re-enable a guard tool, so the prompt contract below is built
  * from whatever policy `constrain()` actually resolved. The Lead never claims a
  * refusal its own scope does not enforce.
  *
@@ -118,22 +120,20 @@ const DEFAULT_LEAD_TOOLS = Object.freeze([
 
 /**
  * Tools denied even though they stay listed. `wait_agent` is registered into the
- * Agent's own scope by the Agent Teams plugin, and `subagent` /
- * `list_subagent_models` into that same own scope by the delegation tool when the
- * preset sets `modelSelectionSettings: true`; a restriction cannot reach any of
- * them, so the guard is the only way to take them away.
+ * Agent's own scope by the Agent Teams plugin, where a restriction cannot reach
+ * it, so the guard is the only way to take it away.
  */
-const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent', 'subagent', 'list_subagent_models'])
+const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent'])
 
 /**
  * The tool universe the settings page toggles, in display order. One entry per
  * tool: `klass` is the only mechanism a toggle can use, `def` the default on/off.
  *
- * - `whitelist` — a preset- or global-layer tool. ON keeps the name in the
- *   Lead's allow list; OFF simply omits it (the allow list hides it).
- * - `guard` — an own-scope tool (the Team tools, the delegation tools) that a
- *   restriction cannot reach. OFF denies it through the guard; ON removes the
- *   denial.
+ * - `whitelist` — a preset- or global-layer tool (the delegation tools included).
+ *   ON keeps the name in the Lead's allow list; OFF simply omits it (the allow
+ *   list hides it).
+ * - `guard` — an own-scope tool (the Team tools) that a restriction cannot
+ *   reach. OFF denies it through the guard; ON removes the denial.
  * - `none` — not reachable by either mechanism (slash commands, `disabled` rows,
  *   a child-only tool). `def` is fixed `false`, the page renders the row
  *   inoperative, and this plugin ignores the name entirely.
@@ -142,7 +142,7 @@ const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent', 'subagent', 'list_suba
  * klass/def); `verify.mjs` deep-compares the two so they cannot drift.
  */
 export const LEAD_TOOL_CATALOG = Object.freeze([
-  // whitelist (34)
+  // whitelist (36)
   { name: 'read', klass: 'whitelist', def: false },
   { name: 'read_image', klass: 'whitelist', def: false },
   { name: 'glob', klass: 'whitelist', def: false },
@@ -165,7 +165,9 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'create_goal', klass: 'whitelist', def: false },
   { name: 'update_goal', klass: 'whitelist', def: false },
   { name: 'exit_plan_mode', klass: 'whitelist', def: true },
+  { name: 'subagent', klass: 'whitelist', def: false },
   { name: 'subagent_fork', klass: 'whitelist', def: false },
+  { name: 'list_subagent_models', klass: 'whitelist', def: false },
   { name: 'workflow', klass: 'whitelist', def: false },
   { name: 'web_search', klass: 'whitelist', def: false },
   { name: 'web_fetch', klass: 'whitelist', def: false },
@@ -177,7 +179,7 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'session_trace', klass: 'whitelist', def: false },
   { name: 'ralph', klass: 'whitelist', def: false },
   { name: 'create_worktree', klass: 'whitelist', def: false },
-  // guard (11)
+  // guard (9)
   { name: 'spawn_teammate', klass: 'guard', def: true },
   { name: 'send_message', klass: 'guard', def: true },
   { name: 'list_agents', klass: 'guard', def: true },
@@ -187,8 +189,6 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'team_task_get', klass: 'guard', def: true },
   { name: 'team_task_update', klass: 'guard', def: true },
   { name: 'wait_agent', klass: 'guard', def: false },
-  { name: 'subagent', klass: 'guard', def: false },
-  { name: 'list_subagent_models', klass: 'guard', def: false },
   // none (6) — rendered inoperative; no config effect
   { name: '/goal', klass: 'none', def: false },
   { name: '/plan', klass: 'none', def: false },
