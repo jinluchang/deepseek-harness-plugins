@@ -1,5 +1,5 @@
 /**
- * `@local/dsh-use-repo-tmp`: point scratch work at `<workspace>/tmp`, not `/tmp`.
+ * `dsh-use-repo-tmp`: point scratch work at `<workspace>/tmp`, not `/tmp`.
  *
  * Under the live Linux bwrap sandbox each confined `bash` call runs with a fresh `tmpfs`
  * on `/tmp` (`packages/sandbox/sandbox-local/src/profiles.ts`), while the in-process
@@ -18,7 +18,7 @@
  * deny guard would turn a working command into a retry loop without making the file
  * appear, so the prompt is the honest seam.
  *
- * @module @local/dsh-use-repo-tmp
+ * @module dsh-use-repo-tmp
  */
 
 import { join } from 'node:path'

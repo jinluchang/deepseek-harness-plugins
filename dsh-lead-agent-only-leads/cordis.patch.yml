@@ -9,7 +9,7 @@
 # from the profile patch.
 - insert:
     - id: lead-agent-only-leads
-      name: '@local/dsh-lead-agent-only-leads'
+      name: 'dsh-lead-agent-only-leads'
     - id: preset-lead-agent-only-leads
       name: '@deepseek-ai/dsh-agent-preset'
       config:

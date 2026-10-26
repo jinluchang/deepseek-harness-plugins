@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Hermetic self-check for `@local/dsh-use-repo-tmp`.
+ * Hermetic self-check for `dsh-use-repo-tmp`.
  *
  * Runs without a Host, a model, a network, or any filesystem write: it asserts
  * the manifest and the bundle patch, then drives `apply()` against a fake
@@ -156,7 +156,7 @@ check('the module exports its stable name, its single required service, and no d
 })
 
 check('the manifest is a private ESM bundle with load-bearing export targets', () => {
-  assert.equal(manifest.name, '@local/dsh-use-repo-tmp')
+  assert.equal(manifest.name, 'dsh-use-repo-tmp')
   assert.equal(manifest.private, true)
   assert.equal(manifest.type, 'module')
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
@@ -191,14 +191,14 @@ if (yaml === undefined) {
     const [row] = entry.insert
     assert.deepEqual(Object.keys(row).sort(), ['id', 'name'], 'the row carries exactly id and name')
     assert.equal(row.id, 'use-repo-tmp')
-    assert.equal(row.name, '@local/dsh-use-repo-tmp')
+    assert.equal(row.name, 'dsh-use-repo-tmp')
   })
 }
 
 check('the bundle patch also passes the strict text fallback (fixed indentation)', () => {
   assert.match(patchText, /^- insert:$/m)
   assert.match(patchText, /^ {4}- id: use-repo-tmp$/m, 'the row id is indented exactly under insert')
-  assert.match(patchText, /^ {6}name: '@local\/dsh-use-repo-tmp'$/m, 'the row name is a property of that row')
+  assert.match(patchText, /^ {6}name: 'dsh-use-repo-tmp'$/m, 'the row name is a property of that row')
   const rows = patchText.split('\n').filter(line => line.trimStart().startsWith('- id:'))
   assert.deepEqual(rows.map(row => row.trim()), ['- id: use-repo-tmp'])
 })

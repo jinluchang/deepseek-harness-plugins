@@ -6,4 +6,4 @@
 # one preset.
 - insert:
     - id: use-repo-tmp
-      name: '@local/dsh-use-repo-tmp'
+      name: 'dsh-use-repo-tmp'

@@ -1,5 +1,5 @@
 /**
- * Client half of @local/dsh-lead-agent-only-leads: one settings PAGE that toggles which
+ * Client half of dsh-lead-agent-only-leads: one settings PAGE that toggles which
  * tools a non-blocking Lead may use.
  *
  * Plain browser bundle (no build step): it self-registers with the page's
@@ -16,10 +16,10 @@
  * exposed on the object this factory returns so the bundle's offline suite can
  * deep-compare the two catalogs.
  *
- * @module @local/dsh-lead-agent-only-leads/client
+ * @module dsh-lead-agent-only-leads/client
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-lead-agent-only-leads',
+  id: 'dsh-lead-agent-only-leads',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -626,7 +626,7 @@ Hand every part of the job out, and answer the user as soon as it is out.
     }
 
     return {
-      name: '@local/dsh-lead-agent-only-leads',
+      name: 'dsh-lead-agent-only-leads',
       inject: ['slots', 'locale', 'configForms'],
       /** Shared catalog; verify.mjs deep-compares it against the host half. */
       LEAD_TOOL_CATALOG,
@@ -645,10 +645,10 @@ Hand every part of the job out, and answer the user as soon as it is out.
        * @param ctx - client root context.
        */
       apply(ctx) {
-        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-lead-agent-only-leads: dictionaries');
+        ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-lead-agent-only-leads: dictionaries');
         const form = ctx.configForms.get(HOST_NS);
         const store = createFormStore(form);
-        ctx.effect(() => () => store.dispose(), '@local/dsh-lead-agent-only-leads: form state');
+        ctx.effect(() => () => store.dispose(), 'dsh-lead-agent-only-leads: form state');
         ctx.effect(() => ctx.configForms.whileServed([HOST_NS], () => ctx.slots.inject('settings.section',
           () => ctx.slots.register({
             name: 'settings.section',
@@ -660,7 +660,7 @@ Hand every part of the job out, and answer the user as soon as it is out.
               hooks: { leadTools: store },
               setTool: (name, next) => form.mutate([{ op: 'set', path: ['tools', name], value: next }]),
             }),
-          }, LeadToolsPage))), '@local/dsh-lead-agent-only-leads: tools page');
+          }, LeadToolsPage))), 'dsh-lead-agent-only-leads: tools page');
       },
     };
   },

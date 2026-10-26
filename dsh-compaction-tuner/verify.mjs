@@ -1,5 +1,5 @@
 /**
- * Self-check for the out-of-tree bundle `@local/dsh-compaction-tuner`.
+ * Self-check for the out-of-tree bundle `dsh-compaction-tuner`.
  *
  * It is hermetic: no network, no server, no filesystem writes, and no DSH
  * instance. Every check runs against the plugin's own files plus the REAL
@@ -653,7 +653,7 @@ function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl, cat
 /* ══ 1. manifest ═══════════════════════════════════════════════════════════ */
 
 await check('the manifest declares the frozen identity, bundle patch, and web client', () => {
-  assert.equal(manifest.name, '@local/dsh-compaction-tuner', `package name drifted to ${String(manifest.name)}`)
+  assert.equal(manifest.name, 'dsh-compaction-tuner', `package name drifted to ${String(manifest.name)}`)
   assert.equal(manifest.version, '0.2.1-rc.3', `version drifted to ${String(manifest.version)}`)
   assert.equal(manifest.private, true, 'the package must stay private')
   assert.equal(manifest.type, 'module', `type drifted to ${String(manifest.type)}`)
@@ -1756,7 +1756,7 @@ await check('apply registers one settings.section entry with the frozen id, a la
   assert.ok((options?.label() ?? '').length > 0, 'the nav label renders empty')
   assert.equal(options?.locale, 'compaction-tuner', `the locale NS drifted to ${String(options?.locale)}`)
   assert.equal(clientContext.state.effects.length, 1, `apply registered ${clientContext.state.effects.length} effects, expected 1`)
-  assert.equal(clientContext.state.effects[0], '@local/dsh-compaction-tuner: dictionaries', `the effect label drifted to ${String(clientContext.state.effects[0])}`)
+  assert.equal(clientContext.state.effects[0], 'dsh-compaction-tuner: dictionaries', `the effect label drifted to ${String(clientContext.state.effects[0])}`)
 })
 
 await check('apply registers one dictionary under the entry id carrying both en and zh', () => {

@@ -1,4 +1,4 @@
-# CONTRACT — `@local/dsh-use-repo-tmp`
+# CONTRACT — `dsh-use-repo-tmp`
 
 Frozen interface of the `use-repo-tmp` bundle. Package directory:
 `dsh-use-repo-tmp/` in this plugins workspace (installed into the active DSH profile as a
@@ -55,7 +55,7 @@ the bundle is zero-config by design, and it has no settings page.
 ```yaml
 - insert:
     - id: use-repo-tmp
-      name: '@local/dsh-use-repo-tmp'
+      name: 'dsh-use-repo-tmp'
 ```
 
 One top-level insert at the bundle layer — not a row inside a preset — because the

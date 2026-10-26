@@ -19,4 +19,4 @@
 # retune writes live in that same profile patch file.
 - insert:
     - id: compaction-tuner
-      name: '@local/dsh-compaction-tuner'
+      name: 'dsh-compaction-tuner'

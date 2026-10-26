@@ -1,5 +1,5 @@
 {
-  "name": "@local/dsh-lead-agent-only-leads",
+  "name": "dsh-lead-agent-only-leads",
   "version": "0.2.1-rc.3",
   "private": true,
   "type": "module",

@@ -1,4 +1,4 @@
-# Frozen interface: `@local/dsh-compaction-tuner`
+# Frozen interface: `dsh-compaction-tuner`
 
 Package directory: `dsh-compaction-tuner/` (installed into the active DSH profile as a bundle).
 Host half: `index.js`. Client half: `client.js`. Mount patch: `cordis.patch.yml`.
@@ -25,17 +25,17 @@ symbol is authoritative, and `verify.mjs` pins behaviour rather than line number
 
 | Item | Value |
 | --- | --- |
-| Package | `@local/dsh-compaction-tuner` |
+| Package | `dsh-compaction-tuner` |
 | Loader entry id | `compaction-tuner` — the row `id` in the profile's `cordis.patch.yml` |
 | Settings namespace | `compaction-tuner` — the same id, read with `ctx.configForms.get('compaction-tuner')` |
 | Locale namespace | `compaction-tuner` |
 | Host `name` export | `compaction-tuner` (`name` `index.js:315`) |
-| Client module id | `@local/dsh-compaction-tuner` — the exact package name (`__ModuleLoader__.load` `client.js:54`) |
-| Client plugin `name` | `@local/dsh-compaction-tuner` (`name` `client.js:1447`) |
+| Client module id | `dsh-compaction-tuner` — the exact package name (`__ModuleLoader__.load` `client.js:54`) |
+| Client plugin `name` | `dsh-compaction-tuner` (`name` `client.js:1447`) |
 | Host ↔ Client wire | **No RPC channel of its own.** The tuner's values travel over the ui-settings form mirror: `configForms.get('compaction-tuner')` whose `mutate()` calls the Host's `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:134`). The restart action separately calls a sibling-owned channel — see *Restart action (soft dependency)*. |
 | Host `inject` | `['configEditor', 'loader']` (`inject` `index.js:318`) |
 | Client `inject` | `['slots', 'locale', 'configForms', 'connection', 'remote']` (`inject` `client.js:1448`) |
-| Restart channel | `/backend-restart`, owned by `@local/dsh-backend-restart`, called through `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
+| Restart channel | `/backend-restart`, owned by `dsh-backend-restart`, called through `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
 | Settings slot | `settings.section`, `id: 'compaction-tuner'`, `order: 40`, `locale: 'compaction-tuner'` (`ctx.slots.register` `client.js:1492`) |
 
 The two halves never import each other's values. The Host owns the numbers; the Client reads and
@@ -372,7 +372,7 @@ boot — `settings.configure` `index.js:1019`), because the bundle ships its own
 
 ## Client contract
 
-Module artifact: one `window.__ModuleLoader__.load({ id: '@local/dsh-compaction-tuner', factory })`
+Module artifact: one `window.__ModuleLoader__.load({ id: 'dsh-compaction-tuner', factory })`
 closure (`__ModuleLoader__.load` `client.js:54`). The factory requests exactly one module-table entry, `react`
 (`React` `client.js:57`), and returns `{ name, inject, apply }` with
 `inject = ['slots', 'locale', 'configForms', 'connection', 'remote']` (`inject` `client.js:1448`).
@@ -497,7 +497,7 @@ The page (`TunerSection`):
 ## Restart action (soft dependency)
 
 The restart action calls the authenticated Connection channel `/backend-restart`
-(`dsh-backend-restart/CONTRACT.md:19`), owned and registered by `@local/dsh-backend-restart` and frozen
+(`dsh-backend-restart/CONTRACT.md:19`), owned and registered by `dsh-backend-restart` and frozen
 in that package's CONTRACT.md (`status` / `restart`). This is a **soft runtime dependency, not a
 required one**: nothing is imported from that package, the host half never references it, this plugin
 loads and its page renders without it, and only the restart action degrades — to the localized manual
@@ -603,7 +603,7 @@ copy with the action disabled. The manifest declares the connection client in `d
   requests only `react`.
 - The restart action is a soft dependency: the manifest declares the `connection` client in
   `dsh.client.inject` and the client half injects `connection`, but nothing is imported from
-  `@local/dsh-backend-restart`; only its `/backend-restart` channel is called at runtime.
+  `dsh-backend-restart`; only its `/backend-restart` channel is called at runtime.
 - `locale/en.json` and `locale/zh.json` carry plugin **display metadata** only
   (`meta.title`, `meta.description`); UI copy comes from the dictionary registered by the client half.
 - Style only with `--dsw-alias-*` host theme tokens; do not import Harness client packages.

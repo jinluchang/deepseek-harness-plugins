@@ -45,7 +45,7 @@
  * The module has no default export: the loader reads `name`, `inject`, `Config`,
  * and `apply` as named bindings.
  *
- * @module @local/dsh-compaction-tuner
+ * @module dsh-compaction-tuner
  */
 
 import { createRequire } from 'node:module'

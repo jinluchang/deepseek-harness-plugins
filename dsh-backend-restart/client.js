@@ -1,11 +1,11 @@
 /**
- * Client half of @local/dsh-backend-restart: a General-settings row that
+ * Client half of dsh-backend-restart: a General-settings row that
  * asks the Host process to replace itself through the frozen /backend-restart
  * channel, waits for the successor to answer again, then reloads the page.
  * Plain browser bundle module; React is the only module-table request.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-backend-restart',
+  id: 'dsh-backend-restart',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -490,14 +490,14 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      name: '@local/dsh-backend-restart',
+      name: 'dsh-backend-restart',
       inject: ['slots', 'locale', 'connection'],
       /**
        * Register the plugin dictionaries and the General-settings restart row.
        * @param ctx - client root context.
        */
       apply(ctx) {
-        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-backend-restart: dictionaries');
+        ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-backend-restart: dictionaries');
         const callHost = (endpoint, payload, signal) => {
           const connection = ctx.get('connection');
           if (connection === undefined) {

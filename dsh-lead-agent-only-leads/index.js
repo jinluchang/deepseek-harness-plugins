@@ -40,7 +40,7 @@
  * Teams policy section and stating plainly that the generic rule to wait for
  * teammates does not apply in this preset.
  *
- * @module @local/dsh-lead-agent-only-leads
+ * @module dsh-lead-agent-only-leads
  */
 
 import { createRequire } from 'node:module'

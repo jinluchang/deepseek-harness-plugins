@@ -1,6 +1,6 @@
-# `@local/dsh-compaction-tuner`
+# `dsh-compaction-tuner`
 
-A local DSH plugin that puts **one** control in Settings for the compaction policy of **every agent
+A DSH plugin that puts **one** control in Settings for the compaction policy of **every agent
 preset in the active profile**. A profile usually declares several
 `@deepseek-ai/dsh-agent-preset` rows, each with its own `compaction-basic` child; this plugin owns the
 **full eleven-key `compaction-basic` policy surface** in its own row, renders it as the **Compaction
@@ -215,7 +215,7 @@ reloads itself once the successor answers. If the successor does not answer insi
 the wire.
 
 The action calls the existing authenticated Connection channel `/backend-restart`, owned by the separate
-`@local/dsh-backend-restart` plugin — so this is a **soft runtime dependency, not a required one**:
+`dsh-backend-restart` plugin — so this is a **soft runtime dependency, not a required one**:
 nothing is imported from that package, this plugin loads and its page works without it, and when the
 channel is absent, refuses, or reports `restartable:false`, the page degrades to localized
 manual-restart copy ("This deployment cannot restart itself from here. Restart DSH yourself to apply the
@@ -452,7 +452,7 @@ exercised on a live profile.
 | File | Role |
 | --- | --- |
 | `index.js` | Host half: `OPTION_SPECS` declares all eleven options once (key, kind, code default, allowed range, schemastery field); owns them, finds every agent-preset row, and projects the tune into its `compaction-basic` child. |
-| `client.js` | Browser half: the **Compaction tuner** Settings section, one control per option, its single atomic save, and the bold restart-required notice plus **Restart backend** action (soft dependency on `@local/dsh-backend-restart`). |
+| `client.js` | Browser half: the **Compaction tuner** Settings section, one control per option, its single atomic save, and the bold restart-required notice plus **Restart backend** action (soft dependency on `dsh-backend-restart`). |
 | `cordis.patch.yml` | Bundle patch that inserts the tuner row with **no seed**, so the tuner runs the upstream code defaults. |
 | `locale/en.json`, `locale/zh.json` | Plugin display metadata for the Plugin Manager and Settings inventory. |
 | `package.json` | Bundle manifest (`dsh.bundle.patch`, `dsh.client` with the `connection` and model-catalog injects, `exports`, `files`). |
@@ -554,7 +554,7 @@ exercised on a live profile.
   nor a real `location.reload()` has been exercised on a live profile. Arm B was never measured, and the
   four non-empty passes had no breakdown captured. HMR for a `link:`ed client bundle is likewise
   unconfirmed.
-- **The restart action is a soft dependency.** It calls `@local/dsh-backend-restart`'s channel and
+- **The restart action is a soft dependency.** It calls `dsh-backend-restart`'s channel and
   nothing is imported from that package; a deployment without it loads this plugin and shows the manual
   restart copy instead.
 - **Open measurement questions.** First-pass timing and the batching of repeated

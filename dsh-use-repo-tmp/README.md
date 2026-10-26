@@ -1,4 +1,4 @@
-# `@local/dsh-use-repo-tmp`
+# `dsh-use-repo-tmp`
 
 Prompt guidance that tells the model to put scratch files, temporary downloads, and generated
 artifacts under `tmp/` at the root of the workspace — the current working directory — instead

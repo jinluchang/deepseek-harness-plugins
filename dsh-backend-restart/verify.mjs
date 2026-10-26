@@ -68,7 +68,7 @@ const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.met
 const patch = readFileSync(new URL('./cordis.patch.yml', import.meta.url), 'utf8')
 
 await check('the manifest names the bundle, its patch, and every runtime file', () => {
-  assert.equal(packageJson.name, '@local/dsh-backend-restart')
+  assert.equal(packageJson.name, 'dsh-backend-restart')
   assert.equal(packageJson.private, true)
   assert.equal(packageJson.type, 'module')
   assert.equal(packageJson.dsh.bundle.patch, './cordis.patch.yml')
@@ -87,7 +87,7 @@ await check('the manifest names the bundle, its patch, and every runtime file', 
 await check('the bundle patch inserts this plugin exactly once', () => {
   const rows = patch.split('\n').filter(line => line.trimStart().startsWith('- id:'))
   assert.deepEqual(rows.map(row => row.trim()), ['- id: backend-restart'])
-  assert.match(patch, /^\s+name: '@local\/dsh-backend-restart'$/m)
+  assert.match(patch, /^\s+name: 'dsh-backend-restart'$/m)
 })
 
 await check('the launch command replays Node flags and the application arguments', () => {

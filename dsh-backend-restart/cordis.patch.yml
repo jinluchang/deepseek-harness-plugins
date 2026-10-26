@@ -2,4 +2,4 @@
 # Client module are both declared by the package itself.
 - insert:
     - id: backend-restart
-      name: '@local/dsh-backend-restart'
+      name: 'dsh-backend-restart'

@@ -1,6 +1,6 @@
-# `@local/dsh-backend-restart`
+# `dsh-backend-restart`
 
-A local DSH plugin that adds a **Restart backend** row at the end of the **General** settings page, just
+A DSH plugin that adds a **Restart backend** row at the end of the **General** settings page, just
 above the version information. The action asks the running Host for permission to replace itself and then
 relaunches the same command with the same working directory and environment, so the backend comes back on the
 same port with the same Harness home. Running turns, terminals, and browser connections are interrupted; the

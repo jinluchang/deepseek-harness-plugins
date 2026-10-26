@@ -822,7 +822,7 @@ check('Patch declares both rows and no leftover of the standard preset', () => {
   const text = readFileSync(join(HERE, 'cordis.patch.yml'), 'utf8')
   for (const needle of [
     '- id: lead-agent-only-leads',
-    "name: '@local/dsh-lead-agent-only-leads'",
+    "name: 'dsh-lead-agent-only-leads'",
     '- id: preset-lead-agent-only-leads',
     "name: '@deepseek-ai/dsh-agent-preset'",
     'id: lead-agent-only-leads',
@@ -867,7 +867,7 @@ if (yaml === undefined) {
     assert.equal(Array.isArray(doc), true)
     const rows = doc[0].insert
     assert.deepEqual(rows.map(row => [row.id, row.name]), [
-      ['lead-agent-only-leads', '@local/dsh-lead-agent-only-leads'],
+      ['lead-agent-only-leads', 'dsh-lead-agent-only-leads'],
       ['preset-lead-agent-only-leads', '@deepseek-ai/dsh-agent-preset'],
     ])
     const config = rows[1].config
@@ -916,7 +916,7 @@ if (!existsSync(CLIENT_PATH)) {
       else Object.defineProperty(globalThis, 'window', previousWindow)
     }
     assert.notEqual(registration, undefined, 'client.js must self-register with window.__ModuleLoader__.load')
-    assert.equal(registration.id, '@local/dsh-lead-agent-only-leads', 'the client bundle id must match the package name')
+    assert.equal(registration.id, 'dsh-lead-agent-only-leads', 'the client bundle id must match the package name')
     assert.equal(typeof registration.factory, 'function', 'the registration must expose a factory')
     const face = registration.factory(specifier => {
       required.push(specifier)

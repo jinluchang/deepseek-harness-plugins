@@ -47,7 +47,7 @@ shipped `standard` preset's.
 
 | Row id | Plugin | Purpose |
 | --- | --- | --- |
-| `lead-agent-only-leads` | `@local/dsh-lead-agent-only-leads` | Applies the contract to each Lead of the preset. |
+| `lead-agent-only-leads` | `dsh-lead-agent-only-leads` | Applies the contract to each Lead of the preset. |
 | `preset-lead-agent-only-leads` | `@deepseek-ai/dsh-agent-preset` | Declares the `lead-agent-only-leads` preset (`Lead agent only leads`, order 5). |
 
 ## The Lead's surface

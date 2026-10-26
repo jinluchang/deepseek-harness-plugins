@@ -1,5 +1,5 @@
 /**
- * Client half of @local/dsh-compaction-tuner: one Settings page that edits the
+ * Client half of dsh-compaction-tuner: one Settings page that edits the
  * tuner's full `compaction-basic` policy surface — the request threshold, the
  * pressure headroom, the two mutually exclusive retention forms, the
  * summarization target pair, the summary token cap, both retry counts, the
@@ -41,7 +41,7 @@
  * whatever the Host reports next.
  *
  * The restart action adds NO second restart path: it calls the authenticated
- * shared Connection channel owned by @local/dsh-backend-restart and frozen in
+ * shared Connection channel owned by dsh-backend-restart and frozen in
  * that package's CONTRACT.md (`status` / `restart`) through
  * `ctx.get('connection').rpc.call(...)`. Every path that cannot reach that
  * channel — not installed, refused, or transport-dead — degrades to localized
@@ -49,10 +49,10 @@
  * restart-required note stays visible: it is a fact about this plugin, and the
  * manual restart always exists.
  *
- * @module @local/dsh-compaction-tuner/client
+ * @module dsh-compaction-tuner/client
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-compaction-tuner',
+  id: 'dsh-compaction-tuner',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -156,7 +156,7 @@ window.__ModuleLoader__.load({
 
     /**
      * The repo's authenticated restart channel. It is owned and registered by
-     * @local/dsh-backend-restart; this page only calls its two endpoints.
+     * dsh-backend-restart; this page only calls its two endpoints.
      */
     const RESTART_CHANNEL = '/backend-restart';
 
@@ -1444,7 +1444,7 @@ window.__ModuleLoader__.load({
     }
 
     const plugin = {
-      name: '@local/dsh-compaction-tuner',
+      name: 'dsh-compaction-tuner',
       inject: ['slots', 'locale', 'configForms', 'connection', 'remote'],
       /**
        * Register the plugin dictionaries and the Compaction-tuner settings
@@ -1454,7 +1454,7 @@ window.__ModuleLoader__.load({
        * @param ctx - client root context.
        */
       apply(ctx) {
-        ctx.effect(() => ctx.locale.register(NS, { en, zh }), '@local/dsh-compaction-tuner: dictionaries');
+        ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-compaction-tuner: dictionaries');
         const form = ctx.configForms.get(NS);
         const t = ctx.locale.bind(NS);
         const callBackend = (endpoint, payload, signal) => {
