@@ -14,7 +14,7 @@
     "url": "git+https://github.com/jinluchang/deepseek-harness-plugins.git",
     "directory": "dsh-lead-agent-only-leads"
   },
-  "homepage": "https://github.com/jinluchang/deepseek-harness-plugins/tree/master/dsh-lead-agent-only-leads",
+  "homepage": "https://github.com/jinluchang/deepseek-harness-plugins/tree/main/dsh-lead-agent-only-leads",
   "bugs": { "url": "https://github.com/jinluchang/deepseek-harness-plugins/issues" },
   "engines": { "dsh": "^0.2.1-rc.3" },
   "exports": {
