@@ -53,7 +53,7 @@ scope only, so nothing else in the profile changes.
 The bundle is a normal workspace plugin. Point the installer at the directory:
 
 ```
-plugin_manager({ action: "install_bundle", target: "/home/user/Public/deepseek-harness-plugins/dsh-lead-agent-only-leads" })
+plugin_manager({ action: "install_bundle", target: "/path/to/deepseek-harness-plugins/dsh-lead-agent-only-leads" })
 ```
 
 That registers the bundle in the profile, links the package, and appends its

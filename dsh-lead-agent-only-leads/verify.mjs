@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const HARNESS = process.env.DSH_HARNESS_CHECKOUT ?? '/home/user/Public/deepseek-harness'
+const HARNESS = process.env.DSH_HARNESS_CHECKOUT ?? join(HERE, '..', '..', 'deepseek-harness')
 const STANDARD_PRESET = join(HARNESS, 'packages/bundle/web-app/presets/standard.patch.yml')
 
 // index.js resolves `@deepseek-ai/schemastery` from the Host installation (it

@@ -9,7 +9,7 @@
  * would green-light a `Config` that renders no settings section at all.
  *
  * Run:
- *   DSH_HARNESS_CHECKOUT=/home/user/Public/deepseek-harness node dsh-compaction-tuner/verify.mjs
+ *   DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-compaction-tuner/verify.mjs
  *
  * What it does NOT cover: the live mechanism against a booted Host (profile
  * patch writes, remount cleanliness, HMR) is the isolated end-to-end smoke, not
@@ -1052,7 +1052,7 @@ await check('no shipped doc or comment cites the removed TODO.md', () => {
 /* ══ 3. host half against the REAL schemastery ═════════════════════════════ */
 
 await check('the real schemastery resolves through $DSH_HARNESS_CHECKOUT (never skipped silently)', () => {
-  assert.ok(process.env.DSH_HARNESS_CHECKOUT, 'DSH_HARNESS_CHECKOUT is unset; run: DSH_HARNESS_CHECKOUT=/home/user/Public/deepseek-harness node dsh-compaction-tuner/verify.mjs')
+  assert.ok(process.env.DSH_HARNESS_CHECKOUT, 'DSH_HARNESS_CHECKOUT is unset; run: DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-compaction-tuner/verify.mjs')
   assert.ok(host.schemaLibrary !== undefined, `the host half could not resolve @deepseek-ai/schemastery from ${process.env.DSH_HARNESS_CHECKOUT}`)
   assert.ok(host.Config !== undefined, 'Config is undefined, so the Host would render no settings namespace at all')
 })

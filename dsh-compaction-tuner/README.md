@@ -377,7 +377,7 @@ a compaction policy read from a service rather than a row) would remove it.
 ## Verify
 
 ```sh
-DSH_HARNESS_CHECKOUT=/home/user/Public/deepseek-harness node dsh-compaction-tuner/verify.mjs
+DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-compaction-tuner/verify.mjs
 ```
 
 Run from this repository's root (or inside the plugin directory with the same variable exported). The
