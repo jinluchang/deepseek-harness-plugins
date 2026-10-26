@@ -77,14 +77,14 @@ Run `mkdir -p tmp` before the first use, then address the files by workspace-rel
 ## Install
 
 The bundle is a normal profile plugin, not a workspace package. Capture its path in this plugins
-workspace, then install it from the DSH checkout root:
+workspace, then install it with the DSH CLI:
 
 ```sh
 # in this plugins workspace
 PLUGIN="$(pwd)/dsh-use-repo-tmp"
 
-# from the DSH checkout root
-pnpm dsh plugin --profile web add link:"$PLUGIN"
+# with the DSH CLI
+dsh plugin --profile web add link:"$PLUGIN"
 ```
 
 The plugin then loads on the next full page load; no build step is needed, because the bundle is

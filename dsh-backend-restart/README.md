@@ -12,11 +12,11 @@ The wire format shared by the two halves is frozen in [CONTRACT.md](CONTRACT.md)
 
 ## Install
 
-The plugin is a profile bundle, not a workspace package. Install it from the repository root with the DSH
-Plugin Manager, which links the directory into the active profile and records the bundle row:
+The plugin is a profile bundle, not a workspace package. Install it from this repository's root with the
+DSH Plugin Manager, which links the directory into the active profile and records the bundle row:
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
+dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
 ```
 
 In a running GUI session the same step is the `plugin_manager` tool with `action: install_bundle` and

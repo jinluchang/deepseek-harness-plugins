@@ -23,15 +23,21 @@ README, and ships a hermetic verification suite that runs without a live Host.
 ## Installation
 
 A bundle is an npm package whose `package.json` declares `dsh.bundle.patch`; installing it adds that patch
-layer to the active DSH profile. Three routes work today, and none of them needs a registry.
+layer to the active DSH profile. Three routes work today. Only the path/`link:` route is registry-free: a
+tarball or Git install of `dsh-lead-agent-only-leads` also resolves its one declared dependency,
+`@deepseek-ai/schemastery@3.18.5`, from the registry, so that route needs a reachable registry, or that
+dependency already present on the host.
 
 ### From a local checkout (absolute path)
 
-From this repository's root, with the DSH CLI:
+From this repository's root, with the installed DSH CLI on `PATH`:
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
+dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
 ```
+
+From a DSH source checkout instead, run its own script with an absolute bundle path:
+`pnpm dsh plugin --profile web add link:/abs/path/to/deepseek-harness-plugins/dsh-backend-restart`.
 
 Or from a running GUI session, with the `plugin_manager` tool:
 
@@ -70,8 +76,8 @@ Pin a commit for `<commit>`; the same spec form works for the other three bundle
 
 ## Nothing is published to npm
 
-These bundles are **not published**: `npm install dsh-backend-restart` does not resolve. Their manifests
-set `"private": false` and carry publish metadata, so a release is possible later, but nothing has been
+These bundles are **not published**: no version of these packages exists on npm. Their manifests set
+`"private": false` and carry publish metadata, so a release is possible later, but nothing has been
 published to any registry.
 
 ## Notes

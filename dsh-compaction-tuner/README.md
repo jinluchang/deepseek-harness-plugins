@@ -67,7 +67,7 @@ The plugin is a profile bundle, not a workspace package. Install it from this re
 the DSH Plugin Manager, which links the directory into the active profile and records the bundle row:
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/dsh-compaction-tuner"
+dsh plugin --profile web add link:"$PWD/dsh-compaction-tuner"
 ```
 
 In a running GUI session the same step is the `plugin_manager` tool with `action: install_bundle` and

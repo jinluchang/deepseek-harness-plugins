@@ -44,14 +44,14 @@ Run `mkdir -p tmp` before the first use, then address the files by workspace-rel
 
 ## 安装
 
-该插件包是普通的 profile 插件，不是工作区包。先在本插件工作区里取得它的路径，然后从 DSH 检出根目录安装：
+该插件包是普通的 profile 插件，不是工作区包。先在本插件工作区里取得它的路径，然后用 DSH CLI 安装：
 
 ```sh
 # in this plugins workspace
 PLUGIN="$(pwd)/dsh-use-repo-tmp"
 
-# from the DSH checkout root
-pnpm dsh plugin --profile web add link:"$PLUGIN"
+# with the DSH CLI
+dsh plugin --profile web add link:"$PLUGIN"
 ```
 
 插件随后会在下一次整页加载时载入；无需构建步骤，因为该插件包是从源码加载的普通 ESM。在运行中的 GUI 会话里，同一步骤是 `plugin_manager` 工具，传入 `action: install_bundle` 和 `target: "$PLUGIN"`。

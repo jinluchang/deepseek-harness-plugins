@@ -18,15 +18,17 @@
 
 ## 安装
 
-插件包就是一个 npm 包，其 `package.json` 声明了 `dsh.bundle.patch`；安装它会把那一层补丁加入当前 DSH profile。目前有三条可用的安装路径，而且都不需要 registry。
+插件包就是一个 npm 包，其 `package.json` 声明了 `dsh.bundle.patch`；安装它会把那一层补丁加入当前 DSH profile。目前有三条可用的安装路径。只有路径/`link:` 这条路线不需要 registry：`dsh-lead-agent-only-leads` 的 tarball 或 Git 安装还会从 registry 解析它唯一声明的依赖 `@deepseek-ai/schemastery@3.18.5`，因此那条路线需要可达的 registry，或宿主上已存在该依赖。
 
 ### 从本地检出安装（绝对路径）
 
-在本仓库根目录下，用 DSH CLI：
+在本仓库根目录下，用已在 `PATH` 上的 DSH CLI：
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
+dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
 ```
+
+若改从 DSH 源码检出运行，则改用检出自己的脚本，并传入插件包的绝对路径：`pnpm dsh plugin --profile web add link:/abs/path/to/deepseek-harness-plugins/dsh-backend-restart`。
 
 或者在运行中的 GUI 会话里，用 `plugin_manager` 工具：
 
@@ -61,7 +63,7 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
 
 ## 没有发布到 npm
 
-这些插件包**没有发布**：`npm install dsh-backend-restart` 解析不到。它们的 manifest 设为 `"private": false` 并带有发布元数据，因此将来可以发布，但至今没有向任何 registry 发布过任何内容。
+这些插件包**没有发布**：这些包在 npm 上不存在任何版本。它们的 manifest 设为 `"private": false` 并带有发布元数据，因此将来可以发布，但至今没有向任何 registry 发布过任何内容。
 
 ## 说明
 

@@ -39,7 +39,7 @@
 本插件是一个 profile 插件包，而不是工作区包。请从此仓库根目录用 DSH 插件管理器安装它；插件管理器会把该目录链接到当前 profile 中，并记录插件包行：
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/dsh-compaction-tuner"
+dsh plugin --profile web add link:"$PWD/dsh-compaction-tuner"
 ```
 
 在运行中的 GUI 会话里，同样的步骤是 `plugin_manager` 工具，参数为 `action: install_bundle` 和 `target: <absolute path to dsh-compaction-tuner>`；`application: "applied"` 表示 profile 已发生变化。随后插件会在下一次整页加载时载入。

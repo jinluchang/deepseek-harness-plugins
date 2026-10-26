@@ -8,10 +8,10 @@
 
 ## 安装
 
-该插件是一个 profile 插件包，而不是工作区包。请从仓库根目录用 DSH 插件管理器安装，它会把该目录链接进当前 profile 并记录插件包行：
+该插件是一个 profile 插件包，而不是工作区包。请从本仓库根目录用 DSH 插件管理器安装，它会把该目录链接进当前 profile 并记录插件包行：
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
+dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
 ```
 
 在运行中的 GUI 会话里，同一步骤是 `plugin_manager` 工具，传入 `action: install_bundle` 和 `target: <absolute path to dsh-backend-restart>`；`application: "applied"` 表示 profile 已更新、无需重启。插件随后会在下一次整页加载时载入。
