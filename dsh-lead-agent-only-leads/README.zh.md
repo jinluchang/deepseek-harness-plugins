@@ -35,7 +35,7 @@ plugin_manager({ action: "install_bundle", target: "/path/to/deepseek-harness-pl
 
 **升级已安装的 profile。** Web 编辑器会把一整行 `preset-lead-agent-only-leads`（包含其 `config.plugins` 列表）写入 profile 自己的 `cordis.patch.yml`，而那一用户层会按 id 覆盖插件包行。以更早的插件包版本保存的行会保留已退役的 `tool-subagent-list-agents` 行和旧的 `modelSelectionSettings` 配置，因此升级后请从 profile 补丁中删除该行（或在 Web 编辑器中重新保存该预设）。插件包补丁本身已经带有当前的 `standard` 行与配置。
 
-除本地检出外，该插件包也可以不经注册表分发：在本目录运行 `npm pack` 会生成一个 tarball，可经绝对路径（或 `https:` URL）安装；由于本仓库没有根 `package.json`，克隆本仓库后还可以用 Git 加子目录选择器安装：
+除本地检出外，该插件包可经 tarball 或 Git 分发：在本目录运行 `npm pack` 会生成一个 tarball，可经绝对路径（或 `https:` URL）安装；由于本仓库没有根 `package.json`，克隆本仓库后还可以用 Git 加子目录选择器安装。只有路径/`link:` 这条路线不需要 registry，依赖由宿主提供；tarball 或 Git 安装还会从 registry 解析它唯一声明的依赖 `@deepseek-ai/schemastery@3.18.5`，因此需要可达的 registry，或宿主上已存在该依赖：
 
 ```sh
 npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)

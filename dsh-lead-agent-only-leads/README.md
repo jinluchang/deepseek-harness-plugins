@@ -71,9 +71,12 @@ delete that row from the profile patch (or re-save the preset in the Web editor)
 after upgrading. The bundle patch itself already carries the current `standard`
 rows and configs.
 
-Beyond a local checkout, the bundle is distributable without a registry: `npm pack` in this directory
+Beyond a local checkout, the bundle travels by tarball or Git: `npm pack` in this directory
 produces a tarball that installs by absolute path (or an `https:` URL), and a clone installs by Git with a
-subdirectory selector, because this repository has no root `package.json`:
+subdirectory selector, because this repository has no root `package.json`. Only the path/`link:` route is
+registry-free, because the Host supplies the dependency; a tarball or Git install also resolves its one
+declared dependency, `@deepseek-ai/schemastery@3.18.5`, from the registry, so it needs a reachable
+registry, or that dependency already present on the host:
 
 ```sh
 npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
