@@ -11,10 +11,23 @@
 该插件是一个 profile 插件包，而不是工作区包。请从仓库根目录用 DSH 插件管理器安装，它会把该目录链接进当前 profile 并记录插件包行：
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/plugins/dsh-backend-restart"
+pnpm dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
 ```
 
-在运行中的 GUI 会话里，同一步骤是 `plugin_manager` 工具，传入 `action: install_bundle` 和 `target: <absolute path to plugins/dsh-backend-restart>`；`application: "applied"` 表示 profile 已更新、无需重启。插件随后会在下一次整页加载时载入。
+在运行中的 GUI 会话里，同一步骤是 `plugin_manager` 工具，传入 `action: install_bundle` 和 `target: <absolute path to dsh-backend-restart>`；`application: "applied"` 表示 profile 已更新、无需重启。插件随后会在下一次整页加载时载入。
+
+除本地检出外，该插件包也可以不经注册表分发：在本目录运行 `npm pack` 会生成一个 tarball，可经绝对路径（或 `https:` URL）安装；由于本仓库没有根 `package.json`，克隆本仓库后还可以用 Git 加子目录选择器安装：
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+本仓库不会向 npm 注册表发布任何内容。
 
 ## 使用
 
@@ -24,8 +37,8 @@ pnpm dsh plugin --profile web add link:"$PWD/plugins/dsh-backend-restart"
 
 ## 校验
 
-- 自检：`node plugins/dsh-backend-restart/verify.mjs` 会解析 manifest 和两个半边，然后断言通道约定、拒绝规则、carrier 作用域回退、supervisor 的标志与探测，以及 spawn 失败分类。共 13 项检查，封闭式：它从不重启任何东西。
-- 语法与 manifest：`node --check plugins/dsh-backend-restart/index.js plugins/dsh-backend-restart/restart-helper.js` 以及 `node -e "JSON.parse(require('node:fs').readFileSync('plugins/dsh-backend-restart/package.json'))"`。
+- 自检：`node dsh-backend-restart/verify.mjs` 会解析 manifest 和两个半边，然后断言通道约定、拒绝规则、carrier 作用域回退、supervisor 的标志与探测，以及 spawn 失败分类。共 13 项检查，封闭式：它从不重启任何东西。
+- 语法与 manifest：`node --check dsh-backend-restart/index.js dsh-backend-restart/restart-helper.js` 以及 `node -e "JSON.parse(require('node:fs').readFileSync('dsh-backend-restart/package.json'))"`。
 - 无 Host 时的 supervisor 行为：supervisor 是普通的 ESM 模块；它导出的 `parseArguments`、`probePort`、`waitForSlot`、`startSuccessor` 和 `supervise` 可以通过在命令行上传入标志、读取模块头部记录的退出码来直接演练。
 - 无浏览器时的 Host 半边：插件的 `apply()` 只需要一个暴露 `connection.rpc`（以及可选的 `webServer`、`webServer.getOrigin`、`appExit`）的 Cordis context，因此用一个假 context 就能断言 `status` 与 `restart` 响应、各种拒绝情形，以及它记录的启动命令。
 - 完整循环：在一个备用端口上、用独立的 `DSH_HOME` 运行隔离实例，从该 profile 铸造一个浏览器会话 cookie，调用 `POST /backend-restart/restart`，并观察 pid 在 down/up 过渡中发生变化。
@@ -47,3 +60,11 @@ pnpm dsh plugin --profile web add link:"$PWD/plugins/dsh-backend-restart"
 - Host 无法重新绑定自己的端口，所以重启永远是一次进程替换：记录下来的启动命令必须可重复执行，后继进程只继承前任的终端，而不继承它的监督关系。在会退出的 shell 里手工启动的后端不会再回来。
 - 后继进程继承前任的环境，包括 `DSH_HOME`，因此隔离实例在重启后仍保持隔离。
 - 两代进程不得共用一个 Harness home。supervisor 通过继承的 death pipe 观察并等待前任进程的死亡，而只要该 pipe 可读，单凭死亡就足以打开闸门，因此空闲端口并不能让后继提前启动。Host 半边总会传这个 pipe。端口空闲的宽限是对不传该 pipe 的启动器、以及运行中 pipe 失效的启动器所做的回退：它等待 6 秒，长于启动器自身 5 秒的强制退出上限，然后即使前任还活着也会启动后继，宁可短暂重叠也不要没有后继。活过自身强制退出上限的前任本已异常，因此该回退只是限定了重叠，而不是消除重叠。
+
+## 许可证
+
+本仓库的插件包按 **GPL-3.0-or-later** 授权。规范的 GNU GPL v3 文本以 [LICENSE](LICENSE) 随包提供；“or later”（或其后续版本）的授权体现在 `package.json` 的 `license` 字段和本声明中，而不在未改动的许可证文本里。
+
+Copyright (c) 2026 Luchang Jin.
+
+本仓库不会向 npm 注册表发布任何内容：安装插件包意味着使用本地检出、本地 `npm pack` 生成的 tarball，或指向本仓库的 Git URL。

@@ -69,13 +69,13 @@ const patch = readFileSync(new URL('./cordis.patch.yml', import.meta.url), 'utf8
 
 await check('the manifest names the bundle, its patch, and every runtime file', () => {
   assert.equal(packageJson.name, 'dsh-backend-restart')
-  assert.equal(packageJson.private, true)
+  assert.equal(packageJson.private, false)
   assert.equal(packageJson.type, 'module')
   assert.equal(packageJson.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(packageJson.dsh.client.platform, 'web')
   assert.deepEqual(packageJson.files, [
     'index.js', 'restart-helper.js', 'client.js', 'verify.mjs', 'cordis.patch.yml',
-    'locale/*.json', 'icon.svg', 'README.md', 'README.zh.md', 'CONTRACT.md',
+    'locale/*.json', 'icon.svg', 'LICENSE', 'README.md', 'README.zh.md', 'CONTRACT.md',
   ])
   assert.deepEqual(Object.keys(packageJson.exports).sort(), ['.', './client', './icon', './locale/*.json', './package.json'])
   for (const entry of packageJson.files) {

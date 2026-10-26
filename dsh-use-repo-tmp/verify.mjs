@@ -38,7 +38,7 @@ const { apply, inject, name, scratchText, workspaceRoot } = plugin
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** Files the manifest promises; the check below also proves nothing else is here. */
-const SHIPPED_FILES = ['index.js', 'verify.mjs', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'CONTRACT.md']
+const SHIPPED_FILES = ['index.js', 'verify.mjs', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md', 'CONTRACT.md']
 
 let checks = 0
 let failures = 0
@@ -155,9 +155,9 @@ check('the module exports its stable name, its single required service, and no d
   assert.equal(plugin.apply, apply)
 })
 
-check('the manifest is a private ESM bundle with load-bearing export targets', () => {
+check('the manifest is a published ESM bundle with load-bearing export targets', () => {
   assert.equal(manifest.name, 'dsh-use-repo-tmp')
-  assert.equal(manifest.private, true)
+  assert.equal(manifest.private, false)
   assert.equal(manifest.type, 'module')
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(manifest.main, undefined)

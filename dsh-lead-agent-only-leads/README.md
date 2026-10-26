@@ -71,6 +71,21 @@ delete that row from the profile patch (or re-save the preset in the Web editor)
 after upgrading. The bundle patch itself already carries the current `standard`
 rows and configs.
 
+Beyond a local checkout, the bundle is distributable without a registry: `npm pack` in this directory
+produces a tarball that installs by absolute path (or an `https:` URL), and a clone installs by Git with a
+subdirectory selector, because this repository has no root `package.json`:
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+Nothing here is published to an npm registry.
+
 ## Use
 
 Start a new session and choose the `Lead agent only leads` preset (the composer's preset
@@ -209,3 +224,42 @@ would make the teammates non-standard too; the reduction has to happen per Agent
 scope at runtime. `CONTRACT.md` explains the seam, what it can and cannot do, and
 why the catalog refuses `wait_agent` with a guard while keeping `subagent` and
 `list_subagent_models` as ordinary whitelist rows hidden by the restriction.
+
+## License and third-party notices
+
+This bundle is licensed under **GPL-3.0-or-later**; the canonical GNU GPL v3 text ships with it as
+[LICENSE](LICENSE), and the "or later" grant lives in the `license` field of `package.json` and in this
+notice, not in the unchanged license text.
+
+Copyright (c) 2026 Luchang Jin.
+
+`cordis.patch.yml` embeds an 11-line plan-mode system-prompt section reproduced unchanged from DeepSeek
+Harness, which is licensed under the MIT License (Copyright (c) 2026 DeepSeek). The MIT License applies to
+that embedded text alone and does not extend to the rest of this bundle. Provenance:
+`packages/bundle/web-app/presets/standard.patch.yml:55`, 2,361 bytes, sha256
+`eab4c75ea563561b1b70dec5ec228564281b979f3b610ec0adacadb435c08951`. See
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the complete notice; the MIT text follows.
+
+```text
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

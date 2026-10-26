@@ -1,6 +1,6 @@
 # Frozen interface: `dsh-backend-restart`
 
-Package directory: `plugins/dsh-backend-restart/` (installed into the active DSH profile as a bundle).
+Package directory: `dsh-backend-restart/` (installed into the active DSH profile as a bundle).
 
 ## Why this exists
 

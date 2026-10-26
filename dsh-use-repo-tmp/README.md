@@ -91,6 +91,21 @@ The plugin then loads on the next full page load; no build step is needed, becau
 plain ESM loaded from source. In a running GUI session the same step is the `plugin_manager`
 tool with `action: install_bundle` and `target: "$PLUGIN"`.
 
+Beyond a local checkout, the bundle is distributable without a registry: `npm pack` in this directory
+produces a tarball that installs by absolute path (or an `https:` URL), and a clone installs by Git with a
+subdirectory selector, because this repository has no root `package.json`:
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+Nothing here is published to an npm registry.
+
 ## Verify
 
 ```sh
@@ -156,3 +171,14 @@ Repositories that adopt this convention should ignore the directory:
 | `verify.mjs` | Hermetic self-check of the manifest, the patch, and both registrations. |
 | `README.md` | This document. |
 | `CONTRACT.md` | The frozen surface of the bundle. |
+
+## License
+
+The bundles in this repository are licensed under **GPL-3.0-or-later**. The canonical GNU GPL v3 text
+ships with the package as [LICENSE](LICENSE); the "or later" grant lives in the `license` field of
+`package.json` and in this notice, not in the unchanged license text.
+
+Copyright (c) 2026 Luchang Jin.
+
+Nothing here is published to an npm registry: installing a bundle means a local checkout, a local
+`npm pack` tarball, or a Git URL pointing at this repository.

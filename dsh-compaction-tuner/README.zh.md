@@ -46,6 +46,19 @@ pnpm dsh plugin --profile web add link:"$PWD/dsh-compaction-tuner"
 
 兄弟插件包的 README 指出，首次安装需要重启一次宿主，客户端侧才会被发现；并且用 `link:` 链接的客户端插件包在重新构建后需要重新加载页面。本插件的这套 reload/HMR 行为**未**重新验证（见限制）。
 
+除本地检出外，该插件包也可以不经注册表分发：在本目录运行 `npm pack` 会生成一个 tarball，可经绝对路径（或 `https:` URL）安装；由于本仓库没有根 `package.json`，克隆本仓库后还可以用 Git 加子目录选择器安装：
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+本仓库不会向 npm 注册表发布任何内容。
+
 ## 使用
 
 打开设置（侧边栏底部的账号菜单，然后选择**设置**），再选择**压缩调优**——它是最后一行导航项。页面为每个受管选项显示一个控件，顺序如下。*接受范围*列是宿主强制执行的允许范围（或 `compaction-basic` 在加载时强制执行的范围，标记为*上游*）；*代码默认值*列是上游 `compaction-basic` 解析时的回退值。**这个代码默认值也正是本次安装所运行的值**：插件包不写入任何种子值，因此调优器存储的调优从这些默认值开始，页面会一直显示它们，直到某个值被编辑并保存。
@@ -222,3 +235,11 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-compaction-tuner/verify.
 - **重启操作是一个软依赖。** 它调用 `dsh-backend-restart` 的通道，不从该包导入任何内容；没有该包的部署仍会加载本插件，并显示手动重启文案。
 - **尚未解决的测量问题。** 首轮处理耗时以及重复 `configEditor.edit` 调用的批处理方式，由验证运行从经验上给出答案（一次处理，在 app-ready 后约 262 ms，以及逐字节相同的第二次启动）；活会话情况、并发重新调优处理在套件固定的合并（coalescing）之外的恰好一次行为，以及 `link:` 链接的客户端插件包的 HMR，仍然是未决问题。
 - **没有 `node_modules`。** 如果无法从插件的任何锚点解析出 `@deepseek-ai/schemastery`，就不存在设置命名空间，页面会显示不可用提示；宿主侧仍然推送原始值。
+
+## 许可证
+
+本仓库的插件包按 **GPL-3.0-or-later** 授权。规范的 GNU GPL v3 文本以 [LICENSE](LICENSE) 随包提供；“or later”（或其后续版本）的授权体现在 `package.json` 的 `license` 字段和本声明中，而不在未改动的许可证文本里。
+
+Copyright (c) 2026 Luchang Jin.
+
+本仓库不会向 npm 注册表发布任何内容：安装插件包意味着使用本地检出、本地 `npm pack` 生成的 tarball，或指向本仓库的 Git URL。

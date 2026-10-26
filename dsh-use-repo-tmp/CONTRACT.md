@@ -2,7 +2,7 @@
 
 Frozen interface of the `use-repo-tmp` bundle. Package directory:
 `dsh-use-repo-tmp/` in this plugins workspace (installed into the active DSH profile as a
-bundle via `link:`).
+bundle via `link:`, a tarball, or a Git URL).
 
 ## Why this exists
 

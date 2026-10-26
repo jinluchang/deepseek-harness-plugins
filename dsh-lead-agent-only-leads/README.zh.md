@@ -35,6 +35,19 @@ plugin_manager({ action: "install_bundle", target: "/path/to/deepseek-harness-pl
 
 **升级已安装的 profile。** Web 编辑器会把一整行 `preset-lead-agent-only-leads`（包含其 `config.plugins` 列表）写入 profile 自己的 `cordis.patch.yml`，而那一用户层会按 id 覆盖插件包行。以更早的插件包版本保存的行会保留已退役的 `tool-subagent-list-agents` 行和旧的 `modelSelectionSettings` 配置，因此升级后请从 profile 补丁中删除该行（或在 Web 编辑器中重新保存该预设）。插件包补丁本身已经带有当前的 `standard` 行与配置。
 
+除本地检出外，该插件包也可以不经注册表分发：在本目录运行 `npm pack` 会生成一个 tarball，可经绝对路径（或 `https:` URL）安装；由于本仓库没有根 `package.json`，克隆本仓库后还可以用 Git 加子目录选择器安装：
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+本仓库不会向 npm 注册表发布任何内容。
+
 ## 使用
 
 启动新会话并选择 `Lead agent only leads` 预设（输入框的预设位显示为 *Lead 只负责带领*）。Lead 会负责委派：给它一个任务，它会向 teammate 交代简报，然后立刻回到你这里。Teammate 的报告会作为新的轮次到达，因此工作还在进行时你可以继续对话。
@@ -96,3 +109,35 @@ node verify.mjs
 ## 为何如此设计
 
 该预设刻意复制 `standard` 插件列表，而不是把自己收窄。teammate 会继承 Lead 的预设代际，因此一个狭窄的预设会让 teammate 也变得非标准；缩减必须在运行时的按 Agent 作用域上发生。`CONTRACT.md` 解释了该 seam、它能做什么与不能做什么，以及为什么 catalog 用守卫拒绝 `wait_agent`，却把 `subagent` 与 `list_subagent_models` 作为被限制隐藏的普通 whitelist 行保留。
+
+## 许可证与第三方声明
+
+本插件包按 **GPL-3.0-or-later** 授权；规范的 GNU GPL v3 文本以 [LICENSE](LICENSE) 随包提供，“or later”（或其后续版本）的授权体现在 `package.json` 的 `license` 字段和本声明中，而不在未改动的许可证文本里。
+
+Copyright (c) 2026 Luchang Jin.
+
+`cordis.patch.yml` 原样嵌入了 DeepSeek Harness 的一段 11 行 plan 模式系统提示词；DeepSeek Harness 以 MIT 许可证授权（Copyright (c) 2026 DeepSeek）。MIT 许可证仅适用于这段嵌入文本，不延伸到本插件包的其余部分。出处：`packages/bundle/web-app/presets/standard.patch.yml:55`，2,361 字节，sha256 `eab4c75ea563561b1b70dec5ec228564281b979f3b610ec0adacadb435c08951`。完整声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)；下方为 MIT 全文。
+
+```text
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

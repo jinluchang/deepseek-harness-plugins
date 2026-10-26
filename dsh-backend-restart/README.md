@@ -16,12 +16,27 @@ The plugin is a profile bundle, not a workspace package. Install it from the rep
 Plugin Manager, which links the directory into the active profile and records the bundle row:
 
 ```sh
-pnpm dsh plugin --profile web add link:"$PWD/plugins/dsh-backend-restart"
+pnpm dsh plugin --profile web add link:"$PWD/dsh-backend-restart"
 ```
 
 In a running GUI session the same step is the `plugin_manager` tool with `action: install_bundle` and
-`target: <absolute path to plugins/dsh-backend-restart>`; `application: "applied"` means the profile changed
+`target: <absolute path to dsh-backend-restart>`; `application: "applied"` means the profile changed
 and no restart was needed. The plugin then loads on the next full page load.
+
+Beyond a local checkout, the bundle is distributable without a registry: `npm pack` in this directory
+produces a tarball that installs by absolute path (or an `https:` URL), and a clone installs by Git with a
+subdirectory selector, because this repository has no root `package.json`:
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+Nothing here is published to an npm registry.
 
 ## Use
 
@@ -36,11 +51,11 @@ argv, or a launcher that never exits).
 
 ## Verify
 
-- Self-check: `node plugins/dsh-backend-restart/verify.mjs` parses the manifest and both halves, then asserts
+- Self-check: `node dsh-backend-restart/verify.mjs` parses the manifest and both halves, then asserts
   the channel contract, the refusal rules, the carrier-scope fallback, the supervisor's flags and probes, and
   the spawn-failure classification. Thirteen checks, hermetic: it never restarts anything.
-- Syntax and manifest: `node --check plugins/dsh-backend-restart/index.js plugins/dsh-backend-restart/restart-helper.js`
-  and `node -e "JSON.parse(require('node:fs').readFileSync('plugins/dsh-backend-restart/package.json'))"`.
+- Syntax and manifest: `node --check dsh-backend-restart/index.js dsh-backend-restart/restart-helper.js`
+  and `node -e "JSON.parse(require('node:fs').readFileSync('dsh-backend-restart/package.json'))"`.
 - Supervisor behavior without a Host: the supervisor is a plain ESM module; its exported
   `parseArguments`, `probePort`, `waitForSlot`, `startSuccessor`, and `supervise` are exercised directly by
   passing flags on the command line and reading the exit codes documented in the module header.
@@ -77,3 +92,14 @@ argv, or a launcher that never exits).
   6 seconds, longer than the launcher's own 5 second forced-exit bound, and then starts the successor even if
   the predecessor is alive, preferring a short overlap to no successor at all. A predecessor that outlives its
   own forced-exit bound is already abnormal, so the fallback bounds the overlap rather than removing it.
+
+## License
+
+The bundles in this repository are licensed under **GPL-3.0-or-later**. The canonical GNU GPL v3 text
+ships with the package as [LICENSE](LICENSE); the "or later" grant lives in the `license` field of
+`package.json` and in this notice, not in the unchanged license text.
+
+Copyright (c) 2026 Luchang Jin.
+
+Nothing here is published to an npm registry: installing a bundle means a local checkout, a local
+`npm pack` tarball, or a Git URL pointing at this repository.

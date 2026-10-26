@@ -78,6 +78,21 @@ The sibling bundle's README states that a first install needs one Host restart f
 be discovered, and that a `link:`ed client bundle needs a page reload after a rebuild. That reload/HMR
 behaviour was **not** re-verified for this plugin (see Limitations).
 
+Beyond a local checkout, the bundle is distributable without a registry: `npm pack` in this directory
+produces a tarball that installs by absolute path (or an `https:` URL), and a clone installs by Git with a
+subdirectory selector, because this repository has no root `package.json`:
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+Nothing here is published to an npm registry.
+
 ## Use
 
 Open Settings (the account menu at the bottom of the sidebar, then **Settings**) and choose
@@ -567,3 +582,14 @@ exercised on a live profile.
 - **No `node_modules`.** If `@deepseek-ai/schemastery` cannot be resolved from any of the plugin's
   anchors, there is no settings namespace and the page shows the unavailable note; the host half still
   pushes raw values.
+
+## License
+
+The bundles in this repository are licensed under **GPL-3.0-or-later**. The canonical GNU GPL v3 text
+ships with the package as [LICENSE](LICENSE); the "or later" grant lives in the `license` field of
+`package.json` and in this notice, not in the unchanged license text.
+
+Copyright (c) 2026 Luchang Jin.
+
+Nothing here is published to an npm registry: installing a bundle means a local checkout, a local
+`npm pack` tarball, or a Git URL pointing at this repository.

@@ -56,6 +56,19 @@ pnpm dsh plugin --profile web add link:"$PLUGIN"
 
 插件随后会在下一次整页加载时载入；无需构建步骤，因为该插件包是从源码加载的普通 ESM。在运行中的 GUI 会话里，同一步骤是 `plugin_manager` 工具，传入 `action: install_bundle` 和 `target: "$PLUGIN"`。
 
+除本地检出外，该插件包也可以不经注册表分发：在本目录运行 `npm pack` 会生成一个 tarball，可经绝对路径（或 `https:` URL）安装；由于本仓库没有根 `package.json`，克隆本仓库后还可以用 Git 加子目录选择器安装：
+
+```sh
+npm pack    # -> dsh-<name>-<version>.tgz (local only; nothing is published)
+```
+
+```js
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-<name>-<version>.tgz" })
+plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-<name>" })
+```
+
+本仓库不会向 npm 注册表发布任何内容。
+
 ## 校验
 
 ```sh
@@ -97,3 +110,11 @@ node dsh-use-repo-tmp/verify.mjs
 | `verify.mjs` | 针对 manifest、补丁和两处注册的封闭式自检。 |
 | `README.md` | 本文件。 |
 | `CONTRACT.md` | 该插件包冻结的接口面。 |
+
+## 许可证
+
+本仓库的插件包按 **GPL-3.0-or-later** 授权。规范的 GNU GPL v3 文本以 [LICENSE](LICENSE) 随包提供；“or later”（或其后续版本）的授权体现在 `package.json` 的 `license` 字段和本声明中，而不在未改动的许可证文本里。
+
+Copyright (c) 2026 Luchang Jin.
+
+本仓库不会向 npm 注册表发布任何内容：安装插件包意味着使用本地检出、本地 `npm pack` 生成的 tarball，或指向本仓库的 Git URL。
