@@ -1,5 +1,7 @@
 # deepseek-harness-plugins
 
+English | [中文](README.zh.md)
+
 Four standalone DeepSeek Harness (DSH) plugin bundles.
 Each one installs into a DSH host as a profile bundle, carries its own English and Simplified Chinese
 README, and ships a hermetic verification suite that runs without a live Host.
