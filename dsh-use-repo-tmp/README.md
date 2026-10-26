@@ -1,5 +1,7 @@
 # `dsh-use-repo-tmp`
 
+English | [中文](README.zh.md)
+
 Prompt guidance that tells the model to put scratch files, temporary downloads, and generated
 artifacts under `tmp/` at the root of the workspace — the current working directory — instead
 of `/tmp`, and resolves that directory for the session in the runtime-context snapshot.

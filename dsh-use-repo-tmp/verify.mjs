@@ -38,7 +38,7 @@ const { apply, inject, name, scratchText, workspaceRoot } = plugin
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** Files the manifest promises; the check below also proves nothing else is here. */
-const SHIPPED_FILES = ['index.js', 'verify.mjs', 'cordis.patch.yml', 'README.md', 'CONTRACT.md']
+const SHIPPED_FILES = ['index.js', 'verify.mjs', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'CONTRACT.md']
 
 let checks = 0
 let failures = 0

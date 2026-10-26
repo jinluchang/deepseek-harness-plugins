@@ -17,6 +17,7 @@
     "locale/*.json",
     "CONTRACT.md",
     "README.md",
+    "README.zh.md",
     "verify.mjs"
   ],
   "scripts": {

@@ -1,5 +1,7 @@
 # `dsh-backend-restart`
 
+English | [中文](README.zh.md)
+
 A DSH plugin that adds a **Restart backend** row at the end of the **General** settings page, just
 above the version information. The action asks the running Host for permission to replace itself and then
 relaunches the same command with the same working directory and environment, so the backend comes back on the

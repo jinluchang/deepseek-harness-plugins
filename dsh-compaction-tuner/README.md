@@ -1,5 +1,7 @@
 # `dsh-compaction-tuner`
 
+English | [中文](README.zh.md)
+
 A DSH plugin that puts **one** control in Settings for the compaction policy of **every agent
 preset in the active profile**. A profile usually declares several
 `@deepseek-ai/dsh-agent-preset` rows, each with its own `compaction-basic` child; this plugin owns the

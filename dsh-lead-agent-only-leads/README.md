@@ -1,5 +1,7 @@
 # dsh-lead-agent-only-leads
 
+English | [中文](README.zh.md)
+
 A DeepSeek Harness bundle that adds a **Lead agent only leads** preset: a Team Lead
 that hands every job to teammates and stays available to the user. By default it
 cannot run shell commands, cannot read or search the workspace, cannot view

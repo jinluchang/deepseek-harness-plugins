@@ -75,7 +75,7 @@ await check('the manifest names the bundle, its patch, and every runtime file', 
   assert.equal(packageJson.dsh.client.platform, 'web')
   assert.deepEqual(packageJson.files, [
     'index.js', 'restart-helper.js', 'client.js', 'verify.mjs', 'cordis.patch.yml',
-    'locale/*.json', 'icon.svg', 'README.md', 'CONTRACT.md',
+    'locale/*.json', 'icon.svg', 'README.md', 'README.zh.md', 'CONTRACT.md',
   ])
   assert.deepEqual(Object.keys(packageJson.exports).sort(), ['.', './client', './icon', './locale/*.json', './package.json'])
   for (const entry of packageJson.files) {
