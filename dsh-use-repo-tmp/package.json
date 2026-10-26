@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-use-repo-tmp",
-  "version": "1.0.0",
+  "version": "0.2.1-rc.3",
   "private": true,
   "type": "module",
   "description": "Prompt guidance that points scratch files at <workspace>/tmp instead of /tmp.",

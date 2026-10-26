@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-compaction-tuner",
-  "version": "1.0.0",
+  "version": "0.2.1-rc.3",
   "private": true,
   "type": "module",
   "description": "One settings page that tunes compaction-basic for every agent preset in the active profile.",

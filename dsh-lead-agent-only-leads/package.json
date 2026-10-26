@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-lead-agent-only-leads",
-  "version": "1.0.0",
+  "version": "0.2.1-rc.3",
   "private": true,
   "type": "module",
   "description": "Lead agent only leads: a preset whose Team Lead delegates every job and never waits on a teammate, plus the host plugin that enforces that contract.",
