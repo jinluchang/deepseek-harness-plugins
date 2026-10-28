@@ -68,7 +68,7 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
 ## 说明
 
 - `dsh-compaction-tuner` 会在首次启动时把调优写入 profile 的预设行；卸载它并不会回退这一改动。详见其 [README](dsh-compaction-tuner/README.md) 中的 *安装行为变更*（Install behaviour change）。
-- `dsh-lead-agent-only-leads` 增加的预设作用于**新会话**：重启 Host，然后在启动会话时选择 **Lead 只负责带领**。
+- `dsh-lead-agent-only-leads` 增加的预设在识别时读取会话**当前**运行的预设，而不是它的创建头：一个切换到或恢复到 **Lead 只负责带领** 的会话会直接受到约束，无需重启。安装该插件包本身仍需要重启一次 Host 以加载其补丁。
 
 ## 校验
 
@@ -79,7 +79,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
-node dsh-lead-agent-only-leads/verify.mjs    # 45/45 checks passed
+node dsh-lead-agent-only-leads/verify.mjs    # 58/58 checks passed
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 

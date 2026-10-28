@@ -59,8 +59,8 @@ plugin_manager({ action: "install_bundle", target: "/path/to/deepseek-harness-pl
 ```
 
 That registers the bundle in the profile, links the package, and appends its
-patch. Bundles apply to **new sessions**: restart the Host, then pick
-**Lead agent only leads** when starting a session in the Web UI.
+patch. Restart the Host so the new patch is loaded, then pick **Lead agent only
+leads** when starting a session in the Web UI.
 
 **Upgrading an installed profile.** The Web editor writes a full
 `preset-lead-agent-only-leads` row (its `config.plugins` list included) into the
@@ -105,6 +105,34 @@ which files a change touches, how the result should be verified). The Lead then 
 its turn: the report arrives as its next turn, and it splits and briefs the real work
 from what that report establishes. Nothing blocks: the Lead never waits on the scout.
 
+## How a Lead is identified
+
+Two live facts decide whether an Agent gets the contract: the preset its session
+runs **right now**, and its role in the Team. The preset is read from the Host's
+live preset projection for the session (`presetForSession`), not from the
+session's creation header. The header records what the session was created under
+and is never re-stamped, so a session created as `standard` and later resumed or
+re-presetted under **Lead agent only leads** still carries `standard` in its
+header for its whole life even though every turn runs under the Lead
+composition. Trusting that header is what once let such a Lead run unrestricted
+for an entire session; restarting DSH did not heal it, it merely started a
+different session whose header named the Lead preset.
+
+Those lookups rely on Host services that can start after this plugin does, so the
+plugin resolves them lazily, re-checks every Agent when they appear, and
+re-reconciles whenever a session switches preset. While the authoritative preset
+cannot be read it fails closed rather than guessing: "cannot tell yet" is never
+treated as "not this preset", a Lead that is already constrained is not released
+because a lookup was temporarily unavailable, and an Agent that could be the
+Lead is kept constrained and re-checked instead of being left unrestricted. If
+the preset then turns out to be another one, that Agent is released. That hold
+applies only where the composition could still provide the preset: a Host that
+never mounts the preset registry (the headless bundle) has no preset to enforce,
+so its Agents are left alone rather than held restricted, while the Web profile,
+which does mount it, keeps the first-turn guarantee. Once the decision lands, the
+next step's tool list reflects it — no Host restart needed. (A step already in
+flight finishes first.)
+
 ## Settings page
 
 The bundle ships a **Lead agent only leads** page under Settings (section id
@@ -141,8 +169,8 @@ The quote updates with every toggle, because it is computed from the same live s
 render.
 
 Toggles are **volatile**: an edit is committed into the running config without
-remounting the plugin, so it applies to **Leads created afterwards**; a Lead
-that is already running keeps the surface it was constrained with. The first
+remounting the plugin, so it applies to **Leads constrained afterwards**; a Lead
+that is already constrained keeps the surface it was constrained with. The first
 install needs one Host restart for the client half to be discovered; later
 `client.js` edits hot-reload.
 
@@ -201,7 +229,7 @@ restrict is pruned rather than fatal; an explicit empty `leadTools` keeps
 node verify.mjs
 ```
 
-Forty-five checks on a checkout whose `js-yaml` is reachable: the pure helpers,
+Fifty-eight checks on a checkout whose `js-yaml` is reachable: the pure helpers,
 the `Config` schema shape, the catalog and its defaults (the reading tools off,
 `exit_plan_mode` and `present` on, in catalog order), the config-aware contract text
 (the frozen no-argument bytes and hash, the no-plan-mode invariant, the merged
@@ -211,7 +239,15 @@ shell/writer/reading claims, and the text the plugin
 actually registers under a delegation opt-in override shape), the plugin's
 behaviour against a model of the two scope layers (preset-inherited vs.
 Agent-owned, including a scope that does not mount `exit_plan_mode`), the
-toggle→keep/deny mapping including the all-off and unknown-names cases, a
+toggle→keep/deny mapping including the all-off and unknown-names cases, the
+classification contract (the creation header never decides, the Session
+projection does, a registry that activates after apply re-reconciles and releases
+a genuine non-Lead, the selection payload and `session/event` both re-reconcile,
+a selection observed before the Agent is published applies at creation and its
+memory is bounded — consumed once, evicted oldest-first past 64 entries, dropped
+on disposal — with a one-shot unresolved warning re-armed by a resolved decision,
+and fail-closed follows composition capability so a registry-less Host is not
+over-restricted), a
 deep-parse of the patch that also proves this preset mounts exactly the shipped
 `standard` rows and configs, and a real load of `client.js` through a stubbed
 module loader

@@ -242,6 +242,15 @@ const DENIALS = Object.freeze({
  */
 const RESTRICT_ATTEMPTS = 8
 
+/**
+ * Upper bound for selections remembered before their Agent is published. The
+ * window such an entry covers is the gap between a selection event and the
+ * Agent's publication; a Session that never publishes an Agent would otherwise
+ * leave its entry behind forever, so oldest-first eviction keeps a long-running
+ * Host bounded. 64 covers any thinkable boot burst.
+ */
+const EARLY_SELECTION_LIMIT = 64
+
 /** Plugin name reported to the Host loader. */
 export const name = 'lead-agent-only-leads'
 
@@ -508,17 +517,86 @@ function warn(ctx, message) {
 }
 
 /**
- * Read the preset an Agent is composed under, preferring the live binding.
+ * Resolve the preset an Agent currently runs under.
+ *
+ * The authoritative source is the `agentPreset` Session projection
+ * (`presets.presetForSession`), which folds the immutable creation header
+ * forward through every recorded `agent-preset/selected` event. The creation
+ * header alone is NOT the current preset: a blank Session can be re-presetted
+ * before its first turn (a restart resumes the last blank Session, and the Web
+ * composer reuses one), and the log then records a preset the header does not
+ * name.
+ *
+ * Sources, strongest first, all read live:
+ * 1. the Session projection above;
+ * 2. the selection event the caller just observed (`hint`);
+ * 3. the registry's composition binding for the live Agent (`composedPreset`).
+ * When none can answer, the result is `resolved: false` and the caller must
+ * fail closed instead of treating "cannot tell" as "not this preset".
  * @param {object} agent - the Agent to inspect.
- * @param {object|undefined} presets - the Agent-preset registry, when mounted.
- * @returns {string|undefined} the bound preset id.
+ * @param {object|undefined} presets - the Agent-preset registry, read lazily.
+ * @param {string} [hint] - preset id from an `agent-preset/selected` event.
+ * @returns {{resolved: boolean, id: string|null}} the classification.
  */
-function presetOf(agent, presets) {
-  if (presets !== undefined && typeof presets.composedPreset === 'function') {
-    const bound = presets.composedPreset(agent.ctx)
-    if (bound !== undefined) return bound
+function presetOf(agent, presets, hint) {
+  let projected
+  if (presets !== undefined && agent.session !== undefined && typeof presets.presetForSession === 'function') {
+    try {
+      projected = { readable: true, id: presets.presetForSession(agent.session) ?? null }
+    } catch {
+      // Unreadable projection: the sources below may still answer.
+      projected = { readable: false, id: null }
+    }
+    if (projected.readable && projected.id !== null) return { resolved: true, id: projected.id }
   }
-  return agent.session?.header?.agentPreset
+  if (typeof hint === 'string') return { resolved: true, id: hint }
+  if (presets !== undefined && typeof presets.composedPreset === 'function') {
+    try {
+      const bound = presets.composedPreset(agent.ctx)
+      if (bound !== undefined) return { resolved: true, id: bound }
+    } catch {
+      // Unreadable binding: the projection's null below still resolves it.
+    }
+  }
+  if (projected?.readable === true) return { resolved: true, id: projected.id }
+  return { resolved: false, id: null }
+}
+
+/**
+ * Whether the Host composition could still provide the preset registry.
+ *
+ * Fail-closed treatment must not outlive the capability that justifies it. The
+ * headless bundle deliberately composes no preset roster
+ * (`packages/bundle/headless/src/index.ts` — it refuses to adopt any Session
+ * that records a preset), so in such a profile an unresolvable preset will
+ * never resolve, and reading it as "could be a Lead" would restrict every root
+ * Agent forever. The Loader's entry tree IS the composition: a row is present
+ * in it before that row starts, so an enabled `@deepseek-ai/dsh-agent-preset-registry`
+ * row means the registry may still become ACTIVE, while no such row means the
+ * composition never provides it.
+ *
+ * A Host without a Loader (an embedded composition, or a test fixture) cannot
+ * be inspected and keeps the conservative `true`: the Web first-turn guarantee
+ * must never depend on this probe succeeding.
+ * @param {object} ctx - the plugin context.
+ * @returns {boolean} true when the registry is or may become available.
+ */
+function presetServiceExpected(ctx) {
+  if (ctx.get('agentPresets') !== undefined) return true
+  const loader = ctx.get('loader')
+  if (loader === undefined || typeof loader.entries !== 'function') return true
+  try {
+    for (const entry of loader.entries()) {
+      // A group row mounts no module of its own, and a disabled row never starts.
+      if (entry?.options?.group === true || entry?.disabled === true) continue
+      const entryName = entry?.options?.name
+      if (typeof entryName === 'string' && entryName.includes('dsh-agent-preset-registry')) return true
+    }
+    return false
+  } catch {
+    // An unreadable tree cannot prove the registry is absent.
+    return true
+  }
 }
 
 /**
@@ -678,9 +756,42 @@ export function apply(ctx, config = {}) {
 
   /** Agents already constrained, mapped to the disposers that undo it. */
   const constrained = new Map()
+  /** Agents already warned that the authoritative preset is not resolvable. */
+  const warnedUnresolved = new Set()
+  /** Selections observed before their Agent was published, keyed by Session id. */
+  const earlySelections = new Map()
 
-  const presets = ctx.get('agentPresets')
-  const teams = ctx.get('agentTeams')
+  /**
+   * Remember a selection whose Agent is not published yet, evicting the oldest
+   * entry past the cap. Re-inserting moves the Session to the youngest slot.
+   * @param {string} sessionId - session the selection belongs to.
+   * @param {string} selected - the recorded preset id.
+   */
+  const rememberEarlySelection = (sessionId, selected) => {
+    earlySelections.delete(sessionId)
+    earlySelections.set(sessionId, selected)
+    while (earlySelections.size > EARLY_SELECTION_LIMIT) {
+      const oldest = earlySelections.keys().next().value
+      earlySelections.delete(oldest)
+    }
+  }
+
+  /**
+   * Consume (and so prune) the remembered selection for one Session.
+   * @param {string} sessionId - session whose Agent is being published.
+   * @returns {string|undefined} the remembered preset id, if any.
+   */
+  const takeEarlySelection = sessionId => {
+    const selected = earlySelections.get(sessionId)
+    earlySelections.delete(sessionId)
+    return selected
+  }
+
+  // `agentPresets`/`agentTeams` are deliberately NOT captured here. The preset
+  // registry is mounted late and initializes asynchronously, so a `ctx.get()` at
+  // apply time can legitimately miss it; a captured `undefined` would then be
+  // permanent. Both are read lazily per decision instead, and the injections
+  // below re-classify every live Agent once each service actually activates.
 
   // The bundle ships its own settings page, so suppress the auto-generated
   // generic config form for this same row; otherwise one namespace renders two
@@ -718,10 +829,43 @@ export function apply(ctx, config = {}) {
   /**
    * Bring one Agent in line with its current preset and Team role. Idempotent:
    * the same Agent is constrained once, and a preset change releases it again.
+   *
+   * The preset is resolved from the live services HERE, not from a handle
+   * captured at mount. When it cannot be resolved, this fails CLOSED: an Agent
+   * that may be a Lead by Team role keeps (or gets) the restriction, and only an
+   * Agent that is provably not a Lead is released. A missing handle is never
+   * read as "someone else's preset".
    * @param {object} agent - the Agent to reconcile.
+   * @param {string} [hint] - preset id from an `agent-preset/selected` event.
    */
-  const reconcile = agent => {
-    const wanted = presetOf(agent, presets) === presetId && isTeamLead(agent, teams)
+  const reconcile = (agent, hint) => {
+    const current = presetOf(agent, ctx.get('agentPresets'), hint)
+    const lead = isTeamLead(agent, ctx.get('agentTeams'))
+    if (!current.resolved) {
+      // Fail closed only while the Host could still provide the projection. A
+      // composition that never composes the registry has no preset to enforce,
+      // so keeping every root Agent restricted there would be a permanent
+      // overreach; a registry row that is present but not yet ACTIVE keeps the
+      // strict behaviour that makes the Web first turn safe.
+      if (!lead || !presetServiceExpected(ctx)) {
+        warnedUnresolved.delete(agent)
+        release(agent)
+        return
+      }
+      // Warn once per unresolved episode, even if this Agent already carries
+      // the restriction from an earlier episode; the set is what makes it once.
+      if (!warnedUnresolved.has(agent)) {
+        warnedUnresolved.add(agent)
+        warn(ctx, `${name}: the current Agent preset is not resolvable yet, so this potential Lead is kept restricted until the preset registry answers`)
+      }
+      if (constrained.has(agent)) return
+      constrained.set(agent, constrain(agent, config, ctx))
+      return
+    }
+    // A resolved decision ends the unresolved episode, whether it restricts or
+    // releases, so the warning is armed again if the service disappears later.
+    warnedUnresolved.delete(agent)
+    const wanted = current.id === presetId && lead
     if (!wanted) {
       release(agent)
       return
@@ -730,18 +874,60 @@ export function apply(ctx, config = {}) {
     constrained.set(agent, constrain(agent, config, ctx))
   }
 
+  /** Re-classify every live Agent, e.g. when an optional service arrives. */
+  const reconcileAll = () => {
+    for (const agent of ctx.agents.list()) reconcile(agent)
+  }
+
   ctx.effect(() => () => {
     for (const agent of [...constrained.keys()]) release(agent)
   }, `${name}: per-Agent restrictions`)
 
   for (const agent of ctx.agents.list()) reconcile(agent)
-  ctx.on('agent/created', ({ agent }) => reconcile(agent))
-  ctx.on('agent/disposed', ({ agent }) => release(agent))
-  // A live but unused Session can be re-presetted (the Web composer reuses a
-  // blank Session), so the preset bound at creation is not the last word.
-  ctx.on('agent-preset/selected', sessionId => {
-    const id = typeof sessionId === 'string' ? sessionId : sessionId?.id
-    const agent = id === undefined ? undefined : ctx.agents.get(id)
-    if (agent !== undefined) reconcile(agent)
+  ctx.on('agent/created', ({ agent }) => reconcile(agent, takeEarlySelection(agent.id)))
+  ctx.on('agent/disposed', ({ agent }) => {
+    // Drop both per-Agent bookkeepings: a disposed Agent must not stay
+    // referenced by the warning set, and a recycled object must be warned anew
+    // if its fresh episode is unresolved again.
+    earlySelections.delete(agent.id)
+    warnedUnresolved.delete(agent)
+    release(agent)
   })
+  // A live but unused Session can be re-presetted (the Web composer reuses a
+  // blank Session, and a restart resumes the last blank one), so the preset
+  // bound at creation is not the last word. The registry's re-emit carries the
+  // selection as its second argument.
+  ctx.on('agent-preset/selected', (sessionId, selected) => {
+    const id = typeof sessionId === 'string' ? sessionId : sessionId?.id
+    if (id === undefined) return
+    const hint = typeof selected === 'string' ? selected : undefined
+    const agent = ctx.agents.get(id)
+    if (agent !== undefined) {
+      reconcile(agent, hint)
+      return
+    }
+    // The setup-time selection can precede the Agent's publication.
+    if (hint !== undefined) rememberEarlySelection(id, hint)
+  })
+  // The selection is recorded in the Session log before some listeners observe
+  // the Agent, so reconciling on the session event covers that window too.
+  ctx.on('session/event', (session, event) => {
+    if (event?.type !== 'agent-preset/selected') return
+    const id = typeof session?.id === 'string' ? session.id : undefined
+    if (id === undefined) return
+    const hint = typeof event.data?.agentPreset === 'string' ? event.data.agentPreset : undefined
+    const agent = ctx.agents.get(id)
+    if (agent !== undefined) {
+      reconcile(agent, hint)
+      return
+    }
+    if (hint !== undefined) rememberEarlySelection(id, hint)
+  })
+  // Both services are optional and mount late with asynchronous activation, so
+  // the plugin may apply before either can be read. Re-classify when each one
+  // becomes available; `agentTeams` is intentionally not required, because a
+  // profile without the Team bundle still runs this plugin (a root Session is
+  // then the Lead by construction).
+  ctx.inject(['agentPresets'], () => reconcileAll())
+  ctx.inject(['agentTeams'], () => reconcileAll())
 }

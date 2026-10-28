@@ -43,6 +43,90 @@ shipped `standard` preset's.
 - A guard can only deny. Nothing after this plugin can turn the Lead's refusal
   to wait back into a permission.
 
+## How the plugin finds its Leads
+
+Two live facts decide whether an Agent gets the contract: the preset its Session
+currently runs, and its role in the Team.
+
+The preset comes from the **authoritative live projection**,
+`presets.presetForSession(session)` — the `agentPreset` Session projection, which
+the registry initializes from the creation header and advances on every
+`agent-preset/selected` event
+(`packages/preset/agent-preset-registry/src/session.ts:38-46`, read through
+`.../src/index.ts:89`). A session's header `agentPreset` is a **creation fact**,
+as the kernel says in its own words: "The header is only a creation fact; the
+presets plugin reconstructs a session's composition from the projection"
+(`packages/bundle/headless/src/index.ts:199-221`). It is stamped at creation and
+never re-stamped — not on resume, not when a blank session is re-presetted — so
+it must never decide the current preset. The plugin does not read it for
+classification at all.
+
+Two weaker **live** sources answer only when the projection yields no preset
+(unreadable, or read as `null`): the `agent-preset/selected` payload the registry
+re-emits as `(sessionId, agentPreset)`, and the registry's
+`composedPreset(agent.ctx)` binding for the live Agent. Both describe the current
+run; neither is a creation fact.
+
+The role is the Team roster's (`teams.tryMembership(agent)?.role`). When no Team
+service is mounted there is no roster to ask and a root Session (no
+`header.parentSession`) is the Lead by construction; a teammate keeps its full
+surface either way.
+
+Service resolution is deliberately lazy. The preset registry is its own plugin
+row whose `Service.init` is async, so at this plugin's `apply()` the handle is
+legitimately absent — `ctx.get()` is strict and only returns a service whose
+provider fiber is ACTIVE (`vendor/cordis/src/reflect.ts:225-248`). The plugin
+therefore resolves the services at classification time, re-runs reconciliation
+when they become available (`ctx.inject(['agentPresets'], ...)` and, because a
+profile may have no Team bundle, `ctx.inject(['agentTeams'], ...)`), and
+re-reconciles every live Agent on Agent creation, on the registry's
+`agent-preset/selected` event, and on the same event as recorded in the Session
+log (`session/event`). On Agent disposal the restriction is released and the
+Agent's bookkeeping dropped — no re-reconcile. A selection observed before its
+Agent is published is remembered — bounded to 64 entries, oldest-first evicted,
+consumed once at publication, dropped on disposal — and applied at creation. No
+handle is captured once and trusted forever.
+
+Fail closed means "cannot tell" is never read as "not my preset". While the
+authoritative preset is unknown, an Agent whose Team role is Lead — so it could
+be this preset's Lead — is kept constrained, and a not-yet-constrained one is
+constrained with a single warning; a composition that can still provide the
+registry never releases it. Apart from the exemption below, only an Agent that is
+provably not a Lead (a teammate, or a child Session when no roster is mounted) is
+released unresolved.
+A resolved decision re-arms the one-shot warning, so each unresolved episode
+warns exactly once. The decision is retried when the registry activates and
+on the preset events. The cost of that ordering is a short window in which a root
+Session of another preset is held restricted; the resolved projection releases it
+as soon as it answers. When a Lead is constrained mid-session, the kernel
+rebuilds the tool list for the next step and emits a `request/header` change plus
+a `tool-removal` developer message, so the reduction appears without a restart.
+
+Fail-closed applies only while the composition could still answer. The hold is
+justified by a registry that exists and is merely late, so before treating
+"cannot tell" as "could be a Lead" the plugin reads the Host's composition —
+read-only, through the Loader entry tree: when no enabled
+`@deepseek-ai/dsh-agent-preset-registry` row is composed, no preset projection
+will ever arrive, and Agents are left alone instead of being held restricted
+forever. The headless bundle, which composes no preset roster and refuses to
+adopt any Session that records a preset, is therefore unaffected; the Web bundle
+keeps the guarantee that a Lead is constrained from its first turn. A Host with
+no Loader to inspect (an embedded composition, or a test fixture) cannot prove
+the registry absent and keeps the conservative hold. A registry mounted through
+the Loader under a module name that does not contain
+`dsh-agent-preset-registry` is not recognized as a capability; every Agent is
+still classified correctly once the service is ACTIVE, so only the transient
+boot-window hold is skipped.
+
+That rule replaced a real, permanent failure. A Session created under `standard`
+and later run under `lead-agent-only-leads` — a resumed old session, or a blank
+one re-presetted after creation — kept `standard` in its header while the
+projection said lead. A plugin that trusted the header never constrained it for
+its whole life (one 52-tool `initial` header, no `change` header, no contract
+section). Restarting DSH did not heal that session; the session that "worked
+after the restart" was a different, newly minted one whose header named the Lead
+preset.
+
 ## Host rows
 
 | Row id | Plugin | Purpose |
@@ -161,8 +245,10 @@ it changes no behaviour.
 Apply timing. `tools` (and the two legacy keys) are volatile, so a page edit is
 committed into the running config in place and does not remount the plugin. The
 keep and deny lists are resolved inside `constrain()` from that live config, so a
-change reaches **Leads created afterwards**; a running Lead keeps the surface it
-was constrained with and is never re-reconciled. First-time discovery of the
+change reaches **Leads constrained afterwards**; a Lead that is already
+constrained keeps the surface it was constrained with and is not re-constrained by
+a config edit. A preset change is reconciled live instead (see *How the plugin
+finds its Leads*). First-time discovery of the
 client half needs one Host restart; later `client.js` edits hot-reload.
 
 Fail-open fix. Every outcome in which the Lead may keep nothing now calls
@@ -213,10 +299,13 @@ page is absent because no namespace is served.
 ## Invariants
 
 1. Only Agents composed under the configured preset are touched, and only the
-   **Lead** of one: the Team roster decides. A teammate, an unrelated preset, and
-   a provider-owned worker keep their full surface.
-2. A Lead's session may be re-presetted while it is still blank. The plugin
-   listens for the preset change and both applies and **lifts** its contribution.
+   **Lead** of one: the preset is read from the live session projection
+   (`presetForSession`), the role from the Team roster. A teammate, an unrelated
+   preset, and a provider-owned worker keep their full surface.
+2. A Lead's session may be re-presetted while it is still blank, and a session
+   whose creation header names an older preset is still classified by the preset
+   it currently runs. The plugin listens for the preset change, re-reads the
+   projection, and both applies and **lifts** its contribution.
 3. Everything this plugin adds is released on preset change, on Agent disposal,
    and on plugin unload. Nothing is registered on the Host composition, so an
    uninstall leaves no residue.
@@ -247,6 +336,13 @@ page is absent because no namespace is served.
    warn-and-keep path is an explicit legacy `leadTools` whose names are all
    absent from the scope, which keeps the preset tools and logs a warning. The
    Host never fails to boot because of this plugin.
+7. The plugin never decides from a stale creation fact or a once-captured service
+   handle. When the preset cannot be resolved yet, the classification is retried
+   — on service availability and on preset/session events — and an Agent that
+   could be this preset's Lead is kept constrained rather than released as "not
+   this preset"; a resolved non-Lead preset, a resolved non-Lead role, or a
+   composition that can never provide the preset registry releases it (see *How
+   the plugin finds its Leads*).
 
 ## Non-goals
 

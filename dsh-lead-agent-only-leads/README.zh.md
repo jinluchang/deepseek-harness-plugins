@@ -31,7 +31,7 @@ Teammate 是普通 agent：它们可以阻塞、可以互相等待，并且由�
 plugin_manager({ action: "install_bundle", target: "/path/to/deepseek-harness-plugins/dsh-lead-agent-only-leads" })
 ```
 
-这会把插件包注册进 profile、链接该包并追加它的补丁。插件包作用于**新会话**：重启 Host，然后在 Web UI 里启动会话时选择 **Lead 只负责带领**。
+这会把插件包注册进 profile、链接该包并追加它的补丁。重启 Host 以加载新的补丁，然后在 Web UI 里启动会话时选择 **Lead 只负责带领**。
 
 **升级已安装的 profile。** Web 编辑器会把一整行 `preset-lead-agent-only-leads`（包含其 `config.plugins` 列表）写入 profile 自己的 `cordis.patch.yml`，而那一用户层会按 id 覆盖插件包行。以更早的插件包版本保存的行会保留已退役的 `tool-subagent-list-agents` 行和旧的 `modelSelectionSettings` 配置，因此升级后请从 profile 补丁中删除该行（或在 Web 编辑器中重新保存该预设）。插件包补丁本身已经带有当前的 `standard` 行与配置。
 
@@ -54,6 +54,12 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
 
 由于 Lead 不能读取、搜索或列举仓库，它可能事先并不知道某份简报中确切的文件或检查项。因此它的约定把侦察并入了简报条目：为了知道那些文件或检查项，它**可以创建一个侦察任务**——让一个 teammate 承担一项**只读任务**，与其他任务一样记录在共享任务板上，写明问题并索取事实（代码在哪里、某次改动涉及哪些文件、结果应如何校验）。随后 Lead 结束自己的轮次：报告作为它的下一个轮次到达，它再依据该报告确立的内容拆分并交代真正的工作。没有任何环节被阻塞：Lead 从不等待侦察者。
 
+## Lead 是如何被识别的
+
+两个实时事实决定一个 Agent 是否获得该契约：其会话**此刻**运行的预设，以及它在 Team 中的角色。预设读自 Host 为该会话维护的实时预设投影（`presetForSession`），而不是会话的创建头。创建头记录的是会话创建时所处的预设，且永不被重新写入；因此一个以 `standard` 创建、之后被恢复或改选为 **Lead 只负责带领** 的会话，其创建头在整个生命周期里仍写着 `standard`，尽管每一轮实际都运行在 Lead 组合之下。正是信任了该创建头，才曾让这样的 Lead 在整个会话里不受限制；重启 DSH 并没有治好它，只是启动了另一个创建头恰好写着 Lead 预设的新会话。
+
+这些查询依赖可能在本插件之后才启动的 Host 服务，因此插件惰性解析它们，在服务出现时重新检查每个 Agent，并在会话切换预设时重新协调。在读到权威预设之前它选择失败关闭而非猜测：「暂时无法判断」永远不会被当作「不是本预设」，一个已被约束的 Lead 不会因为一次暂时不可用的查询而被释放，而一个**可能**是 Lead 的 Agent 会被保持约束并重新检查，而不是放任其不受限制；若随后确认预设是另一个，它会被释放。这种保持只适用于宿主组合仍可能提供该预设的情形：从未挂载 preset registry 的 Host（headless 插件包）没有可执行的预设，因此不会约束它的 Agent，而不是把它们长期保持受限；而确实挂载了 registry 的 Web profile 仍保有首轮即约束的保证。判断落地后，下一步的工具列表就会反映它——无需重启 Host。（已经在进行中的那一步会先跑完。）
+
 ## 设置页
 
 该插件包在设置下提供一个 **Lead 只负责带领**页面（section id `lead-agent-only-leads-tools`），由 Host 针对 `lead-agent-only-leads` 行的 `configForms` 命名空间驱动。它按机制把整个工具全集分组，每行带说明与默认值，并为每个开关写入一个字典键：
@@ -64,7 +70,7 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
 
 该页面**以当前选择所生成的 Lead 约定提示词开头**，作为引用块显示在分组之上：它就是 `constrain()` 交给 Lead 系统提示词的文本，因此可以把该页面读作「这就是将要告诉 Lead 的内容」。`client.js` 镜像了宿主端的 `leadContract()` 以及同一套保留/拒绝解析（catalog 开关，或按整体生效的旧版 `leadTools`/`denyTools` 数组——当开关不再驱动策略时，引用也随之遵循该覆盖），`verify.mjs` 则对两个构建器逐字节比较：catalog 默认值、关闭 `ask_user_question` 的选择、开启 `bash` 的选择、仅 `grep` 的选择（它钉住 `readersHidden` 分支），以及一次旧版覆盖。诚实的限制：客户端只根据本页 catalog 加开关推导三项能力论断与具名工具列表，无法读取宿主实时的 `reachable` 作用域，因此 profile 未挂载的工具仍会出现在预览里，而实时提示词会把它丢掉。引用随每次开关注更新，因为它由各行所渲染的同一份实时快照计算得出。
 
-开关是**易变的**：一次编辑会提交进运行中的配置而无需重挂插件，因此它作用于**此后创建的 Lead**；已经在运行的 Lead 保持它被约束时的工具面。首次安装需要重启一次 Host，客户端半边才会被发现；之后的 `client.js` 编辑会热重载。
+开关是**易变的**：一次编辑会提交进运行中的配置而无需重挂插件，因此它作用于**此后被约束的 Lead**；已被约束的 Lead 保持它被约束时的工具面。首次安装需要重启一次 Host，客户端半边才会被发现；之后的 `client.js` 编辑会热重载。
 
 该插件包**不附带 `node_modules`**。`index.js` 从加载它的 Host 解析配置 schema 库（`@deepseek-ai/schemastery`）：先走普通 import（从市场安装并已拉取依赖的情形），然后是运行进程入口，最后通过工作区的提升存储读 `$DSH_HARNESS_CHECKOUT`。离线可用且重启安全。若都解析不到，插件仍会强制 catalog 默认值；只是设置页缺席，因为不存在配置命名空间。
 
@@ -96,7 +102,7 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
     denyTools: []                     # legacy: explicit deny list; [] removes the guard
 ```
 
-`tools` 与两个旧版键都是易变的，因此一次编辑无需重挂插件就能到达此后创建的 Lead。`leadTools` 中本作用域无法限制的每个名字都会被裁掉而不是致命；显式为空的 `leadTools` 会**什么都不保留**（即「全关」意图），而 `denyTools: []` 会移除守卫。
+`tools` 与两个旧版键都是易变的，因此一次编辑无需重挂插件就能到达此后被约束的 Lead。`leadTools` 中本作用域无法限制的每个名字都会被裁掉而不是致命；显式为空的 `leadTools` 会**什么都不保留**（即「全关」意图），而 `denyTools: []` 会移除守卫。
 
 ## 校验
 
@@ -104,7 +110,7 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
 node verify.mjs
 ```
 
-在 `js-yaml` 可达的检出上共 45 项检查：纯辅助函数、`Config` schema 形状、catalog 及其默认值（读取工具关闭，`exit_plan_mode` 与 `present` 开启，按 catalog 顺序）、感知配置的约定文本（冻结的无参字节与哈希、无 plan 模式不变量、逐字节断言的合并侦察条目、解析后工具列表句及其 1/2/多/空渲染、空拒绝列表、仅拒绝 `subagent`、按门控的 shell/写入/读取论断，以及插件在委派选择加入的覆盖形态下实际注册的文本）、插件在两层作用域模型下的行为（预设继承 vs. Agent 自有，包括一个未挂载 `exit_plan_mode` 的作用域）、开关→保留/拒绝映射（含全关与未知名字的情形）、对补丁的深度解析（同时证明该预设恰好挂载随附的 `standard` 行与配置），以及通过桩模块加载器真实加载 `client.js` 并深度比较 host 与 client 的 catalog。该套件不需要实时 Host；它从 harness 检出读取 `js-yaml` 与 `standard.patch.yml`，当检出不可达时会跳过那一项聚合深度解析检查。
+在 `js-yaml` 可达的检出上共 58 项检查：纯辅助函数、`Config` schema 形状、catalog 及其默认值（读取工具关闭，`exit_plan_mode` 与 `present` 开启，按 catalog 顺序）、感知配置的约定文本（冻结的无参字节与哈希、无 plan 模式不变量、逐字节断言的合并侦察条目、解析后工具列表句及其 1/2/多/空渲染、空拒绝列表、仅拒绝 `subagent`、按门控的 shell/写入/读取论断，以及插件在委派选择加入的覆盖形态下实际注册的文本）、插件在两层作用域模型下的行为（预设继承 vs. Agent 自有，包括一个未挂载 `exit_plan_mode` 的作用域）、开关→保留/拒绝映射（含全关与未知名字的情形）、预设分类契约（创建头从不决定当前预设、会话投影才决定、在 apply 之后才激活的 registry 会重新协调并释放真正的非 Lead、选择负载与 `session/event` 都会重新协调、Agent 发布之前观察到的选择会在创建时生效且其记录有界——一次消费、超过 64 条时按最旧优先淘汰、Agent 销毁时丢弃，未解析警告每个事件期只出现一次并由一次已解析的决定重新武装——以及失败关闭遵循宿主组合能力，因此未组合 preset registry 的 Host 不会被过度限制）、对补丁的深度解析（同时证明该预设恰好挂载随附的 `standard` 行与配置），以及通过桩模块加载器真实加载 `client.js` 并深度比较 host 与 client 的 catalog。该套件不需要实时 Host；它从 harness 检出读取 `js-yaml` 与 `standard.patch.yml`，当检出不可达时会跳过那一项聚合深度解析检查。
 
 ## 为何如此设计
 

@@ -84,8 +84,10 @@ published to any registry.
 
 - `dsh-compaction-tuner` writes its tune into the profile's preset rows on the first boot; uninstalling it
   does not revert that. See *Install behaviour change* in its [README](dsh-compaction-tuner/README.md).
-- The preset added by `dsh-lead-agent-only-leads` applies to **new sessions**: restart the Host, then pick
-  **Lead agent only leads** when starting a session.
+- The preset added by `dsh-lead-agent-only-leads` is identified from the preset a session currently runs,
+  not from its creation header: a session switched or resumed under **Lead agent only leads** is
+  constrained without a restart. Installing the bundle itself still needs one Host restart to load its
+  patch.
 
 ## Verification
 
@@ -98,7 +100,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
-node dsh-lead-agent-only-leads/verify.mjs    # 45/45 checks passed
+node dsh-lead-agent-only-leads/verify.mjs    # 58/58 checks passed
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 

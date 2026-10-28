@@ -2,7 +2,7 @@
 /**
  * Offline verification for `dsh-lead-agent-only-leads`.
  *
- * Runs without a live Host and checks three things:
+ * Runs without a live Host and checks four things:
  *
  * 1. the pure helpers `index.js` exports;
  * 2. the behaviour of `apply()` against a model of the two scope layers that
@@ -14,7 +14,11 @@
  *    js-yaml when the checkout is reachable. The decisive check is that this
  *    preset mounts the same rows, in the same order, as the shipped `standard`
  *    preset: teammates inherit this preset, so anything narrower would make them
- *    non-standard.
+ *    non-standard;
+ * 4. the preset-classification contract: the immutable creation header never
+ *    decides the current preset, the authoritative Session projection does, the
+ *    late-mounting registry triggers a re-reconcile, and an unresolvable preset
+ *    fails closed instead of reading as "someone else's preset".
  *
  * Usage: `node verify.mjs` — exit code 0 means every check passed.
  *
@@ -150,19 +154,44 @@ function makeAgent({ preset = 'lead-agent-only-leads', role = 'lead', header = {
 
 /**
  * Model the Cordis context this plugin is applied to.
- * @param {object} [options] - live agents plus the optional services.
+ * @param {object} [options] - live agents plus the optional services (the
+ *   Loader entry tree doubles as the composition-readability capability probe).
  * @returns {object} the context, an event emitter, and a teardown helper.
  */
-function makeHost({ agents = [], presets, teams, settings } = {}) {
+function makeHost({ agents = [], presets, teams, settings, loader } = {}) {
   const listeners = new Map()
   const effects = []
   const warnings = []
   /** `settings.configure({ auto })` calls the plugin made, with their owner. */
   const presentations = []
+  /** Optional services, mutable so a test can simulate a late activation. */
+  const services = new Map()
+  if (presets !== undefined) services.set('agentPresets', presets)
+  if (teams !== undefined) services.set('agentTeams', teams)
+  if (settings !== undefined) services.set('settings', settings)
+  if (loader !== undefined) services.set('loader', loader)
+  /** `ctx.inject` children waiting for every dependency to appear. */
+  const injections = []
+  const settingsFace = {
+    configure: (policy, owner) => {
+      presentations.push({ policy, owner })
+      return () => {
+        const at = presentations.findIndex(entry => entry.policy === policy)
+        if (at >= 0) presentations.splice(at, 1)
+      }
+    },
+  }
+  /** Run one injection whose dependencies are all provided, once. */
+  const runInjection = entry => {
+    if (entry.started) return
+    if (!entry.deps.every(dep => services.get(dep) !== undefined)) return
+    entry.started = true
+    entry.dispose = entry.callback(entry.child)
+  }
   const host = {
     agents: { list: () => [...agents], get: id => agents.find(agent => agent.id === id) },
     fiber: { id: 'model-fiber' },
-    get: service => service === 'agentPresets' ? presets : service === 'agentTeams' ? teams : undefined,
+    get: service => services.get(service),
     on: (event, listener) => {
       listeners.set(event, [...listeners.get(event) ?? [], listener])
     },
@@ -172,27 +201,33 @@ function makeHost({ agents = [], presets, teams, settings } = {}) {
       return dispose
     },
     // Optional-service injection: the callback runs only when the host provides
-    // every dependency, mirroring Cordis. `settings` is the one the plugin uses.
+    // every dependency, and runs when one of them appears later, mirroring Cordis.
     inject: (deps, callback) => {
       const child = {
         effect: host.effect,
-        settings: settings === undefined ? undefined : {
-          configure: (policy, owner) => {
-            presentations.push({ policy, owner })
-            return () => {
-              const at = presentations.findIndex(entry => entry.policy === policy)
-              if (at >= 0) presentations.splice(at, 1)
-            }
-          },
-        },
+        get: name => services.get(name),
       }
-      if (deps.includes('settings') && settings !== undefined) callback(child)
+      Object.defineProperty(child, 'settings', {
+        get: () => services.get('settings') === undefined ? undefined : settingsFace,
+      })
+      const entry = { deps, callback, child, started: false, dispose: undefined }
+      injections.push(entry)
+      runInjection(entry)
       return child
     },
     logger: { warn: message => warnings.push(String(message)), info: () => {} },
   }
-  host.emit = (event, payload) => {
-    for (const listener of listeners.get(event) ?? []) listener(payload)
+  host.emit = (event, ...payload) => {
+    for (const listener of listeners.get(event) ?? []) listener(...payload)
+  }
+  /** Provide one optional service, as the late-mounting registry does. */
+  host.provide = (service, value) => {
+    services.set(service, value)
+    for (const entry of injections) runInjection(entry)
+  }
+  /** Remove one optional service, as a Host unloading that row would. */
+  host.retract = service => {
+    services.delete(service)
   }
   host.unload = () => {
     for (const dispose of effects.reverse()) if (typeof dispose === 'function') dispose()
@@ -814,6 +849,238 @@ check('apply suppresses the automatic settings page only when a settings service
   apply(without.host, {})
   assert.equal(without.presentations.length, 0)
   assert.equal(without.warnings.length, 0, `no warnings expected without a settings service; got: ${without.warnings.join(' | ')}`)
+})
+
+// --- preset classification: projection authority and fail-closed -------------
+
+// `index.js` must classify from the live Session projection, never from the
+// immutable creation header, and must recover when the late-mounting registry
+// appears. The checks below cover the source-level rules and then the behaviour.
+
+/** Source of the host half, read once for the classification guards. */
+const INDEX_SOURCE = readFileSync(join(HERE, 'index.js'), 'utf8')
+
+/**
+ * A preset registry whose authoritative projection is recorded per Session.
+ * `composedPreset` deliberately reports the creation-time binding, so a check
+ * that changes only the projection proves which source decides.
+ */
+const projectionRegistry = {
+  presetForSession: session => session.__projectedPreset ?? session.header.agentPreset ?? null,
+  composedPreset: agentCtx => agentCtx.__preset,
+}
+
+check('index.js classifies via the projection, never via the creation header', () => {
+  assert.equal(/\.header\s*\?*\.\s*agentPreset/.test(INDEX_SOURCE), false, 'the creation header must not decide the current preset')
+  assert.equal(INDEX_SOURCE.includes('header.agentPreset'), false)
+  assert.match(INDEX_SOURCE, /presetForSession/, 'the authoritative Session projection must be used')
+  assert.match(INDEX_SOURCE, /resolved:\s*false/, 'a "cannot tell" classification state must exist')
+  assert.match(INDEX_SOURCE, /ctx\.get\('agentPresets'\)/, 'the registry handle must be resolved lazily')
+  assert.equal(INDEX_SOURCE.includes("const presets = ctx.get('agentPresets')"), false, 'the registry handle must not be captured once at apply')
+  assert.match(INDEX_SOURCE, /ctx\.inject\(\s*\[\s*'agentPresets'\s*\]/, 'a late-arriving registry must trigger a re-reconcile')
+  assert.match(INDEX_SOURCE, /ctx\.inject\(\s*\[\s*'agentTeams'\s*\]/, 'a late-arriving Team roster must trigger a re-reconcile')
+})
+
+check('a preset registry that activates after apply re-reconciles the Lead', () => {
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host, warnings } = makeHost({ agents: [lead.agent], teams: roster })
+  apply(host, {})
+  // No registry yet: an unresolvable preset must not read as "not ours".
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'an unresolvable preset must keep a possible Lead restricted')
+  assert.match(warnings.join(' | '), /not resolvable yet/, 'the unresolved path must warn instead of falling back silently')
+  // The registry activates; its projection names this Lead.
+  lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
+  host.provide('agentPresets', projectionRegistry)
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the resolved projection must keep the restriction')
+  assert.equal(lead.guards.length, 1, 're-reconciling must not duplicate the guard')
+  assert.equal(lead.sections.size, 1, 're-reconciling must not duplicate the section')
+})
+
+check('a late-arriving registry releases a genuine non-Lead', () => {
+  const other = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host } = makeHost({ agents: [other.agent], teams: roster })
+  apply(host, {})
+  assert.deepEqual(other.activeAllow(), KEPT_BY_DEFAULT, 'precondition: fail-closed while the preset is unresolved')
+  other.agent.session.__projectedPreset = 'standard'
+  host.provide('agentPresets', projectionRegistry)
+  assert.equal(other.activeAllow(), undefined, 'a resolved non-Lead preset must be released')
+  assert.equal(other.guards.length, 0)
+  assert.equal(other.sections.size, 0)
+})
+
+check('the projection decides the first turn, not the creation header', () => {
+  // Created under `standard`, but the live projection says the Lead preset: the
+  // exact failure a resumed blank Session produced.
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
+  const { host, warnings } = makeHost({ agents: [lead.agent], presets: projectionRegistry, teams: roster })
+  apply(host, {})
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the projected Lead must be constrained on its first turn')
+  assert.equal(lead.guards.length, 1)
+  assert.equal(warnings.length, 0, `no warnings expected once the projection answers; got: ${warnings.join(' | ')}`)
+})
+
+check('a genuine non-Lead is never restricted', () => {
+  const other = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host } = makeHost({ agents: [other.agent], presets: projectionRegistry, teams: roster })
+  apply(host, {})
+  assert.equal(other.activeAllow(), undefined, 'a resolved non-Lead preset must stay untouched')
+  assert.equal(other.guards.length, 0)
+
+  const teammate = makeAgent({ preset: 'lead-agent-only-leads', role: 'teammate', header: { parentSession: 'session-0' } })
+  const teamHost = makeHost({ agents: [teammate.agent], presets: projectionRegistry, teams: roster })
+  apply(teamHost.host, {})
+  assert.equal(teammate.activeAllow(), undefined, 'a teammate keeps the full preset surface')
+  assert.deepEqual(teammate.names(), [...PRESET_SURFACE, ...AGENT_LAYER])
+})
+
+check('the agent-preset/selected payload classifies while the projection is unreadable', () => {
+  const agent = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host } = makeHost({ agents: [agent.agent], teams: roster })
+  apply(host, {})
+  assert.deepEqual(agent.activeAllow(), KEPT_BY_DEFAULT, 'precondition: fail-closed without a projection')
+  // The registry re-emits `(sessionId, agentPreset)`; without a projection the
+  // payload is the secondary signal.
+  host.emit('agent-preset/selected', agent.agent.id, 'standard')
+  assert.equal(agent.activeAllow(), undefined, 'a payload naming another preset must release')
+  host.emit('agent-preset/selected', agent.agent.id, 'lead-agent-only-leads')
+  assert.deepEqual(agent.activeAllow(), KEPT_BY_DEFAULT, 'a payload naming the Lead preset must constrain')
+})
+
+check('session/event reconciles a selection recorded in the session log', () => {
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host } = makeHost({ agents: [lead.agent], presets: projectionRegistry, teams: roster })
+  apply(host, {})
+  assert.equal(lead.activeAllow(), undefined, 'precondition: not constrained yet')
+  lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
+  host.emit('session/event', { id: lead.agent.id }, { type: 'agent-preset/selected', data: { agentPreset: 'lead-agent-only-leads' } })
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the session event must reconcile the Agent')
+})
+
+check('a selection observed before the Agent is published applies at creation', () => {
+  const agents = []
+  const { host } = makeHost({ agents, teams: roster })
+  apply(host, {})
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  host.emit('agent-preset/selected', lead.agent.id, 'lead-agent-only-leads')
+  assert.equal(lead.activeAllow(), undefined, 'the Agent does not exist yet')
+  agents.push(lead.agent)
+  host.emit('agent/created', { agent: lead.agent })
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the early selection must be applied when the Agent appears')
+})
+
+// --- per-Agent bookkeeping: bounded, pruned, and capability-aware -------------
+
+check('index.js prunes per-Agent bookkeeping and bounds early selections', () => {
+  const deletions = (INDEX_SOURCE.match(/warnedUnresolved\.delete\(/g) ?? []).length
+  assert.equal(deletions >= 3, true, `warnedUnresolved must be cleaned on every non-warning path and on disposal; saw ${deletions} deletion(s)`)
+  assert.match(INDEX_SOURCE, /const EARLY_SELECTION_LIMIT = \d+/, 'remembered early selections need an explicit cap')
+  assert.match(INDEX_SOURCE, /while \(earlySelections\.size > EARLY_SELECTION_LIMIT\)/, 'the cap must evict, not just exist')
+  assert.match(INDEX_SOURCE, /earlySelections\.delete\(oldest\)/, 'eviction must drop the oldest entry')
+  assert.match(INDEX_SOURCE, /const takeEarlySelection = sessionId =>/, 'publication must consume the remembered selection')
+  assert.match(INDEX_SOURCE, /presetServiceExpected/, 'fail-closed must be capability-aware')
+  assert.match(INDEX_SOURCE, /loader\.entries\(\)/, 'the capability probe must read the Loader composition')
+})
+
+check('unresolved warnings are one-shot per episode and re-armed by a resolved decision', () => {
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host, warnings } = makeHost({ agents: [lead.agent], teams: roster })
+  apply(host, {})
+  const unresolvedWarnings = () => warnings.filter(message => /not resolvable yet/.test(message)).length
+  assert.equal(unresolvedWarnings(), 1, 'the first unresolved decision warns once')
+  host.emit('agent/created', { agent: lead.agent })
+  assert.equal(unresolvedWarnings(), 1, 'a repeated unresolved decision must not spam')
+  // Resolving ends the episode; a fresh unresolved one warns again.
+  lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
+  host.provide('agentPresets', projectionRegistry)
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT)
+  host.retract('agentPresets')
+  host.emit('agent/created', { agent: lead.agent })
+  assert.equal(unresolvedWarnings(), 2, 'a resolved decision must re-arm the warning entry')
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the fresh episode fails closed again')
+})
+
+check('a disposed Agent leaves no bookkeeping behind', () => {
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  const { host, warnings } = makeHost({ agents: [lead.agent], teams: roster })
+  apply(host, {})
+  const unresolvedWarnings = () => warnings.filter(message => /not resolvable yet/.test(message)).length
+  assert.equal(unresolvedWarnings(), 1)
+  host.emit('agent/disposed', { agent: lead.agent })
+  assert.equal(lead.activeAllow(), undefined, 'disposal releases the fail-closed restriction')
+  // A new episode for the same object can only warn again if disposal dropped it.
+  host.emit('agent/created', { agent: lead.agent })
+  assert.equal(unresolvedWarnings(), 2, 'disposal must drop the warning entry')
+})
+
+check('remembered pre-publication selections stay bounded and are consumed once', () => {
+  const agents = []
+  const { host } = makeHost({ agents, teams: roster })
+  apply(host, {})
+  // Overflow the bound with Sessions that never publish an Agent. The Host stays
+  // bounded (static guard above) and keeps serving fresh selections.
+  for (let index = 0; index < 200; index += 1) {
+    host.emit('agent-preset/selected', `ghost-${index}`, 'standard')
+  }
+  const lead = makeAgent({ preset: 'standard', role: 'lead' })
+  host.emit('agent-preset/selected', lead.agent.id, 'lead-agent-only-leads')
+  agents.push(lead.agent)
+  host.emit('agent/created', { agent: lead.agent })
+  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'a remembered selection must still classify at publication')
+
+  // Consumed, not merely read: the first publication resolves to the payload,
+  // and a second reconcile has no hint left (so the unresolved state returns).
+  const second = makeAgent({ preset: 'standard', role: 'lead' })
+  host.emit('agent-preset/selected', second.agent.id, 'standard')
+  agents.push(second.agent)
+  host.emit('agent/created', { agent: second.agent })
+  assert.equal(second.activeAllow(), undefined, 'the remembered non-Lead selection releases at publication')
+  host.emit('agent/created', { agent: second.agent })
+  assert.deepEqual(second.activeAllow(), KEPT_BY_DEFAULT, 'a second publication must not see a stale remembered selection')
+})
+
+// The Loader entry tree is the composition, so the harness can model the two
+// shipped hosts exactly: Web composes the registry row, headless does not.
+const HEADLESS_LOADER = {
+  entries: () => [
+    { options: { id: 'lead-agent-only-leads', name: 'dsh-lead-agent-only-leads' } },
+    { options: { id: 'preset-lead-agent-only-leads', name: '@deepseek-ai/dsh-agent-preset' } },
+  ],
+}
+const WEB_LOADER = {
+  entries: () => [
+    { options: { id: 'lead-agent-only-leads', name: 'dsh-lead-agent-only-leads' } },
+    { options: { id: 'agent-preset-registry', name: '@deepseek-ai/dsh-agent-preset-registry' } },
+  ],
+}
+
+check('fail-closed follows composition capability, so a registry-less Host is not over-restricted', () => {
+  // Headless composes no preset roster: no preset can ever resolve, so a root
+  // Agent must not be held restricted forever.
+  const headlessLead = makeAgent({ preset: 'standard', role: 'lead' })
+  const headless = makeHost({ agents: [headlessLead.agent], teams: roster, loader: HEADLESS_LOADER })
+  apply(headless.host, {})
+  assert.equal(headlessLead.activeAllow(), undefined, 'a composition with no registry row must not be restricted')
+  assert.equal(headlessLead.guards.length, 0)
+  assert.equal(headless.warnings.length, 0, `no warning without a registry to expect; got: ${headless.warnings.join(' | ')}`)
+
+  // The same unresolved preset on Web (row present, not ACTIVE yet) keeps the
+  // strict hold that guarantees the Lead's first turn.
+  const webLead = makeAgent({ preset: 'standard', role: 'lead' })
+  const web = makeHost({ agents: [webLead.agent], teams: roster, loader: WEB_LOADER })
+  apply(web.host, {})
+  assert.deepEqual(webLead.activeAllow(), KEPT_BY_DEFAULT, 'a composed-but-pending registry must keep the first-turn guarantee')
+  assert.equal(web.warnings.filter(message => /not resolvable yet/.test(message)).length, 1)
+
+  // A disabled registry row never starts, so it is not a capability either.
+  const disabledLead = makeAgent({ preset: 'standard', role: 'lead' })
+  const disabled = makeHost({
+    agents: [disabledLead.agent],
+    teams: roster,
+    loader: { entries: () => [{ options: { name: '@deepseek-ai/dsh-agent-preset-registry' }, disabled: true }] },
+  })
+  apply(disabled.host, {})
+  assert.equal(disabledLead.activeAllow(), undefined, 'a disabled registry row must not justify a permanent hold')
 })
 
 // --- patch ------------------------------------------------------------------
