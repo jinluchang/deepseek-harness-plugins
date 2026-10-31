@@ -1,0 +1,24 @@
+# Bundle patch for dsh-llm-api-call-tuning.
+#
+# One row owns the GLOBAL DEFAULT retry values the settings page offers as a
+# preset. The provider rows stay authoritative: the page edits their
+# `retryPolicy` directly, through the settings form API, so nothing is projected
+# from this row and a fresh install changes no provider by itself. `apply()`
+# only suppresses the auto-generated settings page for this namespace, so the
+# hand-written page is the only page for the row.
+#
+# This patch seeds NOTHING: the inserted row carries no `config`, so the page
+# starts from the upstream retry-policy code defaults (normal / 5 / 500 /
+# 10000 / 0.1 / all five codes; `packages/llm/llm/src/retry-policy.ts:12-19`) —
+# the same values index.js `DEFAULT_TUNE` records and README "Defaults"
+# documents. Nothing reaches the profile patch until the user saves a value.
+#
+# The row itself is persisted the same way as any other profile row: the
+# settings page writes the active profile's `cordis.patch.yml` (the profile's
+# own `cordis.patch.yml`, next to its `package.json`).
+#
+# The row name is the BARE package name on purpose: the client half attaches to
+# the Loader row whose specifier is the bare package name.
+- insert:
+    - id: llm-api-call-tuning
+      name: 'dsh-llm-api-call-tuning'
