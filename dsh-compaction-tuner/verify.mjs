@@ -654,7 +654,7 @@ function mountSection(snapshot, { nextResult = true, call, fetch: fetchImpl, cat
 
 await check('the manifest declares the frozen identity, bundle patch, and web client', () => {
   assert.equal(manifest.name, 'dsh-compaction-tuner', `package name drifted to ${String(manifest.name)}`)
-  assert.equal(manifest.version, '0.2.1-rc.3', `version drifted to ${String(manifest.version)}`)
+  assert.equal(manifest.version, '0.2.2-alpha.2', `version drifted to ${String(manifest.version)}`)
   assert.equal(manifest.private, false, 'the package must be publicly publishable')
   assert.equal(manifest.type, 'module', `type drifted to ${String(manifest.type)}`)
   assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml', `dsh.bundle.patch drifted to ${String(manifest.dsh?.bundle?.patch)}`)

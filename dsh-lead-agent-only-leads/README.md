@@ -75,7 +75,7 @@ Beyond a local checkout, the bundle travels by tarball or Git: `npm pack` in thi
 produces a tarball that installs by absolute path (or an `https:` URL), and a clone installs by Git with a
 subdirectory selector, because this repository has no root `package.json`. Only the path/`link:` route is
 registry-free, because the Host supplies the dependency; a tarball or Git install also resolves its one
-declared dependency, `@deepseek-ai/schemastery@3.18.5`, from the registry, so it needs a reachable
+declared dependency, `@deepseek-ai/schemastery@3.18.6-alpha.1`, from the registry, so it needs a reachable
 registry, or that dependency already present on the host:
 
 ```sh

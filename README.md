@@ -15,7 +15,7 @@ README, and ships a hermetic verification suite that runs without a live Host.
 
 ## Requirements
 
-- **DSH `^0.2.1-rc.3`** — declared as `engines.dsh` in every manifest, so a DSH host outside that range
+- **DSH `^0.2.2-alpha.2`** — declared as `engines.dsh` in every manifest, so a DSH host outside that range
   refuses the install.
 - These packages declare no separate Node.js version. Their verification scripts are plain ESM and run
   with the `node` binary you already use for DSH.
@@ -25,7 +25,7 @@ README, and ships a hermetic verification suite that runs without a live Host.
 A bundle is an npm package whose `package.json` declares `dsh.bundle.patch`; installing it adds that patch
 layer to the active DSH profile. Three routes work today. Only the path/`link:` route is registry-free: a
 tarball or Git install of `dsh-lead-agent-only-leads` also resolves its one declared dependency,
-`@deepseek-ai/schemastery@3.18.5`, from the registry, so that route needs a reachable registry, or that
+`@deepseek-ai/schemastery@3.18.6-alpha.1`, from the registry, so that route needs a reachable registry, or that
 dependency already present on the host.
 
 ### From a local checkout (absolute path)
@@ -55,11 +55,11 @@ full page load.
 
 ```sh
 cd dsh-backend-restart
-npm pack    # -> dsh-backend-restart-0.2.1-rc.3.tgz
+npm pack    # -> dsh-backend-restart-0.2.2-alpha.2.tgz
 ```
 
 ```js
-plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.1-rc.3.tgz" })
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-alpha.2.tgz" })
 ```
 
 ### From Git (subdirectory selector)

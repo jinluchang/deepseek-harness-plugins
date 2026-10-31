@@ -1,6 +1,6 @@
 {
   "name": "dsh-use-repo-tmp",
-  "version": "0.2.1-rc.3",
+  "version": "0.2.2-alpha.2",
   "private": false,
   "type": "module",
   "description": "Prompt guidance that points scratch files at <workspace>/tmp instead of /tmp.",
@@ -16,7 +16,7 @@
   },
   "homepage": "https://github.com/jinluchang/deepseek-harness-plugins/tree/main/dsh-use-repo-tmp",
   "bugs": { "url": "https://github.com/jinluchang/deepseek-harness-plugins/issues" },
-  "engines": { "dsh": "^0.2.1-rc.3" },
+  "engines": { "dsh": "^0.2.2-alpha.2" },
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json"

@@ -124,7 +124,7 @@ than repeating a seed; `verify.mjs` checks the note against that rule.
 The eleven values live in the **tuner row's `config`** — `compaction-tuner` — in the active profile's
 `cordis.patch.yml`. The bundle mount patch seeds nothing, so a fresh install stores no values and the
 tuner runs the upstream code defaults; the first save writes the edited values into the profile's own
-patch file, which is `PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:41`).
+patch file, which is `PROFILE_PATCH_FILENAME = 'cordis.patch.yml'` (`packages/boot/app-boot/src/profile.ts:42`).
 A profile that installed an earlier revision still stores the legacy seed `0.5 / 0.15 / 2` in its own
 patch file, and there is **no automatic migration** (see *Install behaviour change* and *Reset to system
 defaults*).
@@ -345,7 +345,7 @@ regardless (see *Live save behaviour*).
 - `loader/volatile-update`, which the loader dispatches to the **owning fiber only**, i.e. this
   plugin's own volatile commits. A save on the Settings page is what this carries.
 - `app-boot/config-reload`, the profile-reconcile completion signal (declared at
-  `packages/boot/app-boot/src/index.ts:53`, emitted by `ctx.emit` at `:406`), so a live save is followed even when
+  `packages/boot/app-boot/src/index.ts:55`, emitted by `ctx.emit` at `:409`), so a live save is followed even when
   the volatile-diff branch never reports it; the settings service consumes the same event
   (`ctx.on` `packages/settings/settings/src/index.ts:234`).
 - `loader/entry-init` for a row whose `name` is `@deepseek-ai/dsh-agent-preset`, so a preset that

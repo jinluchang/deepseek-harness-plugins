@@ -1,6 +1,6 @@
 {
   "name": "dsh-backend-restart",
-  "version": "0.2.1-rc.3",
+  "version": "0.2.2-alpha.2",
   "private": false,
   "type": "module",
   "description": "Settings-page action that restarts the DSH backend process.",
@@ -16,7 +16,7 @@
   },
   "homepage": "https://github.com/jinluchang/deepseek-harness-plugins/tree/main/dsh-backend-restart",
   "bugs": { "url": "https://github.com/jinluchang/deepseek-harness-plugins/issues" },
-  "engines": { "dsh": "^0.2.1-rc.3" },
+  "engines": { "dsh": "^0.2.2-alpha.2" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -37,6 +37,9 @@
     "README.zh.md",
     "CONTRACT.md"
   ],
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
   "icon": "./icon.svg",
   "dsh": {
     "bundle": {
