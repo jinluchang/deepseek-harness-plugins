@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Four standalone DeepSeek Harness (DSH) plugin bundles.
+Five standalone DeepSeek Harness (DSH) plugin bundles.
 Each one installs into a DSH host as a profile bundle, carries its own English and Simplified Chinese
 README, and ships a hermetic verification suite that runs without a live Host.
 
@@ -11,6 +11,7 @@ README, and ships a hermetic verification suite that runs without a live Host.
 | `dsh-backend-restart` | Adds a **Restart backend** action: asks the Host to replace itself over the `/backend-restart` RPC channel, then reloads the page once the successor answers. | Settings → **General**, in a row above the version line | [English](dsh-backend-restart/README.md) · [中文](dsh-backend-restart/README.zh.md) |
 | `dsh-compaction-tuner` | One page that owns the full eleven-key `compaction-basic` policy and pushes the tune into every agent preset in the active profile. | Settings → **Compaction tuner** (last nav row) | [English](dsh-compaction-tuner/README.md) · [中文](dsh-compaction-tuner/README.zh.md) |
 | `dsh-lead-agent-only-leads` | Adds the **Lead agent only leads** preset — a Team Lead that delegates every job and never waits on a teammate — plus the host plugin that enforces the tool restrictions. | Session preset picker; Settings → **Lead agent only leads** for the tool toggles | [English](dsh-lead-agent-only-leads/README.md) · [中文](dsh-lead-agent-only-leads/README.zh.md) |
+| `dsh-llm-api-call-tuning` | One Settings page that tunes the model-request retry policy of every active provider route: retry mode, max retries, backoff delays, jitter, and retryable failure codes. | Settings → **LLM API call tuning** (last nav row) | [English](dsh-llm-api-call-tuning/README.md) · [中文](dsh-llm-api-call-tuning/README.zh.md) |
 | `dsh-use-repo-tmp` | Prompt-only guidance that sends scratch files to `<workspace>/tmp` instead of `/tmp`, as one static system-prompt section plus a runtime-context line. | No UI | [English](dsh-use-repo-tmp/README.md) · [中文](dsh-use-repo-tmp/README.zh.md) |
 
 ## Requirements
@@ -71,7 +72,7 @@ resolve a package. Address one bundle with a `path:` selector instead:
 plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-backend-restart" })
 ```
 
-Pin a commit for `<commit>`; the same spec form works for the other three bundles with their own
+Pin a commit for `<commit>`; the same spec form works for the other four bundles with their own
 `path:/dsh-<name>`.
 
 ## Nothing is published to npm
@@ -101,6 +102,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
 node dsh-lead-agent-only-leads/verify.mjs    # 58/58 checks passed
+node dsh-llm-api-call-tuning/verify.mjs      # 80 passed, 0 failed, 0 skipped (80 checks)
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 
@@ -113,6 +115,7 @@ node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ├── dsh-backend-restart/        README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 ├── dsh-compaction-tuner/       README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 ├── dsh-lead-agent-only-leads/  README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
+├── dsh-llm-api-call-tuning/    README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 └── dsh-use-repo-tmp/           README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 ```
 

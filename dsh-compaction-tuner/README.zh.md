@@ -138,7 +138,7 @@ summarizationModel, maxTokens, compactionRetries, maxOverflowRetries
 
 该插件包的挂载补丁**不写入任何种子值**：它在插入调优器行时不带 `config`，因此调优器自身的默认值就是上游 `compaction-basic` 的代码默认值（`DEFAULT_THRESHOLD_RATIO` `config.ts:20`、`DEFAULT_RETAIN_RATIO` `config.ts:23`、`compactionRetries` `config.ts:105`），这些值在 `index.js` `OPTION_SPECS` 中记录一次，并在上方的*使用*表格中连同范围一起说明。移除种子值是刻意的改动：需求是使用系统默认值，而不是安装时的选择。
 
-它们从来不是从某个随附预设补丁搬运来的。本文件早先的修订曾声称 `packages/bundle/web-app/presets/standard.patch.yml` 提交了这些数字；那是错误的。标准预设声明其 `compaction-basic` 子项时**没有**自带任何 config（`compaction-basic` `standard.patch.yml:73-74`），而对检出的所有 `*.yml`/`*.yaml` 做 grep，都找不到任何设置 **compaction-basic** 选项的预设或插件包行——只有 `snapshots/` 下的快照 fixture 设置了它们。（兄弟修剪器的 `thresholdChars` / `headChars` / `tailChars` **确实**由随附预设设置，例如 `tailChars` `standard.patch.yml:78-82`；本调优器不碰那个插件。）
+它们从来不是从某个随附预设补丁搬运来的。本文件早先的修订曾声称 `packages/bundle/web-app/presets/standard.patch.yml` 提交了这些数字；那是错误的。标准预设声明其 `compaction-basic` 子项时**没有**自带任何 config（`compaction-basic` `standard.patch.yml:76-77`），而对检出的所有 `*.yml`/`*.yaml` 做 grep，都找不到任何设置 **compaction-basic** 选项的预设或插件包行——只有 `snapshots/` 下的快照 fixture 设置了它们。（兄弟修剪器的 `thresholdChars` / `headChars` / `tailChars` **确实**由随附预设设置，例如 `tailChars` `standard.patch.yml:82-85`；本调优器不碰那个插件。）
 
 这一后果是一个真实的行为陈述，而不是形式上的说明：因为 `retune()` 读取该行的实时值，`withTune()` 又把这些值投影到每个预设的 `compaction-basic` 子项，所以一个不声明这些键中任何一个的预设本来就已调优一致，并会**被跳过且不写入**。而一个为十个始终投影的键中的某个键声明了不同值的预设，仍会被覆盖为调优器的值（全新安装时即代码默认值）；见*安装行为变更*。
 
@@ -230,7 +230,7 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-compaction-tuner/verify.
 - **运行中的会话保留被替换掉的旧版本。** 已运行的会话不会被重新调优，即使预设行已被重新调优，它也保留启动时的值；只有之后启动的会话才使用新值。
 - **直接编辑的预设行在保持挂载期间不会被重新调优**，因为触发事件按 fiber 过滤到调优器自己的行。
 - **覆盖层可能阻挠某一个预设。** 如果 home 补丁或 `--patch` 覆盖层拥有某个预设行的 id，编辑器会拒绝该行的写入；调优器会记录这一点，并仍然调优其余行。（仅仅为其他行提供调优的覆盖层不会阻挠它们：一次启动处理曾把它传播到五个预设行。）
-- **兄弟修剪器是建议的后续工作（FOLLOW-UP），不是疏忽。** `compaction-basic` 策略面是完整的（全部十一个键，包括按模型作用域）。`@deepseek-ai/dsh-compaction-tool-result-pruner` 是一个*不同的插件*，有自己的 `Config`、自己的三个选项（`thresholdChars`、`headChars`、`tailChars`，默认值 `8192` / `4096` / `1024`），以及一个任何逐字段 schema 都无法表达的约束（`headChars + 39-codepoint PRUNE_MARKER + tailChars <= thresholdChars`）。随附预设已经设置了它们（`tailChars` `standard.patch.yml:78-82`），它属于另一类行，而本调优器的 `withTune()` 只匹配 `compaction-basic` 子项（`index.js` `COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`），因此它从不读写修剪器行。使其可调优是一项单独的改动，有自己的契约。
+- **兄弟修剪器是建议的后续工作（FOLLOW-UP），不是疏忽。** `compaction-basic` 策略面是完整的（全部十一个键，包括按模型作用域）。`@deepseek-ai/dsh-compaction-tool-result-pruner` 是一个*不同的插件*，有自己的 `Config`、自己的三个选项（`thresholdChars`、`headChars`、`tailChars`，默认值 `8192` / `4096` / `1024`），以及一个任何逐字段 schema 都无法表达的约束（`headChars + 39-codepoint PRUNE_MARKER + tailChars <= thresholdChars`）。随附预设已经设置了它们（`tailChars` `standard.patch.yml:82-85`），它属于另一类行，而本调优器的 `withTune()` 只匹配 `compaction-basic` 子项（`index.js` `COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`），因此它从不读写修剪器行。使其可调优是一项单独的改动，有自己的契约。
 - **可靠的实时保存路径、arm B、四次处理的细分、浏览器/GUI 路径、真实进程重启以及真实的 `location.reload()` 都未确认。** 隔离运行演练的是真实的 HTTP 设置写入和真实启动，而不是浏览器：这里没有观察到真实 DOM 渲染、导航行或页面驱动的保存往返，也没有查明实时传播失败的原因。重启操作的元素树和通道行为由封闭式桩套件固定，但该操作还没有从真实页面对真实后端驱动过，也没有在活 profile 上演练过真实进程重启或真实的 `location.reload()`。arm B 从未被测量，四次非空处理也没有记录细分。`link:` 链接的客户端插件包的 HMR 同样未确认。
 - **重启操作是一个软依赖。** 它调用 `dsh-backend-restart` 的通道，不从该包导入任何内容；没有该包的部署仍会加载本插件，并显示手动重启文案。
 - **尚未解决的测量问题。** 首轮处理耗时以及重复 `configEditor.edit` 调用的批处理方式，由验证运行从经验上给出答案（一次处理，在 app-ready 后约 262 ms，以及逐字节相同的第二次启动）；活会话情况、并发重新调优处理在套件固定的合并（coalescing）之外的恰好一次行为，以及 `link:` 链接的客户端插件包的 HMR，仍然是未决问题。

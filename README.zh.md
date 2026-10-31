@@ -2,13 +2,14 @@
 
 [English](README.md) | 中文
 
-四个独立的 DeepSeek Harness（DSH）插件包。每一个都以 profile 插件包的形式安装进 DSH 宿主，自带英文与简体中文 README，并附带一套无需运行中 Host 的封闭式校验套件。
+五个独立的 DeepSeek Harness（DSH）插件包。每一个都以 profile 插件包的形式安装进 DSH 宿主，自带英文与简体中文 README，并附带一套无需运行中 Host 的封闭式校验套件。
 
 | 插件包 | 作用 | 出现位置 | 文档 |
 | --- | --- | --- | --- |
 | `dsh-backend-restart` | 增加一个 **重启后端**操作：通过 `/backend-restart` RPC 通道请求 Host 替换自身，并在后继进程应答后重新加载页面。 | 设置 → **通用**，位于版本行上方的一行 | [English](dsh-backend-restart/README.md) · [中文](dsh-backend-restart/README.zh.md) |
 | `dsh-compaction-tuner` | 一个页面，掌管完整的十一键 `compaction-basic` 策略，并把调优推入当前 profile 里的每个 agent 预设。 | 设置 → **压缩调优**（导航的最后一行） | [English](dsh-compaction-tuner/README.md) · [中文](dsh-compaction-tuner/README.zh.md) |
 | `dsh-lead-agent-only-leads` | 增加 **Lead 只负责带领**预设——一个把每项工作都委派出去、从不等待 teammate 的 Team Lead——外加执行工具限制的 host 插件。 | 会话预设选择器；工具开关在设置 → **Lead 只负责带领** | [English](dsh-lead-agent-only-leads/README.md) · [中文](dsh-lead-agent-only-leads/README.zh.md) |
+| `dsh-llm-api-call-tuning` | 一个设置页，统一管理每个已激活模型提供方路由的模型请求重试策略：重试模式、最大重试次数、退避延迟、抖动与可重试错误码。 | 设置 → **LLM API 调用调优**（导航的最后一行） | [English](dsh-llm-api-call-tuning/README.md) · [中文](dsh-llm-api-call-tuning/README.zh.md) |
 | `dsh-use-repo-tmp` | 仅提示词层面的引导，把草稿文件送到 `<workspace>/tmp` 而不是 `/tmp`，由一段静态系统提示词片段加一行运行时上下文实现。 | 无 UI | [English](dsh-use-repo-tmp/README.md) · [中文](dsh-use-repo-tmp/README.zh.md) |
 
 ## 要求
@@ -59,7 +60,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restar
 plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinluchang/deepseek-harness-plugins.git#<commit>&path:/dsh-backend-restart" })
 ```
 
-为 `<commit>` 固定一个提交；同一套写法也适用于其他三个插件包，只需换成各自的 `path:/dsh-<name>`。
+为 `<commit>` 固定一个提交；同一套写法也适用于其他四个插件包，只需换成各自的 `path:/dsh-<name>`。
 
 ## 没有发布到 npm
 
@@ -80,6 +81,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
 node dsh-lead-agent-only-leads/verify.mjs    # 58/58 checks passed
+node dsh-llm-api-call-tuning/verify.mjs      # 80 passed, 0 failed, 0 skipped (80 checks)
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 
@@ -92,6 +94,7 @@ node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ├── dsh-backend-restart/        README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 ├── dsh-compaction-tuner/       README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 ├── dsh-lead-agent-only-leads/  README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
+├── dsh-llm-api-call-tuning/    README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 └── dsh-use-repo-tmp/           README.md README.zh.md CONTRACT.md LICENSE verify.mjs package.json …
 ```
 

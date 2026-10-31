@@ -252,10 +252,10 @@ deliberate change: the request was to use the system defaults rather than an ins
 They were never carried over from a shipped preset patch. An earlier revision of this file claimed
 `packages/bundle/web-app/presets/standard.patch.yml` committed those numbers; that was false. The
 standard preset declares its `compaction-basic` child with **no** config of its own
-(`compaction-basic` `standard.patch.yml:73-74`), and a grep of every `*.yml`/`*.yaml` in the checkout finds no preset or
+(`compaction-basic` `standard.patch.yml:76-77`), and a grep of every `*.yml`/`*.yaml` in the checkout finds no preset or
 bundle row that sets any **compaction-basic** option — only snapshot fixtures under `snapshots/` set
 them. (The sibling pruner's `thresholdChars` / `headChars` / `tailChars` **are** set by shipped
-presets, e.g. `tailChars` `standard.patch.yml:78-82`; this tuner does not touch that plugin.)
+presets, e.g. `tailChars` `standard.patch.yml:82-85`; this tuner does not touch that plugin.)
 
 The consequence is a real behaviour statement, not a formality: because `retune()` reads this row's
 live values and `withTune()` projects them into every preset's `compaction-basic` child, a preset that
@@ -559,7 +559,7 @@ exercised on a live profile.
   is a *different plugin* with its own `Config` and its own three options (`thresholdChars`, `headChars`,
   `tailChars`, defaults `8192` / `4096` / `1024`) and a constraint no per-field schema can express
   (`headChars + 39-codepoint PRUNE_MARKER + tailChars <= thresholdChars`). Shipped presets already set
-  them (`tailChars` `standard.patch.yml:78-82`), it is a second row family, and this tuner's `withTune()` matches only
+  them (`tailChars` `standard.patch.yml:82-85`), it is a second row family, and this tuner's `withTune()` matches only
   the `compaction-basic` child (`index.js` `COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`) so it never reads
   or writes a pruner row. Making it tunable is a separate change with its own contract.
 - **A reliable live-save path, arm B, the four-pass breakdown, the browser/GUI path, a real process

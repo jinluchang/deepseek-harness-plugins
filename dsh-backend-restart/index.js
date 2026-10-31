@@ -22,13 +22,24 @@ export const name = 'backend-restart'
 
 /**
  * Required services: the registry that owns the channel's trust and
- * authentication, and the HTTP carrier whose `webServer` property the
- * registration reads through this context.
+ * authentication, and the HTTP carrier this plugin mounts its route on.
  */
 export const inject = ['connection', 'webServer']
 
 /** Name of the channel this plugin owns; `/api` is reserved and never reused. */
 const CHANNEL = '/backend-restart'
+
+/** Endpoint segment shape Connection accepts inside one channel. */
+const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
+
+/** Bound on one request envelope; every request this channel carries has a `{}` payload. */
+const MAX_BODY_BYTES = 64 * 1024
+
+/** Correlation id Connection answers with when a request never carried one. */
+const INVALID_REQUEST_RPC_ID = 'invalid-request'
+
+/** Failure code Connection uses for a malformed or misframed request. */
+const BAD_REQUEST_CODE = 'gateway/bad-request'
 
 /**
  * Build one carrier-neutral failure result.
@@ -85,28 +96,180 @@ export function currentOrigin(ctx) {
 }
 
 /**
- * Register the restart channel on the shared carrier.
+ * Mount the restart channel as an authenticated Web route.
  *
- * `ctx.connection.rpc.handle` is the documented call, and it binds the route to
- * this plugin's fiber. A Host built before the carrier-registration fix resolves
- * the carrier's `webServer` through the provider fiber's inject list instead of
- * the caller's, so that call is refused even though this plugin declares and can
- * read the carrier. The root scope registers the identical route without the
- * guard; the returned disposer removes it either way. Every other failure keeps
- * its own error, and a composition without a carrier is not this plugin's to
- * paper over.
+ * `ctx.connection.rpc.handle()` cannot be used here. On Cordis 4.0.0-rc.11 the
+ * Connection provider resolves `webServer` through its own def-site inject list
+ * (`['credentials']`), so that call is refused with "cannot get property
+ * webServer without inject" even though this plugin declares and can read
+ * `webServer`; no caller-side scope reaches through the provider's fiber.
  *
- * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin's context.
- * @param {(endpoint: string) => Promise<object>} handler - decoded endpoint handler.
- * @returns {() => unknown} the registration disposer.
+ * Mounting the route on this plugin's own fiber keeps `webServer` resolution
+ * where it belongs. Connection's channel adapter is reproduced before dispatch:
+ * its Host/Origin fence and browser authentication run first, then the request
+ * guards (POST only, channel-relative endpoint, JSON media type, JSON body), the
+ * `client-request` envelope parse, and the `server-response` framing including
+ * Connection's failure results and its raw 500 for a thrown handler.
+ *
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin's context (injects connection + webServer).
+ * @param {(endpoint: string, payload: unknown) => Promise<object>} handler - decoded endpoint handler.
+ * @returns {() => void} synchronous route disposer, owned by the caller's effect.
  */
 export function registerChannel(ctx, handler) {
-  try {
-    return ctx.connection.rpc.handle(CHANNEL, handler)
-  } catch (error) {
-    if (ctx.get('webServer') === undefined) throw error
-    return ctx.root.connection.rpc.handle(CHANNEL, handler)
+  return ctx.webServer.register({
+    kind: 'prefix',
+    path: CHANNEL,
+    handler: async (req, res) => {
+      // Connection's fence owns trust and browser authentication; it answers
+      // before any method, body, or envelope decision, as its own adapter does.
+      const rejection = ctx.connection.requestRejection(req)
+      if (rejection !== undefined) {
+        res.writeHead(rejection)
+        res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+        return
+      }
+      const endpoint = endpointOf(req.url)
+      if (req.method !== 'POST' || endpoint === undefined) {
+        res.writeHead(404)
+        res.end('not found')
+        return
+      }
+      const mediaType = typeof req.headers['content-type'] === 'string'
+        ? req.headers['content-type'].split(';', 1)[0].trim().toLowerCase()
+        : undefined
+      if (mediaType !== 'application/json') {
+        res.writeHead(415)
+        res.end('content type must be application/json')
+        return
+      }
+      let text
+      try {
+        text = await readBody(req)
+      } catch {
+        res.writeHead(400)
+        res.end('body is not JSON')
+        return
+      }
+      if (text === undefined) {
+        // Connection's bridge bounds every buffered body; this channel carries
+        // only `{}` payloads, so its ceiling is far below the shared one.
+        res.writeHead(413, { connection: 'close' })
+        res.end()
+        req.destroy()
+        return
+      }
+      let body
+      try {
+        body = JSON.parse(text)
+      } catch {
+        res.writeHead(400)
+        res.end('body is not JSON')
+        return
+      }
+      // Connection's client-request schema: a JSON object with the message
+      // literal, a string id, a string method, and a present (any-valued)
+      // payload. Unknown keys are stripped by that schema, so they are ignored.
+      if (!isRecord(body) || body.type !== 'client-request' || typeof body.rpcId !== 'string'
+        || typeof body.method !== 'string' || !Object.hasOwn(body, 'payload')) {
+        const rpcId = isRecord(body) && typeof body.rpcId === 'string' ? body.rpcId : INVALID_REQUEST_RPC_ID
+        sendEnvelope(res, rpcId, badRequest('invalid client-request message'))
+        return
+      }
+      if (body.method !== endpoint) {
+        sendEnvelope(res, body.rpcId, badRequest(
+          `method ${JSON.stringify(body.method)} does not match endpoint ${JSON.stringify(endpoint)}`))
+        return
+      }
+      try {
+        // The handler shape is unchanged: `(endpoint, payload) => result`.
+        sendEnvelope(res, body.rpcId, await handler(endpoint, body.payload))
+      } catch (error) {
+        res.writeHead(500)
+        res.end(`handler failure: ${String(error)}`)
+      }
+    },
+  })
+}
+
+/**
+ * Write one Connection `server-response` envelope.
+ * @param {import('node:http').ServerResponse} res - response owned here.
+ * @param {string} rpcId - correlation id echoed to the caller.
+ * @param {object} result - handler result or Connection failure result.
+ */
+function sendEnvelope(res, rpcId, result) {
+  // Serialize before writing headers: a malformed handler result must reach the
+  // handler-failure path, not leave a half-written response.
+  const payload = JSON.stringify({ type: 'server-response', rpcId, result: frameResult(result) })
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(payload)
+}
+
+/**
+ * Frame one handler result as Connection does for a JSON (attachment-free) channel.
+ * @param {object} result - handler result.
+ * @returns {object} the result carried in the envelope.
+ */
+function frameResult(result) {
+  // Same shape test as Connection's adapter: a missing/falsy `ok` is framed
+  // as-is (and a non-result throws on property access, answered as a 500).
+  if (!result.ok) return result
+  const { attachments: _attachments, ...framed } = result
+  return framed
+}
+
+/**
+ * Build one Connection failure result for a malformed request.
+ * @param {string} message - diagnostic text.
+ * @returns {{ ok: false, error: { code: string, message: string, details: { issues: object[] } } }} the failure result.
+ */
+function badRequest(message) {
+  return { ok: false, error: { code: BAD_REQUEST_CODE, message, details: { issues: [] } } }
+}
+
+/**
+ * Extract the channel-relative endpoint from a request target.
+ * @param {string | undefined} url - request target as node:http supplied it.
+ * @returns {string | undefined} the endpoint, or undefined outside the channel.
+ */
+function endpointOf(url) {
+  const pathname = new URL(url ?? '/', 'http://dsh.internal').pathname
+  if (!pathname.startsWith(`${CHANNEL}/`)) return undefined
+  const endpoint = pathname.slice(CHANNEL.length + 1)
+  const segments = endpoint.split('/')
+  if (segments.some(segment =>
+    segment === '' || segment === '.' || segment === '..' || !ENDPOINT_SEGMENT_PATTERN.test(segment))) {
+    return undefined
   }
+  return endpoint
+}
+
+/**
+ * Buffer one request body under this channel's ceiling.
+ * @param {import('node:http').IncomingMessage} req - request owning the body.
+ * @returns {Promise<string | undefined>} UTF-8 body, or undefined past the ceiling.
+ */
+async function readBody(req) {
+  const declaredLength = req.headers['content-length']
+  if (declaredLength !== undefined && Number(declaredLength) > MAX_BODY_BYTES) return undefined
+  const chunks = []
+  let received = 0
+  for await (const chunk of req) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+    received += buffer.byteLength
+    if (received > MAX_BODY_BYTES) return undefined
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks, received).toString('utf8')
+}
+
+/**
+ * Narrow an unknown JSON value to a non-array object.
+ * @param {unknown} value - parsed JSON value.
+ * @returns {value is Record<string, unknown>} whether it is a JSON object.
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**

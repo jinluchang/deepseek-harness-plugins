@@ -37,7 +37,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 ## 使用
 
-打开**设置**（侧边栏底部的账户菜单），选择**LLM 调用调优**，它是导航的最后一行（section order 45）。页面包含：
+打开**设置**（侧边栏底部的账户菜单），选择**LLM API 调用调优**，它是导航的最后一行（section order 45）。页面包含：
 
 1. **全局默认值**——下表六个字段各一个控件、**保存默认值**、以及**应用默认值到全部启用的提供方**。这些值存储在 `llm-api-call-tuning` 命名空间中，只是预设：保存不会改动任何提供方。
 2. **各提供方重试策略**——每个已激活提供方路由一个**可编辑**行（账户路由和官方路由在前），显示其命名空间、*覆盖* / *默认* 徽标、从该路由生效策略初始化的六个字段，以及**保存**、**重置**、**使用默认值**。已声明但未激活的路由、没有设置命名空间的路由，以及当前部署不提供其设置命名空间的路由以只读行列出，并会说明原因。
@@ -104,7 +104,7 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/veri
 | 文件 | 作用 |
 | --- | --- |
 | `index.js` | Host 半部：六个全局默认字段（`Config`）、`DEFAULT_TUNE`、`validateTune()`，以及为该命名空间注册 `auto: false` 页面策略的 `apply()`（当前只是面向未来的准备）。 |
-| `client.js` | 浏览器半部：**LLM 调用调优**设置页（默认值卡片 + 每个已激活提供方一个可编辑行、未激活行只读）、本地校验，以及通过提供方表单的叶子路径写入。 |
+| `client.js` | 浏览器半部：**LLM API 调用调优**设置页（默认值卡片 + 每个已激活提供方一个可编辑行、未激活行只读）、本地校验，以及通过提供方表单的叶子路径写入。 |
 | `cordis.patch.yml` | 插入 `llm-api-call-tuning` 行且**不带初始值**的 bundle patch。 |
 | `locale/en.json`、`locale/zh.json` | 供 Plugin Manager 与设置清单使用的插件显示元数据。 |
 | `package.json` | Bundle manifest（`dsh.bundle.patch`、`dsh.client` injects、`exports`、`files`）。 |

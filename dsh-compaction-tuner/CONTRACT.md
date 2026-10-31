@@ -481,7 +481,7 @@ The page (`TunerSection`):
   `role="alert"` (`restartAlert` `client.js:1183-1185`).
 - **Transport rejection means possibly-restarting.** A rejected `restart` call enters recovery rather
   than reporting failure (`recover` `client.js:1176`), because the process may exit before its reply arrives —
-  the rule (`transport rejection` `dsh-backend-restart/CONTRACT.md:52`) sets for that channel's own client.
+  the rule (`transport rejection` `dsh-backend-restart/CONTRACT.md:59`) sets for that channel's own client.
 - **Bounded recovery.** `recover()` (`client.js:1141`) runs `awaitSuccessor()` (`client.js:845`):
   poll the document root (`probeRoot()`, `client.js:817`; GET, `cache:'no-store'`, same-origin, 5 s
   probe timeout) until the old listener stops answering, for up to `DOWN_BUDGET_MS = 20000`
@@ -542,7 +542,7 @@ copy with the action disabled. The manifest declares the connection client in `d
   `@deepseek-ai/dsh-compaction-tool-result-pruner` (`thresholdChars`, `headChars`, `tailChars`, defaults
   `8192` / `4096` / `1024`, with `headChars + 39-codepoint PRUNE_MARKER + tailChars <= thresholdChars`)
   is a different plugin with its own `Config`; shipped presets already set those values
-  (`tailChars` `standard.patch.yml:78-82`), and it is a second row family. This contract never matches, reads or
+  (`tailChars` `standard.patch.yml:82-85`), and it is a second row family. This contract never matches, reads or
   writes a pruner row — `withTune()` targets only the `compaction-basic` child
   (`COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`). Making it tunable is a separate change with its own
   contract, not an omission here.

@@ -1120,7 +1120,7 @@ await check('README.md and README.zh.md document install, the page location, the
   for (const token of ['9007199254740991', '2147483647', '10000', '0.1']) {
     assert.ok(readmeZh.includes(token), `README.zh.md does not state the default/range value ${token}`)
   }
-  assert.ok(readmeZh.includes('LLM 调用调优'), 'README.zh.md does not name the page')
+  assert.ok(readmeZh.includes('LLM API 调用调优'), 'README.zh.md does not name the page')
   assert.ok(readme.includes('LLM API call tuning'), 'README.md does not name the page')
 })
 

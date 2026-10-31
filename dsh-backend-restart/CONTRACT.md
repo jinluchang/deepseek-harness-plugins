@@ -17,12 +17,19 @@ that the browser already uses for every other Host call. Both sides must agree o
 | Item | Value |
 | --- | --- |
 | Channel | `/backend-restart` (matches Connection's `^/[A-Za-z0-9._~-]+$`, never `/api`) |
-| Host registration | `ctx.connection.rpc.handle('/backend-restart', handler)` inside `ctx.effect` |
+| Host registration | `ctx.webServer.register({ kind: 'prefix', path: '/backend-restart', handler })` inside `ctx.effect`; every request first passes `ctx.connection.requestRejection(req)` |
 | Client call | `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
 
-The channel is authenticated: `HostConnectionService.admit()` applies the Host/Origin fence plus the
-browser credential, so only an admitted browser peer reaches the handler. Both halves must treat a thrown
-or rejected call as "the backend is unreachable".
+The channel is authenticated: `HostConnectionService.requestRejection()` applies the Host/Origin fence
+plus the browser credential, so only an admitted browser peer reaches the envelope parser and handler.
+Both halves must treat a thrown or rejected call as "the backend is unreachable".
+
+Transport behavior mirrors Connection's own channel adapter, so the Client cannot tell this channel from
+one registered through Connection: only `POST` inside `/backend-restart/` is dispatched (any other method
+or path answers `404`), a non-JSON media type answers `415`, unreadable JSON answers `400`, and a
+malformed or misframed envelope answers `200` with a `server-response` whose `result.error.code` is
+`gateway/bad-request`. A handler exception answers `500` with `handler failure: <error>` text. The
+browser caller sees every non-2xx answer as a transport rejection, never as a refusal result.
 
 ### Endpoint `status`
 
@@ -78,10 +85,19 @@ Client copy must localize every failure; `message` is diagnostic only.
 
 ## Host requirements
 
-The channel is registered on the shared carrier through `ctx.connection.rpc.handle`, which owns the route
-with the plugin's fiber. A Host whose connection provider cannot resolve `webServer` through the accessor
-scope refuses that call with Cordis's property-guard error; the Host half then registers the identical route
-on the root scope and still removes it on unload. Either path yields the single channel documented here.
+The Host exposes the Connection service and the Web carrier. The plugin mounts its channel as a
+`webServer` prefix route owned by its own fiber, so unloading the plugin removes it; each request asks
+`ctx.connection.requestRejection(req)` for the trust fence before anything is parsed.
+
+The route is deliberately **not** registered through `ctx.connection.rpc.handle()`. The defect is in
+the Host's `packages/client/connection/src/rpc-host.ts` (`get rpc()` at `:105-112`, `register()` at
+`:253-277`, throw at `:274`) together with the Cordis 4.0.0-rc.11 core rework: `this.ctx` inside that
+service method resolves as the Connection provider's def-site context, whose inject list is
+`['credentials']`, not the caller's `['connection', 'webServer']`. The accessor therefore throws
+`cannot get property "webServer" without inject` even though this plugin declares and can read
+`webServer`, and no caller-side scope (`ctx.root`, `ctx.get`, `ctx.inject(...)`) repairs it. Mounting the
+route here keeps the wire contract above on current Hosts without a composition patch; do not revert to
+`ctx.connection.rpc.handle()` while that Host code is unchanged.
 
 ## Build rules
 

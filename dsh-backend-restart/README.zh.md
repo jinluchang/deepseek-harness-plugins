@@ -37,10 +37,10 @@ plugin_manager({ action: "install_bundle", target: "git+https://github.com/jinlu
 
 ## 校验
 
-- 自检：`node dsh-backend-restart/verify.mjs` 会解析 manifest 和两个半边，然后断言通道约定、拒绝规则、carrier 作用域回退、supervisor 的标志与探测，以及 spawn 失败分类。共 13 项检查，封闭式：它从不重启任何东西。
-- 语法与 manifest：`node --check dsh-backend-restart/index.js dsh-backend-restart/restart-helper.js` 以及 `node -e "JSON.parse(require('node:fs').readFileSync('dsh-backend-restart/package.json'))"`。
+- 自检：`node dsh-backend-restart/verify.mjs` 会解析 manifest 和两个半边，然后断言通道约定、拒绝规则、已挂载路由的信任围栏与 Connection 形态的信封往返（请求守卫、失败结果与 handler 失败映射）、supervisor 的标志与探测，以及 spawn 失败分类。共 13 项检查，封闭式：它从不重启任何东西。
+- 语法与 manifest：`node --check dsh-backend-restart/index.js dsh-backend-restart/restart-helper.js dsh-backend-restart/verify.mjs` 以及 `node -e "JSON.parse(require('node:fs').readFileSync('dsh-backend-restart/package.json'))"`。
 - 无 Host 时的 supervisor 行为：supervisor 是普通的 ESM 模块；它导出的 `parseArguments`、`probePort`、`waitForSlot`、`startSuccessor` 和 `supervise` 可以通过在命令行上传入标志、读取模块头部记录的退出码来直接演练。
-- 无浏览器时的 Host 半边：插件的 `apply()` 只需要一个暴露 `connection.rpc`（以及可选的 `webServer`、`webServer.getOrigin`、`appExit`）的 Cordis context，因此用一个假 context 就能断言 `status` 与 `restart` 响应、各种拒绝情形，以及它记录的启动命令。
+- 无浏览器时的 Host 半边：插件的 `apply()` 只需要一个暴露 `webServer.register`、`webServer.getOrigin`、`connection.requestRejection` 和 `appExit` 的 Cordis context，因此用一个假 context 就能以 Connection 形态的信封驱动已挂载的路由，断言 `status` 与 `restart` 响应、各种拒绝情形、信任围栏、请求守卫，以及它记录的启动命令。
 - 完整循环：在一个备用端口上、用独立的 `DSH_HOME` 运行隔离实例，从该 profile 铸造一个浏览器会话 cookie，调用 `POST /backend-restart/restart`，并观察 pid 在 down/up 过渡中发生变化。
 
 ## 文件

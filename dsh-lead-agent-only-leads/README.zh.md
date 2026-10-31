@@ -122,7 +122,7 @@ node verify.mjs
 
 Copyright (c) 2026 Luchang Jin.
 
-`cordis.patch.yml` 原样嵌入了 DeepSeek Harness 的一段 11 行 plan 模式系统提示词；DeepSeek Harness 以 MIT 许可证授权（Copyright (c) 2026 DeepSeek）。MIT 许可证仅适用于这段嵌入文本，不延伸到本插件包的其余部分。出处：`packages/bundle/web-app/presets/standard.patch.yml:55`，2,361 字节，sha256 `eab4c75ea563561b1b70dec5ec228564281b979f3b610ec0adacadb435c08951`。完整声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)；下方为 MIT 全文。
+`cordis.patch.yml` 原样嵌入了 DeepSeek Harness 的一段 11 行 plan 模式系统提示词；DeepSeek Harness 以 MIT 许可证授权（Copyright (c) 2026 DeepSeek）。MIT 许可证仅适用于这段嵌入文本，不延伸到本插件包的其余部分。出处：`packages/bundle/web-app/presets/standard.patch.yml:58`，2,361 字节，sha256 `eab4c75ea563561b1b70dec5ec228564281b979f3b610ec0adacadb435c08951`。完整声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)；下方为 MIT 全文。
 
 ```text
 MIT License

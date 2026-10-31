@@ -52,16 +52,18 @@ argv, or a launcher that never exits).
 ## Verify
 
 - Self-check: `node dsh-backend-restart/verify.mjs` parses the manifest and both halves, then asserts
-  the channel contract, the refusal rules, the carrier-scope fallback, the supervisor's flags and probes, and
-  the spawn-failure classification. Thirteen checks, hermetic: it never restarts anything.
-- Syntax and manifest: `node --check dsh-backend-restart/index.js dsh-backend-restart/restart-helper.js`
-  and `node -e "JSON.parse(require('node:fs').readFileSync('dsh-backend-restart/package.json'))"`.
+  the channel contract, the refusal rules, the mounted route's trust fence and Connection-shaped envelope
+  round-trip (guards, failure results, and handler-failure framing), the supervisor's flags and probes,
+  and the spawn-failure classification. Thirteen checks, hermetic: it never restarts anything.
+- Syntax and manifest: `node --check dsh-backend-restart/index.js dsh-backend-restart/restart-helper.js
+  dsh-backend-restart/verify.mjs` and `node -e "JSON.parse(require('node:fs').readFileSync('dsh-backend-restart/package.json'))"`.
 - Supervisor behavior without a Host: the supervisor is a plain ESM module; its exported
   `parseArguments`, `probePort`, `waitForSlot`, `startSuccessor`, and `supervise` are exercised directly by
   passing flags on the command line and reading the exit codes documented in the module header.
-- Host half without a browser: the plugin's `apply()` only needs a Cordis context exposing `connection.rpc`
-  (and optionally `webServer`, `webServer.getOrigin`, `appExit`), so a fake context asserts the `status` and
-  `restart` responses, the refusal cases, and the launch command it records.
+- Host half without a browser: the plugin's `apply()` only needs a Cordis context exposing
+  `webServer.register`, `webServer.getOrigin`, `connection.requestRejection`, and `appExit`, so a fake
+  context drives the mounted route with Connection-shaped envelopes and asserts the `status` and `restart`
+  responses, the refusal cases, the trust fence, the request guards, and the launch command it records.
 - Full cycle: run an isolated instance with its own `DSH_HOME` on a spare port, mint a browser-session
   cookie from that profile, call `POST /backend-restart/restart`, and watch the pid change across the
   down/up transition.

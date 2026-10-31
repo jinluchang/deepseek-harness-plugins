@@ -1,7 +1,7 @@
 /**
- * Self-check for this bundle: manifest metadata, the Host half's channel contract
- * and refusal rules, the supervisor's argument and probe behavior, and the
- * spawn-failure classification.
+ * Self-check for this bundle: manifest metadata, the Host half's mounted route
+ * and its Connection-shaped wire contract, the refusal rules, the supervisor's
+ * argument and probe behavior, and the spawn-failure classification.
  *
  * It is hermetic: it never calls `restart`, never reaches the network outside
  * loopback, and the only successor it spawns is a path that cannot exist. The
@@ -33,35 +33,147 @@ async function check(label, body) {
 
 /**
  * Build a Cordis context double for the Host half.
- * @param {{ appExit?: unknown, origin?: string | null, guardError?: boolean }} [options] - service stand-ins.
- * @returns {object} the context double, exposing what the plugin registered and disposed.
+ *
+ * It exposes exactly what the mounted route reads: the carrier's `register`
+ * and `getOrigin`, and the Connection fence `requestRejection`. The old
+ * `connection.rpc` accessor and the `ctx.root` fallback are deliberately gone,
+ * so this double also guards against the removed registration mechanism
+ * coming back.
+ *
+ * @param {{ appExit?: unknown, origin?: string | null, rejection?: 401 | 403 | ((request: object) => 401 | 403 | undefined) }} [options] - service stand-ins.
+ * @returns {object} the context double, exposing what the plugin mounted and disposed.
  */
-function fakeContext({ appExit = () => {}, origin = 'http://127.0.0.1:3099', guardError = false } = {}) {
-  const registered = []
+function fakeContext({ appExit = () => {}, origin = 'http://127.0.0.1:3099', rejection = undefined } = {}) {
+  const routes = []
   const effects = []
   const warnings = []
-  const services = new Map([['appExit', appExit], ['webServer', origin === null ? undefined : { getOrigin: () => origin }]])
-  const handle = (channel, handler) => {
-    if (guardError) throw new Error('cannot get property "webServer" without inject')
-    registered.push({ channel, handler })
-    return () => {}
+  const rejections = []
+  const services = new Map([['appExit', appExit]])
+  const webServer = {
+    getOrigin: () => {
+      if (origin === null) throw new Error('webserver: origin read before the listener bound a port')
+      return origin
+    },
+    register(route) {
+      if (routes.some(entry => entry.kind === route.kind && entry.path === route.path)) {
+        throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`)
+      }
+      routes.push(route)
+      return () => {
+        const at = routes.indexOf(route)
+        if (at !== -1) routes.splice(at, 1)
+      }
+    },
   }
-  const context = {
-    registered,
+  services.set('webServer', webServer)
+  const requestRejection = (request) => {
+    rejections.push(request)
+    return typeof rejection === 'function' ? rejection(request) : rejection
+  }
+  return {
+    routes,
     effects,
     warnings,
+    rejections,
     logger: { warn: message => { warnings.push(message) } },
-    connection: { rpc: { handle } },
-    webServer: { getOrigin: () => { if (origin === null) throw new Error('not listening'); return origin } },
+    webServer,
+    connection: { requestRejection },
     effect(callback, label) {
       const disposer = callback()
       effects.push({ label, disposer })
       return () => { if (typeof disposer === 'function') disposer() }
     },
     get: name => services.get(name) ?? undefined,
+    /** The removed fallback must stay removed. */
+    get root() { throw new Error('the plugin must not reach for ctx.root') },
   }
-  context.root = { connection: { rpc: { handle: (channel, handler) => { registered.push({ channel, handler }); return () => {} } } } }
-  return context
+}
+
+/**
+ * Build one node:http request double carrying an optional body.
+ * @param {{ method?: string, url?: string, headers?: object, body?: string }} [request] - request facts.
+ * @returns {object} the request double, iterable like an IncomingMessage.
+ */
+function fakeRequest({ method = 'POST', url = '/backend-restart/status', headers, body } = {}) {
+  const request = {
+    method,
+    url,
+    headers: headers ?? { 'content-type': 'application/json' },
+    destroyed: false,
+    destroy() { request.destroyed = true },
+    async *[Symbol.asyncIterator]() {
+      if (body !== undefined) yield Buffer.from(body)
+    },
+  }
+  return request
+}
+
+/**
+ * Build one node:http response double.
+ * @returns {object} the response double, recording status, headers, and body.
+ */
+function fakeResponse() {
+  const response = {
+    status: undefined,
+    headers: undefined,
+    body: undefined,
+    headersSent: false,
+    writableEnded: false,
+    writeHead(status, headers) {
+      if (response.headersSent) throw new Error(`writeHead(${status}) after the headers were sent`)
+      response.status = status
+      response.headers = headers
+      response.headersSent = true
+      return response
+    },
+    end(body) {
+      response.body = body
+      response.writableEnded = true
+    },
+  }
+  return response
+}
+
+/**
+ * Drive the plugin's mounted route with one request double.
+ * @param {object} ctx - fake context holding the mounted route.
+ * @param {{ method?: string, url?: string, headers?: object, body?: string }} request - request facts.
+ * @returns {Promise<{ req: object, res: object, json: object | undefined }>} the exchange; `json` is set for JSON answers.
+ */
+async function send(ctx, request) {
+  const req = fakeRequest(request)
+  const res = fakeResponse()
+  assert.equal(ctx.routes.length, 1, 'exactly one route is mounted')
+  await ctx.routes[0].handler(req, res)
+  const json = res.headers?.['content-type'] === 'application/json' ? JSON.parse(res.body) : undefined
+  return { req, res, json }
+}
+
+/**
+ * Build one Connection `client-request` envelope.
+ * @param {string} rpcId - correlation id.
+ * @param {string} method - endpoint the envelope claims.
+ * @param {unknown} [payload] - channel payload.
+ * @returns {object} the envelope.
+ */
+function clientRequest(rpcId, method, payload = {}) {
+  return { type: 'client-request', rpcId, method, payload }
+}
+
+/**
+ * POST one Connection envelope to the channel endpoint matching its method.
+ * @param {object} ctx - fake context holding the mounted route.
+ * @param {string} endpoint - channel-relative endpoint.
+ * @param {string} [rpcId] - correlation id.
+ * @param {unknown} [payload] - channel payload.
+ * @returns {Promise<{ req: object, res: object, json: object }>} the exchange.
+ */
+async function post(ctx, endpoint, rpcId = `${endpoint}-rpc`, payload = {}) {
+  const exchange = await send(ctx, {
+    url: `/backend-restart/${endpoint}`,
+    body: JSON.stringify(clientRequest(rpcId, endpoint, payload)),
+  })
+  return exchange
 }
 
 const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
@@ -103,63 +215,141 @@ await check('the origin is read from the carrier and survives a carrier that can
   assert.equal(currentOrigin(fakeContext({ origin: null })), undefined)
 })
 
-await check('the channel registers under the documented name and disposes both effects', () => {
+await check('the channel mounts one authenticated prefix route and disposes it', async () => {
   const ctx = fakeContext()
   apply(ctx)
   assert.deepEqual(ctx.effects.map(entry => entry.label), ['backend-restart: restart exit', 'backend-restart: restart channel'])
-  assert.equal(ctx.registered.length, 1)
-  assert.equal(ctx.registered[0].channel, '/backend-restart')
+  assert.equal(ctx.routes.length, 1)
+  assert.equal(ctx.routes[0].kind, 'prefix')
+  assert.equal(ctx.routes[0].path, '/backend-restart')
+  assert.equal(typeof ctx.routes[0].handler, 'function')
+
+  // Connection's fence answers before any method, body, or envelope decision.
+  for (const [rejection, body] of [[401, 'unauthorized'], [403, 'forbidden']]) {
+    const fenced = fakeContext({ rejection })
+    apply(fenced)
+    const denied = await send(fenced, { method: 'GET', url: '/backend-restart/status', headers: {} })
+    assert.equal(denied.res.status, rejection)
+    assert.equal(denied.res.body, body)
+    assert.equal(denied.res.headers, undefined, 'the fence answers before any content-type decision')
+    assert.equal(fenced.rejections.length, 1)
+  }
+
   ctx.effects.forEach(entry => { if (typeof entry.disposer === 'function') entry.disposer() })
+  assert.deepEqual(ctx.routes, [])
 })
 
-await check('status reports this process as restartable, and an unknown endpoint is refused', async () => {
+await check('the client-request envelope round-trips status and refuses an unknown endpoint', async () => {
   const ctx = fakeContext()
   apply(ctx)
-  const handler = ctx.registered[0].handler
-  const status = await handler('status', {}, new AbortController().signal, {})
-  assert.equal(status.ok, true)
-  assert.deepEqual(Object.keys(status.value).sort(), ['pid', 'restartable', 'status'])
-  assert.equal(status.value.status, 'running')
-  assert.equal(status.value.pid, process.pid)
-  assert.equal(status.value.restartable, true)
-  const unknown = await handler('nope', {}, new AbortController().signal, {})
-  assert.equal(unknown.ok, false)
-  assert.equal(unknown.error.code, 'backend-restart/unknown-endpoint')
+  const status = await post(ctx, 'status')
+  assert.equal(status.res.status, 200)
+  assert.deepEqual(status.res.headers, { 'content-type': 'application/json' })
+  assert.equal(status.json.type, 'server-response')
+  assert.equal(status.json.rpcId, 'status-rpc')
+  assert.equal(status.json.result.ok, true)
+  assert.deepEqual(Object.keys(status.json.result.value).sort(), ['pid', 'restartable', 'status'])
+  assert.equal(status.json.result.value.status, 'running')
+  assert.equal(status.json.result.value.pid, process.pid)
+  assert.equal(status.json.result.value.restartable, true)
+
+  const unknown = await post(ctx, 'nope', 'nope-rpc', { probe: true })
+  assert.equal(unknown.res.status, 200)
+  assert.equal(unknown.json.rpcId, 'nope-rpc')
+  assert.equal(unknown.json.result.ok, false)
+  assert.equal(unknown.json.result.error.code, 'backend-restart/unknown-endpoint')
 })
 
 await check('a launcher without a bounded exit refuses the restart instead of half-restarting', async () => {
   const ctx = fakeContext({ appExit: null })
   apply(ctx)
   assert.equal(restartBlocker(ctx), 'this launcher has no bounded process-exit capability')
-  const refused = await ctx.registered[0].handler('restart', {}, new AbortController().signal, {})
-  assert.equal(refused.ok, false)
-  assert.equal(refused.error.code, 'backend-restart/unsupported')
-  const status = await ctx.registered[0].handler('status', {}, new AbortController().signal, {})
-  assert.equal(status.value.restartable, false)
-  assert.match(status.value.reason, /bounded process-exit/)
+  const refused = await post(ctx, 'restart')
+  assert.equal(refused.res.status, 200)
+  assert.equal(refused.json.result.ok, false)
+  assert.equal(refused.json.result.error.code, 'backend-restart/unsupported')
+  const status = await post(ctx, 'status')
+  assert.equal(status.json.result.value.restartable, false)
+  assert.match(status.json.result.value.reason, /bounded process-exit/)
 })
 
-await check('a refused carrier registration falls back to the root scope, and only then', () => {
-  const guarded = fakeContext({ guardError: true })
-  apply(guarded)
-  assert.equal(guarded.registered.length, 1)
-  assert.equal(guarded.registered[0].channel, '/backend-restart')
+await check('the route reproduces Connection\'s request guards and handler-failure framing', async () => {
+  const ctx = fakeContext()
+  apply(ctx)
 
-  assert.throws(
-    () => registerChannel({
-      get: () => undefined,
-      connection: { rpc: { handle: () => { throw new Error('cannot get property "webServer" without inject') } } },
-    }, async () => ({})),
-    /without inject/,
-  )
+  // Connection's channel adapter answers "not found" for a non-POST method and
+  // for a path outside the channel, rather than a 405.
+  const get = await send(ctx, { method: 'GET', url: '/backend-restart/status', headers: {} })
+  assert.equal(get.res.status, 404)
+  assert.equal(get.res.body, 'not found')
+  const bare = await send(ctx, { method: 'POST', url: '/backend-restart' })
+  assert.equal(bare.res.status, 404)
+  const traversal = await send(ctx, { method: 'POST', url: '/backend-restart/%2e%2e/status' })
+  assert.equal(traversal.res.status, 404)
+  const badSegment = await send(ctx, { method: 'POST', url: '/backend-restart/st%20atus' })
+  assert.equal(badSegment.res.status, 404)
 
-  let fallbacks = 0
-  registerChannel({
-    get: () => ({}),
-    connection: { rpc: { handle: () => { throw new Error('cannot get property "webServer" without inject') } } },
-    root: { connection: { rpc: { handle: () => { fallbacks += 1; return () => {} } } } },
-  }, async () => ({}))
-  assert.equal(fallbacks, 1)
+  const wrongMedia = await send(ctx, {
+    method: 'POST', url: '/backend-restart/status',
+    headers: { 'content-type': 'text/plain' }, body: '{}',
+  })
+  assert.equal(wrongMedia.res.status, 415)
+  assert.equal(wrongMedia.res.body, 'content type must be application/json')
+
+  const badJson = await send(ctx, { method: 'POST', url: '/backend-restart/status', body: '{' })
+  assert.equal(badJson.res.status, 400)
+  assert.equal(badJson.res.body, 'body is not JSON')
+
+  // A malformed envelope is a logical failure carried in a 200 server-response.
+  const invalid = await send(ctx, {
+    url: '/backend-restart/status',
+    body: JSON.stringify({ type: 'server-response', rpcId: 'r9', method: 'status', payload: {} }),
+  })
+  assert.equal(invalid.res.status, 200)
+  assert.deepEqual(invalid.json.result, {
+    ok: false,
+    error: { code: 'gateway/bad-request', message: 'invalid client-request message', details: { issues: [] } },
+  })
+  assert.equal(invalid.json.rpcId, 'r9')
+
+  // Missing rpcId falls back to Connection's placeholder id, and Connection's
+  // schema requires the payload field even though its value is unconstrained.
+  const anonymous = await send(ctx, {
+    url: '/backend-restart/status',
+    body: JSON.stringify({ type: 'client-request', method: 'status', payload: {} }),
+  })
+  assert.equal(anonymous.json.rpcId, 'invalid-request')
+  const noPayload = await send(ctx, {
+    url: '/backend-restart/status',
+    body: JSON.stringify({ type: 'client-request', rpcId: 'r10', method: 'status' }),
+  })
+  assert.equal(noPayload.json.result.error.code, 'gateway/bad-request')
+
+  // A valid envelope whose method and path disagree is a logical failure.
+  const mismatch = await send(ctx, { url: '/backend-restart/restart', body: JSON.stringify(clientRequest('r11', 'status')) })
+  assert.equal(mismatch.res.status, 200)
+  assert.equal(mismatch.json.result.error.code, 'gateway/bad-request')
+  assert.match(mismatch.json.result.error.message, /does not match endpoint/)
+
+  // Oversized bodies are refused before parsing, as Connection's bridge does.
+  const huge = await send(ctx, { url: '/backend-restart/status', body: 'x'.repeat(64 * 1024 + 1) })
+  assert.equal(huge.res.status, 413)
+  assert.equal(huge.res.body, undefined)
+  assert.equal(huge.req.destroyed, true)
+
+  // A thrown handler keeps Connection's raw 500 text.
+  const throwing = fakeContext()
+  registerChannel(throwing, async () => { throw new Error('boom') })
+  const thrown = await send(throwing, { url: '/backend-restart/status', body: JSON.stringify(clientRequest('r12', 'status')) })
+  assert.equal(thrown.res.status, 500)
+  assert.equal(thrown.res.body, 'handler failure: Error: boom')
+
+  // A handler returning a non-result throws while framing, mapped the same way.
+  const malformed = fakeContext()
+  registerChannel(malformed, async () => undefined)
+  const broken = await send(malformed, { url: '/backend-restart/status', body: JSON.stringify(clientRequest('r13', 'status')) })
+  assert.equal(broken.res.status, 500)
+  assert.match(broken.res.body, /^handler failure: TypeError/)
 })
 
 await check('the supervisor parses its own flags and the command after --', () => {

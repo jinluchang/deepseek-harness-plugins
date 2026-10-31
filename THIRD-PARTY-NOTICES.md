@@ -10,8 +10,8 @@ plugins embed and the license that applies to it.
 Harness, reproduced unchanged: 11 lines, 2,361 bytes, sha256
 `eab4c75ea563561b1b70dec5ec228564281b979f3b610ec0adacadb435c08951`.
 
-Provenance: `packages/bundle/web-app/presets/standard.patch.yml:55` of the DeepSeek Harness repository
-(the same text also appears at `ptc.patch.yml:55` and `cordis.patch.yml:54` of that repository).
+Provenance: `packages/bundle/web-app/presets/standard.patch.yml:58` of the DeepSeek Harness repository
+(the same text also appears at `ptc.patch.yml:58` and `cordis.patch.yml:57` of that repository).
 DeepSeek Harness is licensed under the MIT License, reproduced in full below (source: the DeepSeek
 Harness `LICENSE` file, sha256
 `ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be`). The MIT License applies to that

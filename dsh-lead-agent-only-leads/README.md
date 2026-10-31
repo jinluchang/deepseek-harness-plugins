@@ -275,7 +275,7 @@ Copyright (c) 2026 Luchang Jin.
 `cordis.patch.yml` embeds an 11-line plan-mode system-prompt section reproduced unchanged from DeepSeek
 Harness, which is licensed under the MIT License (Copyright (c) 2026 DeepSeek). The MIT License applies to
 that embedded text alone and does not extend to the rest of this bundle. Provenance:
-`packages/bundle/web-app/presets/standard.patch.yml:55`, 2,361 bytes, sha256
+`packages/bundle/web-app/presets/standard.patch.yml:58`, 2,361 bytes, sha256
 `eab4c75ea563561b1b70dec5ec228564281b979f3b610ec0adacadb435c08951`. See
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the complete notice; the MIT text follows.
 
