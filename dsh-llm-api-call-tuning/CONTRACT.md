@@ -21,7 +21,10 @@ This plugin fills that gap with **one** Settings page:
   namespace (`llm-api-call-tuning`),
 - one **provider row** per active provider route that shows the route's **effective** retry policy and
   writes leaf-path operations **directly into that provider's own settings namespace**; a
-  declared-but-dormant directory entry is listed as a read-only row, and
+  declared-but-dormant directory entry is listed as a read-only row,
+- a **provider timeouts** card that edits the per-route application-layer leaves
+  `streamIdleTimeoutMs` (all routes), `timeoutMs` (`llm-pi-ai` routes), and `filesApiTimeoutMs` (the two
+  DeepSeek routes) in those same provider namespaces; and
 - a **fetch timeouts** card for two **process-wide** HTTP timers (`headersTimeoutMs`,
   `bodyTimeoutMs`) that the Host applies to the undici dispatcher every provider route, web search, and
   HTTP MCP server shares. Both are `unset` by default, so a fresh install changes no behavior. This part
@@ -31,9 +34,10 @@ This plugin fills that gap with **one** Settings page:
 
 Non-goals: the plugin owns no projection state and never copies the retry defaults onto a provider on
 its own. It is not a new retry engine, it does not change any other profile, and it does not touch
-provider configuration outside `retryPolicy`. It does not install a per-provider HTTP timeout or replace
-the Host's dispatcher with a bare agent: the fetch feature only wraps the current dispatcher, only while
-a timer is set, and restores it on clear/dispose.
+provider configuration outside `retryPolicy` and the three explicitly documented timeout leaves. It does
+not install a per-provider **HTTP transport** timeout (`connectTimeoutMs` is out of scope; see *Provider
+timeout fields*) or replace the Host's dispatcher with a bare agent: the fetch feature only wraps the
+current dispatcher, only while a timer is set, and restores it on clear/dispose.
 
 ## Identity (do not change without updating both halves)
 
@@ -43,17 +47,17 @@ authoritative, and `verify.mjs` pins behaviour and the upstream constants rather
 | Item | Value |
 | --- | --- |
 | Package | `dsh-llm-api-call-tuning` |
-| Client module id | `dsh-llm-api-call-tuning` — the exact package name (`window.__ModuleLoader__.load` `client.js:60`) |
-| Client plugin `name` | `dsh-llm-api-call-tuning` (`client.js:1678`) |
+| Client module id | `dsh-llm-api-call-tuning` — the exact package name (`window.__ModuleLoader__.load` `client.js:77`) |
+| Client plugin `name` | `dsh-llm-api-call-tuning` (`client.js:2174`) |
 | Loader entry id / row id | `llm-api-call-tuning` (`cordis.patch.yml`) |
 | Settings namespace | `llm-api-call-tuning` — this plugin's own `Config`, read/written with `ctx.configForms.get('llm-api-call-tuning')` |
 | Locale namespace | `llm-api-call-tuning` |
-| Host `name` export | `llm-api-call-tuning` (`index.js:447`) |
-| Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `DEFAULT_FETCH`, `FETCH_KEYS`, `FETCH_OPTIONS`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
+| Host `name` export | `llm-api-call-tuning` (`index.js:588`) |
+| Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `DEFAULT_FETCH`, `FETCH_KEYS`, `FETCH_OPTIONS`, `PROVIDER_TIMEOUT_FIELDS`, `PROVIDER_TIMEOUT_KEYS`, `PROVIDER_TIMEOUT_OPTIONS`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
 | Host `inject` | none exported — `apply()` calls `ctx.inject(['settings'], …)` for the page policy and mounts its fetch-timeout effect itself (see *Fetch timeout dispatcher*) |
 | Host side effect | A process-wide undici dispatcher wrapper, installed only while at least one fetch value is a number; the previous dispatcher is restored on clear/dispose only while the wrapper is still the current dispatcher. With both values `unset` — the shipped default — nothing is installed. |
-| Client `inject` | `['slots', 'locale', 'configForms', 'remote']` (`client.js:1679`) |
-| Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:1701-1709`) |
+| Client `inject` | `['slots', 'locale', 'configForms', 'remote']` (`client.js:2175`) |
+| Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:2197-2205`) |
 | Host ↔ Client wire | **No RPC channel of its own.** Reads and writes ride the shared settings form mirror (`configForms`), whose `mutate()` calls the Host `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:129-151`). The provider directory is read from the Client Remote namespace `llm` (`llm.listProviders()` + `llm.listConfigurableProviders()`). |
 | Mount patch seed | **nothing**: the row carries no `config`, so the global defaults start on the upstream code defaults, both fetch timers start `unset`, and a fresh install changes no provider behavior |
 
@@ -185,6 +189,11 @@ preset, never a fallback layer.
   effect of this plugin's row. The retry-defaults card, provider Save/Reset, and "Apply defaults to all"
   never read, write, or project the two fetch leaves onto a provider route; conversely, the fetch card
   writes only its two flat leaves in this plugin's own namespace.
+- **Provider timeouts are provider-owned leaves, not `Config` fields and not presets.** The card paints
+  a row's user layer and writes only that route's changed timeout leaves in the provider's own
+  namespace; `PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS` are frozen
+  metadata for the page/docs/verify, and `Config` deliberately keeps its six retry + two fetch fields.
+  The timeout Save never emits retry leaves, and the retry/fetch saves never emit timeout leaves.
 - **Per-write gate and revision fencing.** A write is attempted only when the target form's freshest
   snapshot is `ready`, not explicitly read-only (`writable !== false`), and carries a **numeric**
   revision; that same read supplies the fence as one atomic `mutate(ops, revision)`, so the page never
@@ -270,6 +279,58 @@ The policy shape follows the upstream union (`retry-policy.ts:87-101`): `normal`
 leaves are inactive. The page shows `always` rows without the retry-limit/code controls and clears
 those leaves when saving.
 
+## Provider timeout fields (per-route, provider-owned)
+
+The third card edits three application-layer timeout leaves that live in the **provider's** settings
+namespace. They are ordinary DSH provider settings, not fields of this plugin's `Config`; the host half
+only publishes frozen metadata (`PROVIDER_TIMEOUT_FIELDS`, `PROVIDER_TIMEOUT_KEYS`,
+`PROVIDER_TIMEOUT_OPTIONS`) that the page, the docs, and `verify.mjs` read. The page writes them through
+the provider's own shared form, exactly like `retryPolicy`.
+
+| Field | `settingsNs` | `settingsPath` + leaf | Code default | Accepted by the page |
+| --- | --- | --- | --- | --- |
+| `streamIdleTimeoutMs` | `llm-pi-ai`; `llm-deepseek`; `llm-deepseek-account` | `['providers', <route>, 'streamIdleTimeoutMs']`; `['streamIdleTimeoutMs']` at the two DeepSeek roots | `300000` ms (5 min), upstream `DEFAULT_STREAM_IDLE_TIMEOUT_MS` | blank = unset (package default), or integer `1..2147483647`; `0` refused |
+| `timeoutMs` | `llm-pi-ai` only | `['providers', <route>, 'timeoutMs']` | `unset` = SDK default (about `600000` ms); DSH records no default (`z.natural()`) | blank = unset (SDK default), or integer `1..2147483647`; `0` refused |
+| `filesApiTimeoutMs` | `llm-deepseek`; `llm-deepseek-account` only | `['filesApiTimeoutMs']` at the two DeepSeek roots | `60000` ms (1 min), upstream `DEFAULT_FILES_API_TIMEOUT_MS` | blank = unset (package default), or integer `1..2147483647`; `0` refused |
+
+**Blank = unset = keep the package/SDK default.** The card seeds from the **user layer** only: a stored
+override paints its number, and an untouched route paints blank even when the effective value the Host
+reports is the package default (`300000` / `600000` / `60000`). Save writes only the leaves whose draft
+changed; an unchanged route writes nothing.
+
+**`0` is refused, and there is no off switch.** The upstream DeepSeek and stream-idle schemas require a
+strictly positive value and their load-time asserts reject `<= 0`; a zero SDK request timeout would
+abort every request immediately. None of the three schemas has a "disabled" state, so the page's
+**Unlimited** preset fills the maximum `2147483647` ms (about 24.8 days) — a cap, not an off switch. `zeroRejected` and `unlimitedPreset` are recorded in the metadata and pinned by `verify.mjs`.
+A **direct `settings.mutate`** (or a hand-edited profile patch) can still persist `0`; for the two
+watchdogs that fails the provider's load-time assert and the route then fails to resolve, which is the
+failure this page prevents.
+
+**Active routes only.** The card registers controls only for rows that pass the same gate as the retry
+rows: active, non-empty `settingsNs`, a served form, `ready`, `writable !== false`, and a numeric
+revision. A dormant route, a route without a settings namespace, or a route whose namespace is not
+served renders read-only with no controls and is never written: writing a timeout leaf into
+`providers.<route>` would materialize a partial provider profile and could activate the dormant route.
+
+**SDK / transport interplay.** For SSE routes the SDK request timeout (`timeoutMs`, ~600 s by default)
+bounds the wait for **response headers**, `streamIdleTimeoutMs` bounds silence **between** streamed
+chunks, and the process-wide fetch `bodyTimeoutMs` bounds the transport between chunks. Raising only the
+idle window does not help when an SDK or transport deadline still fires first, so the row shows two
+**non-blocking** advisories (`timeouts.advisory.sdkFirst`, `timeouts.advisory.transportFirst`). A
+failure reported as an **`llm-pi-ai` stream idle timeout after 300000 ms** is the default idle watchdog
+aborting a slow first token (TTFT stall); raise `streamIdleTimeoutMs` on this card (and match
+`timeoutMs` / `bodyTimeoutMs`) instead of hand-editing the profile.
+
+**`connectTimeoutMs` is out of scope.** undici has no per-request connect timeout in versions 6, 7, or 8,
+and only a fragile agent rebuild could express one. A transport connect limit belongs upstream in
+`packages/util/http-proxy/src/install.ts` (the proxy-aware dispatcher install, around lines 154-167), not
+in this page. This is recorded here so the omission is intentional, not an oversight.
+
+The upstream defaults and schema bounds the metadata mirrors are pinned against `$DSH_HARNESS_CHECKOUT`:
+`llm-deepseek/src/defaults.ts` (`DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000`,
+`DEFAULT_FILES_API_TIMEOUT_MS = 60_000`), `llm-deepseek/src/config.ts` and `llm-pi-ai/src/config.ts`
+(`z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS)`, `timeoutMs: z.natural()`).
+
 ## Write operation shapes (exact)
 
 Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
@@ -348,12 +409,45 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   ]
   ```
 
+- **Provider timeouts Save** — only the CHANGED leaves for the row's family, in field order. A pi-ai
+  route writes under `['providers', <route>]`; the two DeepSeek routes write at the namespace root:
+
+  ```json
+  [
+    { "op": "set", "path": ["providers", "openrouter", "streamIdleTimeoutMs"], "value": 1800000 },
+    { "op": "set", "path": ["providers", "openrouter", "timeoutMs"], "value": 1800000 }
+  ]
+  ```
+
+  ```json
+  [
+    { "op": "set", "path": ["streamIdleTimeoutMs"], "value": 600000 },
+    { "op": "set", "path": ["filesApiTimeoutMs"], "value": 120000 }
+  ]
+  ```
+
+  Clearing a seeded leaf emits its unset instead, for example
+  `{ "op": "unset", "path": ["providers", "<route>", "timeoutMs"] }`; a route whose draft is unchanged
+  emits no operations at all and its Save stays disabled.
+
+- **Provider timeouts Reset** — one unset per leaf THIS card owns for the row's family, nothing else:
+
+  ```json
+  [
+    { "op": "unset", "path": ["providers", "openrouter", "streamIdleTimeoutMs"] },
+    { "op": "unset", "path": ["providers", "openrouter", "timeoutMs"] }
+  ]
+  ```
+
+  For a DeepSeek route the two paths are `['streamIdleTimeoutMs']` and `['filesApiTimeoutMs']`.
+
 **Never:** a whole `retryPolicy` object set (that would materialize schema defaults over a hand-written
 profile), a whole `providers` dict set (that would clobber sibling provider fields), or a profile-object
 set. Every op addresses one leaf; `Reset` is the only op that unsets a subtree. The two fetch leaves are
 always **flat** (`['headersTimeoutMs']`, `['bodyTimeoutMs']`), never nested under a `fetchTimeouts`
 object, and they never appear in the retry defaults, provider Save/Reset, or "Apply defaults to all"
-op lists.
+op lists. Provider-timeout ops address exactly one leaf under the row's own address; they never include
+a `retryPolicy` segment, a whole provider profile, or a fetch leaf.
 
 ### Refusal copy, and the defensive "managed elsewhere" branch
 
@@ -392,6 +486,9 @@ exercises it as a unit test of the classification path, explicitly marked defens
   volatile config commit (`vendor/loader/src/config/entry.ts:181-195`). `verify.mjs` pins the write
   path and the page contract, not a live save; the live latency is a deployment property.
 - **A request already in flight keeps the policy it started with.** There is no mid-request update.
+- **Provider-timeout changes persist in the provider's namespace** and are picked up with the next
+  request/route registration; there is no global timer and no projection of these leaves onto another
+  route. A dormant or unserved route is read-only and is never written.
 - **Fetch-timer changes take effect on the next HTTP dispatch.** The wrapper re-reads the live values on
   every request, so a save needs no backend restart. The two leaves persist in this plugin's own
   settings namespace like every other Host setting; Reset (or clearing both) restores the system-default
@@ -419,7 +516,7 @@ exercises it as a unit test of the classification path, explicitly marked defens
   active" note and never registers a form for them. Likewise, a route without a settings namespace
   (or one whose namespace the deployment does not serve) is read-only here.
 - **The provider directory is read once, when the section mounts.** `readProviders()` runs in one
-  mount effect (`client.js:1394-1403`) and the page does **not** subscribe to
+  mount effect (`client.js:1872-1883`) and the page does **not** subscribe to
   `llm/adapters-updated`, `settings/document-updated`, or `connection/reset` the way the Models page
   does (`packages/client/ui-settings-models/src/client/index.ts:122-128`). Navigating away and back
   re-reads; a provider added or removed while the page stays open needs a page reload.
@@ -442,6 +539,20 @@ exercises it as a unit test of the classification path, explicitly marked defens
 - **The page's local validation is not the Host schema.** A direct `settings.mutate` (or a hand-edited
   profile patch) can still write a provider policy that the provider's own loader will reject at load
   time; the page's refusal is a UX guard, not an enforcement boundary.
+- **Provider timeouts are per route, and `0` is refused.** The page refuses `0` because the DeepSeek /
+  stream-idle schemas reject it and a zero SDK request timeout aborts every request immediately; the
+  **Unlimited** preset writes the `2147483647` ms cap (about 24.8 days) instead of an off switch. A
+  direct `settings.mutate` can still persist `0`, which fails the provider's load-time assert and makes
+  the route fail to resolve.
+- **Dormant routes are read-only on the provider-timeout card.** Writing a timeout leaf into
+  `providers.<route>` would materialize a partial provider profile and could activate the route, so the
+  card blocks it by design rather than merely disabling the button.
+- **`connectTimeoutMs` is out of scope.** undici has no per-request connect timeout in versions 6, 7, or
+  8; a transport connect limit belongs upstream in `packages/util/http-proxy/src/install.ts` (around
+  lines 154-167), not in this page.
+- **The timeout card's advisories are heuristics, not enforcement.** They compare the draft values (and
+  the fetch body-timeout draft) locally; a shorter deadline set through a direct write or a different
+  namespace layer is not detected, and the advisories never block Save.
 - **The fetch timers are process-wide.** They limit the shared undici dispatcher for every provider
   route, web search, and HTTP MCP server in the Host process. There is no per-provider HTTP timeout; a
   per-request timeout set by a caller always wins. `unset` leaves the system/DSH default untouched, `0`
@@ -466,7 +577,7 @@ exercises it as a unit test of the classification path, explicitly marked defens
 no deferred registration. `configForms` is a **declared** client inject, so a composition without the
 settings service parks this fiber before `apply` runs: neither the dictionaries nor the section are
 registered and the page simply does not activate. The `forms === undefined` guard in
-`client.js:1690-1696` is belt-and-braces for a direct harness/composition that calls `apply` regardless;
+`client.js:2185-2193` is belt-and-braces for a direct harness/composition that calls `apply` regardless;
 in a real composition it is never reached.
 
 The section registration is:
@@ -528,17 +639,30 @@ runs **once per mount** with no refresh subscription (see *Known limitations*). 
 
 ### Page copy
 
-The en and zh dictionaries are inline in `client.js` and carry the **same 97 keys** (77 retry/card keys
-plus 20 fetch-timeout keys). English copy never contains CJK text; every key has a non-empty Chinese
-value. The nav label is the `nav` key, the page header/title is the `title` key, and the page intro
-covers both the retry policy and the process-wide fetch timeouts. `status.loading` /
+The en and zh dictionaries are inline in `client.js` and carry the **same 121 keys** (97 retry/fetch
+keys plus 24 provider-timeout keys). English copy never contains CJK text; every key has a non-empty
+Chinese value. The nav label is the `nav` key, the page header/title is the `title` key, and the page
+intro covers the retry policy, the per-route timeouts, and the process-wide fetch timeouts. `status.loading` /
 `status.unavailable` belong to the retry defaults card; `fetch.status.loading` /
 `fetch.status.unavailable` are the fetch card's own versions of the same states, and `status.readOnly`
 is shared.
 
+### Provider-timeout card
+
+The third card, between the provider retry rows and the fetch card, renders one row per joined active
+route. A pi-ai row shows `streamIdleTimeoutMs` and `timeoutMs`; a DeepSeek row shows
+`streamIdleTimeoutMs` and `filesApiTimeoutMs`. Each field is a text input seeded from the user layer
+(blank = package/SDK default), carries a default/override badge and an **Unlimited** preset button, and
+validates locally (`0`, negatives, fractions, overflow, leading zeros, and exponent notation are refused
+with `error.<key>`; `1..2147483647` is accepted). Save writes only changed leaves and is disabled when
+nothing changed; Reset unsets the family's leaves. The row renders the route protocol (pi-ai from
+`snapshot.value.providers.<route>.api`, falling back to "catalog default"; DeepSeek always
+`anthropic-messages`) and the non-blocking SDK/transport advisories described in *Provider timeout
+fields*. Dormant, namespace-less, and unserved rows are read-only and never written.
+
 ### Fetch-timeout card
 
-The third card, after the defaults and provider cards, renders one text input per `FETCH_KEYS` field.
+The fourth card, after the provider-timeout card, renders one text input per `FETCH_KEYS` field.
 Its draft is built from the two top-level leaves of this plugin's own namespace: an absent/`null` leaf
 is painted as **empty** (the system-default state), `0` is painted as `0` (disabled), and a positive
 integer is painted as its digits. Local validation refuses negative, fractional, overflow, and
@@ -563,10 +687,13 @@ the fetch tri-state: unset/absent/null, `0` disabled, boundaries, and the refuse
 (no install when unset; install and nullish-fill when numeric; `0` pass-through; live re-read on
 `loader/volatile-update`/`app-boot/config-reload`; restore-on-clear; restore-on-dispose only while still
 current; `NODE_USE_ENV_PROXY`; missing-`undici` warn-once no-op in a child process), the en/zh copy
-parity (97 keys), the client registration and every op shape (defaults/normal/always/reset plus fetch
-Save/unset/Reset), the validation, refusal, per-write gate/skip, and revision-retry paths, the
-provider-directory join and its degradation, and the docs' field tables in both languages. The "managed
+parity (121 keys), the provider-timeout metadata and the upstream schema/defaults it mirrors, the
+provider-timeout card (family visibility, user-layer seeding, protocol display, advisories, active-only
+gate, Unlimited preset, zero rejection), the client registration and every op shape
+(defaults/normal/always/reset plus fetch Save/unset/Reset and provider-timeout Save/Reset), the
+validation, refusal, per-write gate/skip, and revision-retry paths, the provider-directory join and its
+degradation, and the docs' field tables in both languages. The "managed
 elsewhere" classification is exercised as a **defensive unit test** of `submitOps`/`refusalKind` with a
 rejecting fake form, not as real `ConfigForm` behaviour. It does **not** boot a Host or a browser: live
-GUI behaviour, the real nav row, next-request latency, and whether a real HTTP request actually times
-out remain deployment checks.
+GUI behaviour, the real nav row, next-request latency, whether a real HTTP request actually times out,
+and whether a live provider route aborts a slow first token remain deployment checks.

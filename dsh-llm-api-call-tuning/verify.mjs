@@ -229,12 +229,26 @@ const buttonWithText = (tree, keys) => findAll(
 const numericInputs = tree => findAll(tree, node => node.type === 'input' && node.props.inputMode !== undefined)
 
 /**
- * The two fetch-timer inputs of the third card, in FETCH_KEYS order. They are
- * the only text inputs carrying a placeholder (the retry controls have none).
+ * The two fetch-timer inputs of the fourth card, in FETCH_KEYS order. They are
+ * the only text inputs on the page root carrying the fetch placeholder (the
+ * retry controls have none; the timeout card's inputs live in child rows).
  */
 const fetchInputs = tree => findAll(
   tree,
-  node => node.type === 'input' && node.props.inputMode !== undefined && node.props.placeholder !== undefined,
+  node => node.type === 'input' && node.props.inputMode !== undefined && node.props.placeholder === EN['fetch.placeholder'],
+)
+
+/**
+ * The timeout-card inputs of one timeout row, in `timeoutFieldsFor(family)`
+ * order. A timeout input is distinguishable by its numeric placeholder
+ * (`300000` / `600000` / `60000`), which no other input carries.
+ */
+const timeoutInputs = tree => findAll(
+  tree,
+  node => node.type === 'input'
+    && node.props.inputMode !== undefined
+    && node.props.placeholder !== undefined
+    && node.props.placeholder !== EN['fetch.placeholder'],
 )
 
 /** The mode select of one surface. */
@@ -256,6 +270,19 @@ function setFetchNumeric(tree, index, text) {
   if (input === undefined) throw new Error(`no rendered fetch input at index ${String(index)}`)
   input.props.onChange({ target: { value: text } })
 }
+
+/** Type text into one timeout-row input by index (field order of its family). */
+function setTimeoutNumeric(tree, index, text) {
+  const input = timeoutInputs(tree)[index]
+  if (input === undefined) throw new Error(`no rendered timeout input at index ${String(index)}`)
+  input.props.onChange({ target: { value: text } })
+}
+
+/** The "Unlimited" preset buttons of one timeout row, one per visible field. */
+const timeoutPresetButtons = tree => findAll(
+  tree,
+  node => node.type === 'button' && directText(node) === EN['timeouts.unlimited'],
+)
 
 /** Choose a mode on one surface. */
 function setMode(tree, value) {
@@ -399,6 +426,22 @@ function makeForms(overrides = {}) {
 }
 
 /**
+ * Build the form doubles with ONE provider namespace replaced by an explicit
+ * snapshot, for the provider-timeout seeding/gating fixtures.
+ * @param ns - the provider namespace.
+ * @param value - the resolved section value.
+ * @param user - the user layer (timeout/retry overrides).
+ * @param revision - the snapshot revision.
+ * @returns the complete form set.
+ */
+function providerForms(ns, value, user, revision) {
+  return makeForms({ [ns]: new BoundForm(ns, readySnapshot(value, revision, user)) })
+}
+
+/** A pi-ai section value with one openrouter profile. */
+const piAiValue = profile => ({ providers: { openrouter: profile } })
+
+/**
  * Build a fake client root context with the services the client half injects.
  * @param options - `forms` (the form doubles), `registered` / `configurable`
  *   (the provider directory), `remote` (`'dotted'`, `'fallback'`, `'throwing'`,
@@ -497,19 +540,45 @@ function mountPage(options = {}) {
   return { ctx, registration, face, page }
 }
 
-/** The rendered provider-row placeholders of a mounted page, in order. */
-const rowElements = page => findAll(page.tree, node => typeof node.type === 'function' && node.props?.row !== undefined)
+/**
+ * The rendered RETRY-row placeholders of a mounted page, in order. The timeout
+ * card renders rows with the same `row` prop, so the retry set is identified by
+ * its `defaultsValues` prop (the timeout rows carry `bodyTimeoutMs` instead).
+ */
+const rowElements = page => findAll(
+  page.tree,
+  node => typeof node.type === 'function' && node.props?.row !== undefined && 'defaultsValues' in node.props,
+)
 
-/** The provider-row placeholder for one provider key. */
+/** The rendered PROVIDER-TIMEOUT row placeholders of a mounted page, in order. */
+const timeoutRowElements = page => findAll(
+  page.tree,
+  node => typeof node.type === 'function' && node.props?.row !== undefined && 'bodyTimeoutMs' in node.props,
+)
+
+/** The retry-row placeholder for one provider key. */
 function rowElement(page, provider) {
   const found = rowElements(page).find(node => node.props.row.provider === provider)
-  if (found === undefined) throw new Error(`no provider row rendered for "${provider}"`)
+  if (found === undefined) throw new Error(`no retry row rendered for "${provider}"`)
   return found
 }
 
-/** Mount one provider row child exactly as the page renders it. */
+/** The timeout-row placeholder for one provider key. */
+function timeoutRowElement(page, provider) {
+  const found = timeoutRowElements(page).find(node => node.props.row.provider === provider)
+  if (found === undefined) throw new Error(`no timeout row rendered for "${provider}"`)
+  return found
+}
+
+/** Mount one retry-row child exactly as the page renders it. */
 function mountRow(page, provider) {
   const element = rowElement(page, provider)
+  return react.mount(element.type, element.props)
+}
+
+/** Mount one timeout-row child exactly as the page renders it. */
+function mountTimeoutRow(page, provider) {
+  const element = timeoutRowElement(page, provider)
   return react.mount(element.type, element.props)
 }
 
@@ -618,6 +687,7 @@ await check('the host half has no default export and exposes only the frozen nam
     Object.keys(host).sort(),
     [
       'Config', 'DEFAULT_FETCH', 'DEFAULT_TUNE', 'FETCH_KEYS', 'FETCH_OPTIONS',
+      'PROVIDER_TIMEOUT_FIELDS', 'PROVIDER_TIMEOUT_KEYS', 'PROVIDER_TIMEOUT_OPTIONS',
       'RETRYABLE_CODES', 'RETRY_MODES', 'TUNE_KEYS', 'TUNE_OPTIONS', 'TUNE_PROBLEMS',
       'apply', 'name', 'schemaLibrary', 'validateTune',
     ],
@@ -695,6 +765,95 @@ await check('FETCH_KEYS, DEFAULT_FETCH, and FETCH_OPTIONS are frozen and exact',
   }
 })
 
+await check('PROVIDER_TIMEOUT_FIELDS/KEYS/OPTIONS are frozen metadata, one per provider-owned timeout, in order', () => {
+  assert.equal(Object.isFrozen(host.PROVIDER_TIMEOUT_KEYS), true, 'PROVIDER_TIMEOUT_KEYS must stay frozen')
+  assert.deepEqual(
+    [...host.PROVIDER_TIMEOUT_KEYS],
+    ['streamIdleTimeoutMs', 'timeoutMs', 'filesApiTimeoutMs'],
+    'PROVIDER_TIMEOUT_KEYS drifted',
+  )
+  assert.equal(Object.isFrozen(host.PROVIDER_TIMEOUT_FIELDS), true, 'PROVIDER_TIMEOUT_FIELDS must stay frozen')
+  assert.deepEqual(host.PROVIDER_TIMEOUT_FIELDS.map(field => field.key), [...host.PROVIDER_TIMEOUT_KEYS], 'PROVIDER_TIMEOUT_FIELDS is not one entry per key, in order')
+  assert.equal(Object.isFrozen(host.PROVIDER_TIMEOUT_OPTIONS), true, 'PROVIDER_TIMEOUT_OPTIONS must stay frozen')
+  assert.deepEqual(host.PROVIDER_TIMEOUT_OPTIONS.map(option => option.key), [...host.PROVIDER_TIMEOUT_KEYS], 'PROVIDER_TIMEOUT_OPTIONS is not one entry per key, in order')
+  assert.deepEqual(plain(host.PROVIDER_TIMEOUT_OPTIONS), plain(host.PROVIDER_TIMEOUT_FIELDS), 'the public PROVIDER_TIMEOUT_OPTIONS projection drifted from PROVIDER_TIMEOUT_FIELDS')
+})
+
+await check('every provider-timeout option carries the frozen shape, family, default, bounds, and unlimited preset', () => {
+  const expected = {
+    streamIdleTimeoutMs: {
+      family: 'streamIdle',
+      default: 300_000,
+      defaultText: '300000 ms (5 min); unset = package default 300000',
+      range: 'integer 1..2147483647; 0 is refused (schema and load-time assert)',
+      scopes: [
+        { ns: 'llm-pi-ai', pathTemplate: ['providers', '<route>', 'streamIdleTimeoutMs'] },
+        { ns: 'llm-deepseek', pathTemplate: ['streamIdleTimeoutMs'] },
+        { ns: 'llm-deepseek-account', pathTemplate: ['streamIdleTimeoutMs'] },
+      ],
+    },
+    timeoutMs: {
+      family: 'request',
+      default: null,
+      defaultText: 'unset = SDK default (about 600000 ms)',
+      range: 'integer 1..2147483647; 0 is refused by the page (schema-legal but aborts every request)',
+      scopes: [{ ns: 'llm-pi-ai', pathTemplate: ['providers', '<route>', 'timeoutMs'] }],
+    },
+    filesApiTimeoutMs: {
+      family: 'files',
+      default: 60_000,
+      defaultText: '60000 ms (1 min); unset = package default 60000',
+      range: 'integer 1..2147483647; 0 is refused (schema and load-time assert)',
+      scopes: [
+        { ns: 'llm-deepseek', pathTemplate: ['filesApiTimeoutMs'] },
+        { ns: 'llm-deepseek-account', pathTemplate: ['filesApiTimeoutMs'] },
+      ],
+    },
+  }
+  assert.deepEqual(Object.keys(expected), [...host.PROVIDER_TIMEOUT_KEYS], 'the pinned option table is out of order')
+  for (const option of host.PROVIDER_TIMEOUT_OPTIONS) {
+    const shape = expected[option.key]
+    assert.ok(shape !== undefined, `unexpected provider-timeout key ${option.key}`)
+    assert.equal(Object.isFrozen(option), true, `${option.key} option must stay frozen`)
+    assert.deepEqual(
+      Object.keys(option).sort(),
+      ['default', 'defaultText', 'description', 'family', 'integerOnly', 'key', 'range', 'scopes', 'unit', 'unlimitedPreset', 'zeroRejected'],
+      `${option.key} option surface drifted: ${JSON.stringify(Object.keys(option))}`,
+    )
+    assert.equal(option.family, shape.family, `${option.key} family drifted`)
+    assert.deepEqual(plain(option.default), plain(shape.default), `${option.key} default drifted`)
+    assert.equal(option.defaultText, shape.defaultText, `${option.key} defaultText drifted`)
+    assert.equal(option.range, shape.range, `${option.key} range text drifted`)
+    assert.equal(option.unit, 'ms', `${option.key} unit drifted`)
+    assert.equal(option.integerOnly, true, `${option.key} must be marked integerOnly`)
+    assert.equal(option.zeroRejected, true, `${option.key} must be marked zeroRejected`)
+    assert.equal(option.unlimitedPreset, 2_147_483_647, `${option.key} unlimitedPreset must be the 2147483647 cap`)
+    assert.equal(typeof option.description, 'string', `${option.key} has no description`)
+    assert.ok(option.description.length > 0, `${option.key} description is blank`)
+    assert.match(option.range, /2147483647/, `${option.key} range text lost the 2147483647 cap`)
+    assert.match(option.range, /0 is refused/, `${option.key} range text must say 0 is refused`)
+    assert.equal(Object.isFrozen(option.scopes), true, `${option.key} scopes must stay frozen`)
+    assert.deepEqual(plain(option.scopes), shape.scopes, `${option.key} namespace/path scopes drifted`)
+    for (const scope of option.scopes) {
+      assert.equal(Object.isFrozen(scope), true, `${option.key} scope must stay frozen`)
+      assert.equal(Object.isFrozen(scope.pathTemplate), true, `${option.key} scope pathTemplate must stay frozen`)
+    }
+  }
+})
+
+await check("the provider-timeout keys are NOT fields of this plugin's Config: Config keeps six retry + two fetch fields", () => {
+  for (const key of host.PROVIDER_TIMEOUT_KEYS) {
+    assert.equal(key in (host.Config.dict ?? {}), false, `${key} leaked into Config.dict (Config must stay retry+fetch only)`)
+    assert.equal(host.TUNE_KEYS.includes(key), false, `${key} leaked into TUNE_KEYS`)
+    assert.equal(host.FETCH_KEYS.includes(key), false, `${key} leaked into FETCH_KEYS`)
+  }
+  assert.deepEqual(
+    Object.keys(host.Config.dict ?? {}),
+    [...host.TUNE_KEYS, ...host.FETCH_KEYS],
+    'Config.dict drifted: the provider-timeout metadata must not become config fields',
+  )
+})
+
 await check('the loader id, host name, section id, locale NS, and dictionary NS all agree', () => {
   const options = clientPluginApplyRegistration()
   assert.equal(host.name, patchRow[1], `index.js name ${host.name} and the loader entry id ${patchRow[1]} disagree`)
@@ -715,6 +874,9 @@ function clientPluginApplyRegistration() {
 const checkout = process.env.DSH_HARNESS_CHECKOUT ?? ''
 const retryPolicyPath = join(checkout, 'packages/llm/llm/src/retry-policy.ts')
 const timeoutPath = join(checkout, 'packages/util/timeout/src/index.ts')
+const deepseekDefaultsPath = join(checkout, 'packages/llm/llm-deepseek/src/defaults.ts')
+const deepseekConfigPath = join(checkout, 'packages/llm/llm-deepseek/src/config.ts')
+const piAiConfigPath = join(checkout, 'packages/llm/llm-pi-ai/src/config.ts')
 let upstreamSourceCache
 /** The upstream retry-policy source, read lazily so an unset checkout fails a check, not the import. */
 function upstreamSource() {
@@ -738,6 +900,42 @@ await check('$DSH_HARNESS_CHECKOUT resolves the real schemastery and the upstrea
   assert.ok(host.Config !== undefined, 'Config is undefined, so the Host would render no settings namespace at all')
   assert.ok(existsSync(retryPolicyPath), `the upstream file ${retryPolicyPath} does not exist`)
   assert.ok(existsSync(timeoutPath), `the upstream file ${timeoutPath} does not exist`)
+  assert.ok(existsSync(deepseekDefaultsPath), `the upstream file ${deepseekDefaultsPath} does not exist`)
+  assert.ok(existsSync(deepseekConfigPath), `the upstream file ${deepseekConfigPath} does not exist`)
+  assert.ok(existsSync(piAiConfigPath), `the upstream file ${piAiConfigPath} does not exist`)
+})
+
+await check('the upstream provider-timeout defaults and schema bounds match the host metadata', () => {
+  const deepseekDefaults = readFileSync(deepseekDefaultsPath, 'utf8')
+  const deepseekConfig = readFileSync(deepseekConfigPath, 'utf8')
+  const piAiConfig = readFileSync(piAiConfigPath, 'utf8')
+  const constant = (source, pattern, name) => {
+    const match = new RegExp(pattern).exec(source)
+    assert.ok(match !== null, `the upstream source no longer records ${name}`)
+    return Number(match[1].replace(/_/g, ''))
+  }
+  const streamIdleDefault = constant(deepseekDefaults, 'DEFAULT_STREAM_IDLE_TIMEOUT_MS\\s*=\\s*([\\d_]+)', 'DEFAULT_STREAM_IDLE_TIMEOUT_MS')
+  const filesApiDefault = constant(deepseekDefaults, 'DEFAULT_FILES_API_TIMEOUT_MS\\s*=\\s*([\\d_]+)', 'DEFAULT_FILES_API_TIMEOUT_MS')
+  assert.equal(streamIdleDefault, host.PROVIDER_TIMEOUT_OPTIONS.find(option => option.key === 'streamIdleTimeoutMs').default, 'the pi-ai/deepseek stream-idle default drifted from the upstream constant')
+  assert.equal(constant(piAiConfig, 'DEFAULT_STREAM_IDLE_TIMEOUT_MS\\s*=\\s*([\\d_]+)', 'llm-pi-ai DEFAULT_STREAM_IDLE_TIMEOUT_MS'), streamIdleDefault, 'llm-pi-ai and llm-deepseek disagree on the stream-idle default')
+  assert.equal(filesApiDefault, host.PROVIDER_TIMEOUT_OPTIONS.find(option => option.key === 'filesApiTimeoutMs').default, 'the Files API default drifted from the upstream constant')
+  assert.match(
+    deepseekConfig,
+    /streamIdleTimeoutMs: z\.number\(\)\.min\(Number\.MIN_VALUE\)\.max\(MAX_TIMER_DELAY_MS\)\.default\(DEFAULT_STREAM_IDLE_TIMEOUT_MS\)\.volatile\(\),/,
+    'llm-deepseek no longer declares streamIdleTimeoutMs as a volatile bounded leaf defaulting to the package default',
+  )
+  assert.match(
+    deepseekConfig,
+    /filesApiTimeoutMs: z\.number\(\)\.min\(Number\.MIN_VALUE\)\.max\(MAX_TIMER_DELAY_MS\)\.default\(DEFAULT_FILES_API_TIMEOUT_MS\)\.volatile\(\),/,
+    'llm-deepseek no longer declares filesApiTimeoutMs as a volatile bounded leaf defaulting to the package default',
+  )
+  assert.match(
+    piAiConfig,
+    /streamIdleTimeoutMs: z\.number\(\)\.min\(Number\.MIN_VALUE\)\.max\(MAX_TIMER_DELAY_MS\)\.default\(DEFAULT_STREAM_IDLE_TIMEOUT_MS\),/,
+    'llm-pi-ai no longer declares a bounded streamIdleTimeoutMs defaulting to the package default',
+  )
+  assert.match(piAiConfig, /timeoutMs: z\.natural\(\),/, 'llm-pi-ai no longer declares timeoutMs as a schema-legal non-negative integer, which is why the page rejects 0')
+  assert.doesNotMatch(piAiConfig, /timeoutMs: z\.natural\(\)[^\n]*\.default\(/, 'llm-pi-ai now seeds a timeoutMs default: the metadata default must change from null')
 })
 
 await check('the upstream retry-policy code defaults parse to exactly DEFAULT_TUNE', () => {
@@ -1604,6 +1802,171 @@ await check('the docs describe the real refusal path and mark managed-elsewhere 
   assert.doesNotMatch(contract, /settings RPC rejects|rejects with code `settings\/rejected`/i, 'CONTRACT.md still claims the managed copy is reachable through a rejection')
 })
 
+const PROVIDER_TIMEOUT_DOC_OPTIONS = host.PROVIDER_TIMEOUT_OPTIONS
+
+await check('all three docs name every provider-timeout field with its namespace, default, and range', () => {
+  for (const [file, text] of [['README.md', readme], ['README.zh.md', readmeZh], ['CONTRACT.md', contract]]) {
+    for (const option of PROVIDER_TIMEOUT_DOC_OPTIONS) {
+      assert.ok(text.includes(`\`${option.key}\``), `${file} does not name the provider-timeout field ${option.key}`)
+    }
+    for (const token of ['llm-pi-ai', 'llm-deepseek', 'llm-deepseek-account', 'providers.<route>', '2147483647']) {
+      assert.ok(text.includes(token), `${file} does not document the provider-timeout address/range token ${token}`)
+    }
+  }
+  for (const token of ['300000', '600000', '60000']) {
+    assert.ok(readme.includes(token), `README.md does not state the provider-timeout default ${token}`)
+    assert.ok(readmeZh.includes(token), `README.zh.md does not state the provider-timeout default ${token}`)
+    assert.ok(contract.includes(token), `CONTRACT.md does not state the provider-timeout default ${token}`)
+  }
+  assert.match(readmeZh, /\u7559\u7a7a|\u672a\u8bbe\u7f6e/, 'README.zh.md does not describe the blank/unset provider-timeout state')
+  assert.match(contract, /unset/i, 'CONTRACT.md does not use "unset" for the provider-timeout blank state')
+
+  // Row-wise check of the three provider-timeout tables: every field row must
+  // carry its own namespaces, pointer, code default, and accepted range. A
+  // token-presence check alone once let a wrong "Namespace / path" cell pass.
+  const timeoutTables = [
+    {
+      label: 'README.md',
+      table: markdownTable(readme, 'Namespace / path'),
+      field: 'Field',
+      ns: 'Applies to',
+      path: 'Namespace / path',
+      default: 'Default',
+      accepts: 'Accepts',
+      nsInPath: true,
+      unset: /unset/i,
+    },
+    {
+      label: 'README.zh.md',
+      table: markdownTable(readmeZh, '\u547d\u540d\u7a7a\u95f4 / \u8def\u5f84'),
+      field: '\u5b57\u6bb5',
+      ns: '\u9002\u7528\u8def\u7531',
+      path: '\u547d\u540d\u7a7a\u95f4 / \u8def\u5f84',
+      default: '\u9ed8\u8ba4\u503c',
+      accepts: '\u63a5\u53d7\u8303\u56f4',
+      nsInPath: true,
+      unset: /\u672a\u8bbe\u7f6e/,
+    },
+    {
+      label: 'CONTRACT.md',
+      table: markdownTable(contract, '\u0060settingsPath\u0060 + leaf'),
+      field: 'Field',
+      ns: '\u0060settingsNs\u0060',
+      path: '\u0060settingsPath\u0060 + leaf',
+      default: 'Code default',
+      accepts: 'Accepted by the page',
+      nsInPath: false,
+      unset: /unset/i,
+    },
+  ]
+  for (const spec of timeoutTables) {
+    for (const option of PROVIDER_TIMEOUT_DOC_OPTIONS) {
+      const row = spec.table.rows.find(candidate => plainCell(candidate[spec.field] ?? '') === option.key)
+      assert.ok(row !== undefined, `${spec.label} has no provider-timeout table row for ${option.key}`)
+      const nsCell = plainCell(row[spec.ns] ?? '')
+      const pathCell = plainCell(row[spec.path] ?? '')
+      for (const scope of option.scopes) {
+        const addressCell = spec.nsInPath ? pathCell : nsCell
+        assert.ok(
+          addressCell.includes(scope.ns),
+          `${spec.label} ${option.key} row does not name the namespace ${scope.ns} in its address: ${addressCell}`,
+        )
+        if (scope.pathTemplate[0] === 'providers') {
+          assert.ok(
+            /providers/.test(pathCell) && /<route>/.test(pathCell),
+            `${spec.label} ${option.key} row does not show the providers.<route> path: ${pathCell}`,
+          )
+        }
+      }
+      const defaultCell = plainCell(row[spec.default] ?? '')
+      if (option.default === null) {
+        assert.match(defaultCell, spec.unset, `${spec.label} ${option.key} default cell does not say unset: ${defaultCell}`)
+      } else {
+        assert.ok(
+          defaultCell.includes(String(option.default)),
+          `${spec.label} ${option.key} default cell does not carry ${String(option.default)}: ${defaultCell}`,
+        )
+      }
+      const acceptsCell = plainCell(row[spec.accepts] ?? '')
+      for (const number of numberTokens(option.range)) {
+        assert.ok(
+          numberTokens(acceptsCell).has(number),
+          `${spec.label} ${option.key} accepts cell never mentions the range number ${number}: ${acceptsCell}`,
+        )
+      }
+    }
+  }
+})
+
+await check('the docs explain the provider-timeout table: blank default, 0 refusal, and the Unlimited cap', () => {
+  for (const [file, text] of [['README.md', readme], ['README.zh.md', readmeZh], ['CONTRACT.md', contract]]) {
+    assert.match(text, /0[^.]{0,60}(?:refus|reject|not allowed|\u62d2\u7edd)/i, `${file} does not state that 0 is refused for provider timeouts`)
+    assert.match(text, /2147483647/, `${file} does not state the Unlimited cap`)
+  }
+  assert.match(readme, /24\.8 days|about 24\.8/i, 'README.md does not explain the 2147483647 ms cap as about 24.8 days')
+  assert.match(readmeZh, /24\.8/, 'README.zh.md does not explain the 2147483647 ms cap as about 24.8 days')
+  assert.match(contract, /24\.8 days/i, 'CONTRACT.md does not explain the 2147483647 ms cap as about 24.8 days')
+  assert.match(readme, /a limit, not an off switch|cap.*not.*off switch/i, 'README.md does not say the Unlimited preset is a limit, not an off switch')
+  assert.match(readmeZh, /\u4e0a\u9650\uff0c\u4e0d\u662f\u5173\u95ed\u5f00\u5173/, 'README.zh.md does not say the Unlimited preset is a cap, not an off switch')
+  assert.match(contract, /a limit, not an off switch|cap.*not.*(?:off switch|disable)/i, 'CONTRACT.md does not say the Unlimited preset is a limit, not an off switch')
+})
+
+await check('the docs state that a direct settings.mutate can still persist 0 and fail the route load', () => {
+  for (const [file, text] of [['README.md', readme], ['README.zh.md', readmeZh], ['CONTRACT.md', contract]]) {
+    assert.match(text, /settings\.mutate/i, `${file} does not name the direct settings.mutate bypass`)
+    assert.match(text, /0/, `${file} does not relate the bypass to a zero timeout`)
+    assert.match(text, /(?:load[- ]time assert|fails? the provider|load failure|\u52a0\u8f7d\u671f\u65ad\u8a00|\u65e0\u6cd5\u89e3\u6790|\u5931\u8d25)/i, `${file} does not state that a persisted 0 breaks the route load`)
+  }
+})
+
+await check('the docs explain the SDK/transport timeout interplay and the 300000 ms stream-idle diagnosis', () => {
+  for (const [file, text] of [['README.md', readme], ['README.zh.md', readmeZh], ['CONTRACT.md', contract]]) {
+    assert.match(text, /streamIdleTimeoutMs/, `${file} does not name the idle watchdog in the interplay note`)
+    assert.match(text, /300000|300 000/, `${file} does not mention the 300000 ms default in the diagnosis`)
+    assert.match(text, /TTFT|first token|\u9996\u4e2a token/i, `${file} does not identify the slow-first-token (TTFT) cause`)
+    assert.match(text, /bodyTimeoutMs/, `${file} does not mention the transport body timeout in the interplay note`)
+  }
+  assert.match(readme, /response headers/i, 'README.md does not explain that the SDK timeout bounds response headers')
+  assert.match(contract, /response headers/i, 'CONTRACT.md does not explain that the SDK timeout bounds response headers')
+})
+
+await check('the docs state the active-only/timeout materialization guard and the connectTimeout out-of-scope fix', () => {
+  for (const [file, text] of [['README.md', readme], ['README.zh.md', readmeZh], ['CONTRACT.md', contract]]) {
+    assert.match(text, /(?:dormant|\u4f11\u7720)/i, `${file} does not state the dormant-route guard`)
+    assert.match(text, /materializ|\u751f\u6210\u4e0d\u5b8c\u6574|\u4e0d\u5b8c\u6574\u7684\u63d0\u4f9b\u65b9/i, `${file} does not explain why a dormant write is blocked (partial profile materialization)`)
+    assert.match(text, /connectTimeoutMs/, `${file} does not name connectTimeoutMs as out of scope`)
+    assert.match(text, /packages\/util\/http-proxy\/src\/install\.ts/, `${file} does not point at the upstream connect-timeout fix location`)
+  }
+})
+
+await check('CONTRACT.md documents the provider-timeout host surface, namespaces, and exact op shapes', () => {
+  for (const token of [
+    'PROVIDER_TIMEOUT_FIELDS', 'PROVIDER_TIMEOUT_KEYS', 'PROVIDER_TIMEOUT_OPTIONS',
+    'Provider timeout fields (per-route, provider-owned)',
+  ]) {
+    assert.ok(contract.includes(token), `CONTRACT.md does not document ${JSON.stringify(token)}`)
+  }
+  for (const option of PROVIDER_TIMEOUT_DOC_OPTIONS) {
+    assert.ok(contract.includes(option.key), `CONTRACT.md does not document the provider-timeout key ${option.key}`)
+    assert.ok(contract.includes(option.range) || /0.*refus/i.test(contract), `CONTRACT.md does not pin the range/refusal of ${option.key}`)
+  }
+  for (const [label, pattern] of [
+    ['the pi-ai stream-idle set path', /"path": \["providers", "openrouter", "streamIdleTimeoutMs"\]/],
+    ['the pi-ai request-timeout set path', /"path": \["providers", "openrouter", "timeoutMs"\]/],
+    ['the deepseek stream-idle root path', /"path": \["streamIdleTimeoutMs"\]/],
+    ['the deepseek files-api root path', /"path": \["filesApiTimeoutMs"\]/],
+    ['the timeout unset op', /"op": "unset", "path": \["providers", "<route>", "timeoutMs"\]/],
+    ['the never-whole-provider rule', /whole `providers` dict set/],
+  ]) {
+    assert.match(contract, pattern, `CONTRACT.md does not document ${label}`)
+  }
+})
+
+await check('the locale metadata descriptions mention the provider timeouts in both languages', () => {
+  assert.match(localeEn.meta.description, /provider timeouts/i, 'locale/en.json meta.description does not mention provider timeouts')
+  assert.match(localeZh.meta.description, /\u63d0\u4f9b\u65b9\u8d85\u65f6/, 'locale/zh.json meta.description does not mention provider timeouts')
+})
+
 /* ══ 8. client registration and copy ═══════════════════════════════════════ */
 
 await check('apply registers one settings.section immediately, with the frozen id, order, label, and locale', () => {
@@ -1622,11 +1985,11 @@ await check('apply registers one settings.section immediately, with the frozen i
   assert.equal(ctx.state.dictionaries[0].ns, 'llm-api-call-tuning', 'the dictionary NS drifted')
 })
 
-await check('the en and zh dictionaries carry the same 97 non-empty keys, and English has no CJK text', () => {
+await check('the en and zh dictionaries carry the same 121 non-empty keys, and English has no CJK text', () => {
   const en = COPY.en
   const zh = COPY.zh
   assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key sets')
-  assert.equal(Object.keys(en).length, 97, `the dictionary key count drifted to ${Object.keys(en).length}`)
+  assert.equal(Object.keys(en).length, 121, `the dictionary key count drifted to ${Object.keys(en).length}`)
   const cjk = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
   for (const [key, copy] of Object.entries(en)) {
     assert.equal(typeof copy, 'string', `en.${key} is not a string`)
@@ -1658,6 +2021,14 @@ await check('the en and zh dictionaries carry the same 97 non-empty keys, and En
     'field.headersTimeoutMs.label', 'field.headersTimeoutMs.description', 'field.headersTimeoutMs.unit',
     'field.bodyTimeoutMs.label', 'field.bodyTimeoutMs.description', 'field.bodyTimeoutMs.unit',
     'error.headersTimeoutMs', 'error.bodyTimeoutMs', 'status.fetchReset',
+    'timeouts.heading', 'timeouts.description', 'timeouts.note', 'timeouts.unit', 'timeouts.hint',
+    'timeouts.unlimited', 'timeouts.save', 'timeouts.saving', 'timeouts.reset', 'timeouts.resetting',
+    'timeouts.resetDone', 'timeouts.protocol', 'timeouts.protocol.catalog',
+    'timeouts.advisory.sdkFirst', 'timeouts.advisory.transportFirst',
+    'field.streamIdleTimeoutMs.label', 'field.streamIdleTimeoutMs.description',
+    'field.timeoutMs.label', 'field.timeoutMs.description',
+    'field.filesApiTimeoutMs.label', 'field.filesApiTimeoutMs.description',
+    'error.streamIdleTimeoutMs', 'error.timeoutMs', 'error.filesApiTimeoutMs',
     'apply.outcome.saved', 'apply.outcome.refused', 'apply.outcome.managed',
   ]) {
     assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing the key "${key}"`)
@@ -1696,7 +2067,7 @@ await check('the page renders the defaults card with one control per retry field
   const { page, ctx } = mountPage()
   await flush()
   const text = renderedText(page.tree)
-  for (const key of ['title', 'intro', 'defaults.heading', 'defaults.description', 'defaults.note', 'defaults.applyAllNote', 'providers.heading', 'providers.description', 'fetch.heading', 'fetch.description', 'fetch.note']) {
+  for (const key of ['title', 'intro', 'defaults.heading', 'defaults.description', 'defaults.note', 'defaults.applyAllNote', 'providers.heading', 'providers.description', 'timeouts.heading', 'timeouts.description', 'timeouts.note', 'fetch.heading', 'fetch.description', 'fetch.note']) {
     assert.ok(text.includes(EN[key]), `the page is missing the "${key}" copy`)
   }
   assert.equal(numericInputs(page.tree).length, 6, `the page rendered ${numericInputs(page.tree).length} numeric inputs (four retry + two fetch)`)
@@ -1711,11 +2082,16 @@ await check('the page renders the defaults card with one control per retry field
   assert.deepEqual(ctx.state.formRequests, ['llm-api-call-tuning', 'llm-deepseek-account', 'llm-deepseek', 'llm-pi-ai'], `apply/mount requested forms ${JSON.stringify(ctx.state.formRequests)}`)
 })
 
-await check('the fetch card is the third card, after the defaults and the provider cards, with two empty inputs and labels', async () => {
+await check('the cards render in order: defaults, provider retry policies, provider timeouts, fetch timeouts', async () => {
   const { page } = mountPage()
   await flush()
   const headings = findAll(page.tree, node => node.type === 'h3').map(node => directText(node))
-  assert.deepEqual(headings, [EN['defaults.heading'], EN['providers.heading'], EN['fetch.heading']], `the card order drifted: ${JSON.stringify(headings)}`)
+  assert.deepEqual(
+    headings,
+    [EN['defaults.heading'], EN['providers.heading'], EN['timeouts.heading'], EN['fetch.heading']],
+    `the card order drifted: ${JSON.stringify(headings)}`,
+  )
+  assert.equal(timeoutRowElements(page).length, 3, `the timeout card rendered ${timeoutRowElements(page).length} row placeholders, expected one per active route`)
   const inputs = fetchInputs(page.tree)
   assert.equal(inputs.length, host.FETCH_KEYS.length, `the fetch card rendered ${inputs.length} inputs, expected one per fetch key`)
   assert.deepEqual(inputs.map(input => input.props.value), ['', ''], 'the shipped fetch draft must be empty (unset), never a seeded 1800000')
@@ -1735,7 +2111,8 @@ await check('an unserved own namespace degrades to status.unavailable and disabl
   assert.ok(text.includes(EN['fetch.status.unavailable']), 'the fetch card does not name the fetch timeouts in its unavailable note')
   assert.equal(numericInputs(page.tree).every(input => input.props.disabled === true), true, 'the controls stayed editable on an unserved namespace')
   assert.equal(buttonWithText(page.tree, [EN['defaults.save']]).props.disabled, true, 'Save defaults stayed enabled on an unserved namespace')
-  assert.equal(rowElements(page).length, 3, 'the provider card disappeared with the defaults card degraded')
+  assert.equal(rowElements(page).length, 3, 'the provider retry card disappeared with the defaults card degraded')
+  assert.equal(timeoutRowElements(page).length, 3, 'the provider timeout card disappeared with the defaults card degraded')
 })
 
 await check('a loading or read-only own namespace renders its note and keeps the card disabled', async () => {
@@ -1755,15 +2132,26 @@ await check('a bare root render shows only provider placeholders, not provider c
   const { page } = mountPage()
   await flush()
   const rows = rowElements(page)
-  assert.equal(rows.length, 3, `the root render showed ${rows.length} provider rows`)
+  assert.equal(rows.length, 3, `the root render showed ${rows.length} provider retry rows`)
   for (const node of rows) {
     for (const prop of ['row', 't', 'form', 'defaultsValues', 'applyOutcome']) {
       assert.ok(prop in node.props, `a provider placeholder is missing the "${prop}" prop`)
     }
     assert.equal(typeof node.props.defaultsValues, 'object', 'the placeholder got no validated defaults')
   }
-  assert.equal(buttonWithText(page.tree, [EN['provider.save']]), undefined, 'the root render rendered a provider Save control')
-  assert.equal(buttonWithText(page.tree, [EN['provider.reset']]), undefined, 'the root render rendered a provider Reset control')
+  const timeoutRows = timeoutRowElements(page)
+  assert.equal(timeoutRows.length, 3, `the root render showed ${timeoutRows.length} provider timeout rows`)
+  for (const node of timeoutRows) {
+    for (const prop of ['row', 't', 'form', 'bodyTimeoutMs']) {
+      assert.ok(prop in node.props, `a timeout placeholder is missing the "${prop}" prop`)
+    }
+  }
+  for (const key of ['provider.save', 'provider.reset', 'timeouts.reset']) {
+    assert.equal(buttonWithText(page.tree, [EN[key]]), undefined, `the root render rendered a "${key}" control`)
+  }
+  const timeoutSection = findAll(page.tree, node => node.type === 'section')[2]
+  assert.ok(timeoutSection !== undefined, 'the timeout card section is missing from the root render')
+  assert.equal(findAll(timeoutSection, node => node.type === 'button').length, 0, 'the timeout card leaked a Save/Reset control into the root render (its rows are child placeholders)')
   assert.equal(numericInputs(page.tree).length, 6, 'provider controls leaked into the root render; only the defaults card (four) and fetch card (two) should render')
 })
 
@@ -1771,7 +2159,9 @@ await check('the page joins the directory in rank order and each row paints its 
   const { page } = mountPage()
   await flush()
   const order = rowElements(page).map(node => node.props.row.provider)
-  assert.deepEqual(order, ['deepseek-account', 'deepseek-official', 'openrouter'], `the joined row order drifted: ${JSON.stringify(order)}`)
+  assert.deepEqual(order, ['deepseek-account', 'deepseek-official', 'openrouter'], `the joined retry-row order drifted: ${JSON.stringify(order)}`)
+  const timeoutOrder = timeoutRowElements(page).map(node => node.props.row.provider)
+  assert.deepEqual(timeoutOrder, ['deepseek-account', 'deepseek-official', 'openrouter'], `the joined timeout-row order drifted: ${JSON.stringify(timeoutOrder)}`)
 
   const piAi = mountRow(page, 'openrouter')
   const piText = renderedText(piAi.tree)
@@ -1784,6 +2174,159 @@ await check('the page joins the directory in rank order and each row paints its 
   assert.ok(renderedText(official.tree).includes(EN['provider.source.default']), 'the default badge is missing on an un-overridden row')
   assert.deepEqual(numericInputs(official.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'an empty provider policy did not fall back to the code defaults')
   official.unmount()
+})
+
+await check('the timeout card renders one row per active route with only that family\'s controls and blank placeholders', async () => {
+  const { page } = mountPage()
+  await flush()
+  const piAi = mountTimeoutRow(page, 'openrouter')
+  assert.equal(timeoutInputs(piAi.tree).length, 2, 'a pi-ai timeout row must render streamIdleTimeoutMs + timeoutMs only')
+  assert.deepEqual(timeoutInputs(piAi.tree).map(input => input.props.placeholder), ['300000', '600000'], 'the pi-ai timeout placeholders drifted')
+  assert.deepEqual(timeoutInputs(piAi.tree).map(input => input.props.value), ['', ''], 'an untouched route must start blank (package/SDK default), never the effective default')
+  const piText = renderedText(piAi.tree)
+  for (const key of ['field.streamIdleTimeoutMs.label', 'field.timeoutMs.label', 'timeouts.unit', 'timeouts.hint', 'timeouts.unlimited']) {
+    assert.ok(piText.includes(EN[key]), `the pi-ai timeout row is missing the "${key}" copy`)
+  }
+  assert.equal(piText.includes(EN['field.filesApiTimeoutMs.label']), false, 'a pi-ai row rendered the DeepSeek-only Files API control')
+  assert.ok(piText.includes(EN['provider.source.default']), 'an untouched timeout field must show the default badge')
+  piAi.unmount()
+
+  const official = mountTimeoutRow(page, 'deepseek-official')
+  assert.equal(timeoutInputs(official.tree).length, 2, 'a DeepSeek timeout row must render streamIdleTimeoutMs + filesApiTimeoutMs only')
+  assert.deepEqual(timeoutInputs(official.tree).map(input => input.props.placeholder), ['300000', '60000'], 'the DeepSeek timeout placeholders drifted')
+  const officialText = renderedText(official.tree)
+  assert.equal(officialText.includes(EN['field.timeoutMs.label']), false, 'a DeepSeek row rendered the pi-ai-only request-timeout control')
+  for (const key of ['field.streamIdleTimeoutMs.label', 'field.filesApiTimeoutMs.label']) {
+    assert.ok(officialText.includes(EN[key]), `the DeepSeek timeout row is missing the "${key}" copy`)
+  }
+  official.unmount()
+
+  const account = mountTimeoutRow(page, 'deepseek-account')
+  assert.deepEqual(timeoutInputs(account.tree).map(input => input.props.placeholder), ['300000', '60000'], 'the DeepSeek Account timeout row drifted')
+  account.unmount()
+})
+
+await check('a timeout row seeds from the USER layer only, paints override badges, and shows each namespace/protocol', async () => {
+  const seededPi = providerForms('llm-pi-ai',
+    piAiValue({ api: 'openai-completions' }),
+    { providers: { openrouter: { streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 } } },
+    4)
+  const seeded = mountPage({ forms: seededPi })
+  await flush()
+  const row = mountTimeoutRow(seeded.page, 'openrouter')
+  assert.deepEqual(timeoutInputs(row.tree).map(input => input.props.value), ['1800000', '900000'], 'the timeout draft is not seeded from the user layer')
+  assert.ok(renderedText(row.tree).includes(EN['provider.source.override']), 'a user-layer timeout override did not paint the override badge')
+  const seededText = renderedText(row.tree)
+  assert.ok(seededText.includes('openai-completions'), 'the pi-ai protocol is not rendered from the route snapshot')
+  assert.ok(seededText.includes('llm-pi-ai'), 'the timeout row does not name its namespace')
+  row.unmount()
+  seeded.page.unmount()
+
+  const effectiveOnly = providerForms('llm-pi-ai', piAiValue({ streamIdleTimeoutMs: 300_000, timeoutMs: 600_000 }), {}, 4)
+  const effective = mountPage({ forms: effectiveOnly })
+  await flush()
+  const effectiveRow = mountTimeoutRow(effective.page, 'openrouter')
+  assert.deepEqual(timeoutInputs(effectiveRow.tree).map(input => input.props.value), ['', ''], 'a package/SDK default in the effective value was painted as an override')
+  effectiveRow.unmount()
+  effective.page.unmount()
+
+  const seededDeepSeek = providerForms('llm-deepseek',
+    { streamIdleTimeoutMs: 300_000, filesApiTimeoutMs: 60_000 },
+    { streamIdleTimeoutMs: 600_000, filesApiTimeoutMs: 120_000 },
+    2)
+  const deepseek = mountPage({ forms: seededDeepSeek })
+  await flush()
+  const deepseekRow = mountTimeoutRow(deepseek.page, 'deepseek-official')
+  assert.deepEqual(timeoutInputs(deepseekRow.tree).map(input => input.props.value), ['600000', '120000'], 'the DeepSeek timeout draft is not seeded from the user layer')
+  assert.ok(renderedText(deepseekRow.tree).includes('anthropic-messages'), 'the DeepSeek protocol must render as anthropic-messages')
+  deepseekRow.unmount()
+  deepseek.page.unmount()
+})
+
+await check('a pi-ai route without a protocol in the snapshot falls back to the catalog-default copy', async () => {
+  const { page } = mountPage({ forms: providerForms('llm-pi-ai', piAiValue({}), {}, 4) })
+  await flush()
+  const row = mountTimeoutRow(page, 'openrouter')
+  assert.ok(renderedText(row.tree).includes(EN['timeouts.protocol.catalog']), 'a route with no api field did not render the catalog-default protocol copy')
+  row.unmount()
+})
+
+await check('the timeout advisories warn about the SDK deadline and a short fetch body timeout without blocking Save', async () => {
+  const sdkForms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000 } } }, 4)
+  const sdkPage = mountPage({ forms: sdkForms })
+  await flush()
+  const sdkRow = mountTimeoutRow(sdkPage.page, 'openrouter')
+  setTimeoutNumeric(sdkRow.tree, 0, '900000')
+  assert.ok(renderedText(sdkRow.tree).includes(EN['timeouts.advisory.sdkFirst']), 'the SDK-timeout advisory is missing when the idle window exceeds 600000 ms')
+  assert.equal(buttonWithText(sdkRow.tree, [EN['timeouts.save']]).props.disabled, false, 'a non-blocking advisory disabled Save')
+  sdkRow.unmount()
+  sdkPage.page.unmount()
+
+  const matchedForms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }, 4)
+  const matchedPage = mountPage({ forms: matchedForms })
+  await flush()
+  const matchedRow = mountTimeoutRow(matchedPage.page, 'openrouter')
+  setTimeoutNumeric(matchedRow.tree, 0, '900000')
+  assert.equal(renderedText(matchedRow.tree).includes(EN['timeouts.advisory.sdkFirst']), false, 'the SDK advisory stayed when timeoutMs matched the idle window')
+  matchedRow.unmount()
+  matchedPage.page.unmount()
+
+  const transportForms = {
+    ...providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }, 4),
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ bodyTimeoutMs: 100_000 })),
+  }
+  const transportPage = mountPage({ forms: transportForms })
+  await flush()
+  const transportRow = mountTimeoutRow(transportPage.page, 'openrouter')
+  setTimeoutNumeric(transportRow.tree, 0, '900000')
+  assert.ok(renderedText(transportRow.tree).includes(EN['timeouts.advisory.transportFirst']), 'the transport advisory is missing when the fetch body timeout is below the idle window')
+  transportRow.unmount()
+  transportPage.page.unmount()
+
+  const wideForms = {
+    ...providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }, 4),
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ bodyTimeoutMs: 1_800_000 })),
+  }
+  const widePage = mountPage({ forms: wideForms })
+  await flush()
+  const wideRow = mountTimeoutRow(widePage.page, 'openrouter')
+  setTimeoutNumeric(wideRow.tree, 0, '900000')
+  assert.equal(renderedText(wideRow.tree).includes(EN['timeouts.advisory.transportFirst']), false, 'the transport advisory stayed when the fetch body timeout covered the idle window')
+  wideRow.unmount()
+  widePage.page.unmount()
+})
+
+await check('dormant, namespace-less, and unserved routes render read-only timeout rows and are never written', async () => {
+  const registered = [...REGISTERED, { id: 'mystery', name: 'Mystery' }, { id: 'unserved', name: 'Unserved' }]
+  const configurable = [
+    ...CONFIGURABLE,
+    { provider: 'dormant-route', displayName: 'Dormant', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'dormant-route'] },
+    { provider: 'unserved', displayName: 'Unserved', settingsNs: 'llm-ghost', settingsPath: ['config'] },
+  ]
+  const forms = makeForms({ 'llm-ghost': new BoundForm('llm-ghost', unavailableSnapshot) })
+  const { page, ctx } = mountPage({ forms, registered, configurable })
+  await flush()
+
+  const dormant = mountTimeoutRow(page, 'dormant-route')
+  assert.ok(renderedText(dormant.tree).includes(EN['provider.status.dormant']), 'the dormant timeout row note is missing')
+  assert.equal(timeoutInputs(dormant.tree).length, 0, 'a dormant timeout row rendered editable controls')
+  assert.equal(buttonWithText(dormant.tree, [EN['timeouts.save']]), undefined, 'a dormant timeout row rendered Save')
+  assert.equal(buttonWithText(dormant.tree, [EN['timeouts.reset']]), undefined, 'a dormant timeout row rendered Reset')
+  dormant.unmount()
+
+  const noSettings = mountTimeoutRow(page, 'mystery')
+  assert.ok(renderedText(noSettings.tree).includes(EN['provider.status.noSettings']), 'the namespace-less timeout row note is missing')
+  assert.equal(buttonWithText(noSettings.tree, [EN['timeouts.save']]), undefined, 'a namespace-less timeout row rendered Save')
+  noSettings.unmount()
+
+  const unserved = mountTimeoutRow(page, 'unserved')
+  assert.ok(renderedText(unserved.tree).includes(EN['provider.status.unavailable']), 'the unserved timeout row note is missing')
+  assert.equal(buttonWithText(unserved.tree, [EN['timeouts.save']]), undefined, 'an unserved timeout row rendered Save')
+  unserved.unmount()
+
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai', 'llm-ghost']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `a read-only timeout row wrote the ${ns} namespace on mount`)
+  }
 })
 
 await check('dormant, namespace-less, and unserved provider rows render their own read-only note', async () => {
@@ -1997,6 +2540,220 @@ await check('the fetch draft validates the tri-state: negative, fractional, over
     setFetchNumeric(page.tree, index, value)
     assert.equal(save().props.disabled, false, `Save stayed disabled on ${label}`)
   }
+})
+
+await check('a pi-ai timeout Save writes exactly the changed leaves under providers.<route>', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const row = mountTimeoutRow(page, 'openrouter')
+  const form = ctx.configForms.get('llm-pi-ai')
+  setTimeoutNumeric(row.tree, 0, '1800000')
+  setTimeoutNumeric(row.tree, 1, '900000')
+  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
+  await flush()
+  assert.equal(form.calls.length, 1, `expected one timeout write, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 4, `the timeout write was fenced at ${form.calls[0].revision}`)
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 1_800_000 },
+    { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 900_000 },
+  ], 'the pi-ai timeout save ops drifted')
+  assert.ok(!JSON.stringify(plain(form.calls[0].ops)).includes('retryPolicy'), 'a timeout Save projected a retry leaf')
+
+  const partial = mountPage()
+  await flush()
+  const partialRow = mountTimeoutRow(partial.page, 'openrouter')
+  const partialForm = partial.ctx.configForms.get('llm-pi-ai')
+  setTimeoutNumeric(partialRow.tree, 0, '450000')
+  buttonWithText(partialRow.tree, [EN['timeouts.save']]).props.onClick()
+  await flush()
+  assertOps(partialForm.calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 450_000 },
+  ], 'a partial pi-ai timeout save must write only the changed leaf')
+})
+
+await check('a seeded pi-ai timeout row emits a single unset when cleared and two unsets on Reset', async () => {
+  const forms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 } } }, 4)
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const row = mountTimeoutRow(page, 'openrouter')
+  const form = ctx.configForms.get('llm-pi-ai')
+  setTimeoutNumeric(row.tree, 1, '')
+  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
+  await flush()
+  assertOps(form.calls[0].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
+  ], 'clearing one seeded pi-ai timeout must emit only its unset')
+
+  const resetForms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 } } }, 4)
+  const resetPage = mountPage({ forms: resetForms })
+  await flush()
+  const resetRow = mountTimeoutRow(resetPage.page, 'openrouter')
+  const resetForm = resetPage.ctx.configForms.get('llm-pi-ai')
+  buttonWithText(resetRow.tree, [EN['timeouts.reset']]).props.onClick()
+  await flush()
+  assertOps(resetForm.calls[0].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'] },
+    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
+  ], 'the pi-ai timeout Reset ops drifted')
+  assert.equal(resetForm.calls[0].revision, 4, 'the pi-ai timeout Reset revision drifted')
+  assert.ok(renderedText(resetRow.tree).includes(EN['timeouts.resetDone']), 'the timeout Reset confirmation copy is missing')
+})
+
+await check('a DeepSeek timeout Save and Reset address the namespace root, never retryPolicy', async () => {
+  const official = mountPage()
+  await flush()
+  const row = mountTimeoutRow(official.page, 'deepseek-official')
+  const form = official.ctx.configForms.get('llm-deepseek')
+  setTimeoutNumeric(row.tree, 0, '600000')
+  setTimeoutNumeric(row.tree, 1, '120000')
+  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
+  await flush()
+  assert.equal(form.calls[0].revision, 2, 'the DeepSeek timeout write did not use the namespace revision')
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['streamIdleTimeoutMs'], value: 600_000 },
+    { op: 'set', path: ['filesApiTimeoutMs'], value: 120_000 },
+  ], 'the DeepSeek timeout save ops drifted')
+
+  const account = mountPage()
+  await flush()
+  const accountRow = mountTimeoutRow(account.page, 'deepseek-account')
+  const accountForm = account.ctx.configForms.get('llm-deepseek-account')
+  buttonWithText(accountRow.tree, [EN['timeouts.reset']]).props.onClick()
+  await flush()
+  assert.equal(accountForm.calls[0].revision, 3, 'the DeepSeek Account Reset did not use the namespace revision')
+  assertOps(accountForm.calls[0].ops, [
+    { op: 'unset', path: ['streamIdleTimeoutMs'] },
+    { op: 'unset', path: ['filesApiTimeoutMs'] },
+  ], 'the DeepSeek Account timeout Reset ops drifted')
+})
+
+await check('the timeout Save is disabled when nothing changed, and 0 plus every malformed shape is refused', async () => {
+  const { page } = mountPage()
+  await flush()
+  const row = mountTimeoutRow(page, 'openrouter')
+  const save = () => buttonWithText(row.tree, [EN['timeouts.save']])
+  const reset = () => buttonWithText(row.tree, [EN['timeouts.reset']])
+  assert.equal(save().props.disabled, true, 'Save stayed enabled on an untouched, blank timeout row')
+  assert.equal(reset().props.disabled, false, 'Reset stayed disabled on a writable timeout row')
+
+  for (const [label, value, copy] of [
+    ['0 on the idle watchdog', '0', 'error.streamIdleTimeoutMs'],
+    ['a negative value', '-1', 'error.streamIdleTimeoutMs'],
+    ['a fractional value', '1.5', 'error.streamIdleTimeoutMs'],
+    ['an overflow value', '2147483648', 'error.streamIdleTimeoutMs'],
+    ['a leading zero', '007', 'error.streamIdleTimeoutMs'],
+    ['exponent notation', '1e6', 'error.streamIdleTimeoutMs'],
+  ]) {
+    setTimeoutNumeric(row.tree, 0, value)
+    assert.equal(save().props.disabled, true, `Save stayed enabled on ${label}`)
+    assert.ok(renderedText(row.tree).includes(EN[copy]), `the ${copy} copy is missing for ${label}`)
+  }
+  setTimeoutNumeric(row.tree, 1, '0')
+  assert.equal(save().props.disabled, true, 'Save stayed enabled on a zero SDK request timeout')
+  assert.ok(renderedText(row.tree).includes(EN['error.timeoutMs']), 'the 0-request-timeout copy is missing')
+
+  setTimeoutNumeric(row.tree, 1, '')
+  setTimeoutNumeric(row.tree, 0, ' 2147483647 ')
+  assert.equal(save().props.disabled, false, 'the 2147483647 cap (whitespace-trimmed) must be accepted')
+  assert.equal(renderedText(row.tree).includes(EN['error.streamIdleTimeoutMs']), false, 'the idle-watchdog error copy stayed after a valid value')
+
+  const deepseek = mountPage()
+  await flush()
+  const deepseekRow = mountTimeoutRow(deepseek.page, 'deepseek-official')
+  setTimeoutNumeric(deepseekRow.tree, 1, '0')
+  assert.equal(buttonWithText(deepseekRow.tree, [EN['timeouts.save']]).props.disabled, true, 'Save stayed enabled on a zero files-API timeout')
+  assert.ok(renderedText(deepseekRow.tree).includes(EN['error.filesApiTimeoutMs']), 'the 0-files-api copy is missing')
+})
+
+await check('the Unlimited preset fills 2147483647 ms on every timeout field, including the Files API cap', async () => {
+  const piAi = mountPage()
+  await flush()
+  const piRow = mountTimeoutRow(piAi.page, 'openrouter')
+  const presets = timeoutPresetButtons(piRow.tree)
+  assert.equal(presets.length, 2, 'the pi-ai timeout row must offer one Unlimited preset per visible field')
+  presets[0].props.onClick()
+  presets[1].props.onClick()
+  assert.deepEqual(timeoutInputs(piRow.tree).map(input => input.props.value), ['2147483647', '2147483647'], 'the pi-ai Unlimited preset must fill the 2147483647 cap, never 0')
+  buttonWithText(piRow.tree, [EN['timeouts.save']]).props.onClick()
+  await flush()
+  assertOps(piAi.ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 2_147_483_647 },
+    { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 2_147_483_647 },
+  ], 'the Unlimited preset did not persist the cap')
+
+  const deepseek = mountPage()
+  await flush()
+  const deepseekRow = mountTimeoutRow(deepseek.page, 'deepseek-official')
+  const deepseekPresets = timeoutPresetButtons(deepseekRow.tree)
+  assert.equal(deepseekPresets.length, 2, 'the DeepSeek timeout row must offer one Unlimited preset per visible field')
+  deepseekPresets[0].props.onClick()
+  deepseekPresets[1].props.onClick()
+  assert.deepEqual(timeoutInputs(deepseekRow.tree).map(input => input.props.value), ['2147483647', '2147483647'], 'the DeepSeek Unlimited preset must cover the Files API field too')
+})
+
+await check('the timeout Save is independent of the retry and fetch saves in both directions', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const own = ctx.configForms.get('llm-api-call-tuning')
+  const piForm = ctx.configForms.get('llm-pi-ai')
+  const timeoutRow = mountTimeoutRow(page, 'openrouter')
+  setTimeoutNumeric(timeoutRow.tree, 0, '600000')
+  buttonWithText(timeoutRow.tree, [EN['timeouts.save']]).props.onClick()
+  await flush()
+  for (const ns of ['llm-api-call-tuning', 'llm-deepseek', 'llm-deepseek-account']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `a timeout Save wrote the unrelated namespace ${ns}`)
+  }
+  for (const op of plain(piForm.calls[0].ops)) {
+    assert.equal(op.path.join('.').includes('retryPolicy'), false, `a timeout Save emitted the retry leaf ${op.path.join('.')}`)
+    assert.equal(op.path.join('.').includes('TimeoutMs') && op.path.length < 3, false, 'a timeout Save addressed a short (whole-profile) path')
+  }
+
+  const retryRow = mountRow(page, 'openrouter')
+  setNumeric(retryRow.tree, 0, '7')
+  buttonWithText(retryRow.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assert.equal(piForm.calls.length, 2, 'the retry Save did not add its own write')
+  for (const op of plain(piForm.calls[1].ops)) {
+    assert.equal(op.path.join('.').includes('retryPolicy'), true, `a retry Save emitted the non-retry path ${op.path.join('.')}`)
+    assert.equal(JSON.stringify(op).includes('TimeoutMs'), false, 'a retry Save projected a provider-timeout leaf')
+  }
+
+  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
+  await flush()
+  assert.equal(own.calls.length, 1, 'the fetch Save did not write its own namespace')
+  for (const op of plain(own.calls[0].ops)) {
+    assert.ok(
+      op.path.length === 1 && (op.path[0] === 'headersTimeoutMs' || op.path[0] === 'bodyTimeoutMs'),
+      `the fetch Save emitted a non-fetch path ${JSON.stringify(op.path)}`,
+    )
+  }
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, ns === 'llm-pi-ai' ? 2 : 0, `the fetch Save wrote the provider namespace ${ns}`)
+  }
+})
+
+await check('a timeout row without a numeric revision, or read-only, disables both actions and never writes', async () => {
+  const noRevision = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000 } } }, undefined)
+  const page = mountPage({ forms: noRevision })
+  await flush()
+  const row = mountTimeoutRow(page.page, 'openrouter')
+  setTimeoutNumeric(row.tree, 0, '900000')
+  assert.equal(buttonWithText(row.tree, [EN['timeouts.save']]).props.disabled, true, 'Save stayed enabled without a numeric revision')
+  assert.equal(buttonWithText(row.tree, [EN['timeouts.reset']]).props.disabled, true, 'Reset stayed enabled without a numeric revision')
+  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
+  buttonWithText(row.tree, [EN['timeouts.reset']]).props.onClick()
+  await flush()
+  assert.equal(page.ctx.configForms.get('llm-pi-ai').calls.length, 0, 'a row without a numeric revision wrote the namespace')
+  row.unmount()
+
+  const readOnlyForms = providerForms('llm-pi-ai', piAiValue({}), {}, 4)
+  readOnlyForms['llm-pi-ai'] = new BoundForm('llm-pi-ai', { ...readySnapshot(piAiValue({}), 4, {}), writable: false })
+  const readOnly = mountPage({ forms: readOnlyForms })
+  await flush()
+  const readOnlyRow = mountTimeoutRow(readOnly.page, 'openrouter')
+  assert.equal(buttonWithText(readOnlyRow.tree, [EN['timeouts.save']]), undefined, 'a read-only timeout row rendered Save')
+  assert.equal(buttonWithText(readOnlyRow.tree, [EN['timeouts.reset']]), undefined, 'a read-only timeout row rendered Reset')
+  assert.ok(renderedText(readOnlyRow.tree).includes(EN['status.readOnly']), 'a read-only timeout row did not render the read-only note')
 })
 
 await check('the retry defaults Save never projects a seeded fetch leaf', async () => {

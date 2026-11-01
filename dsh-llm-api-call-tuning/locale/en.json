@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "LLM API call tuning",
-    "description": "Tune the LLM API retry policy of every provider route, plus the process-wide HTTP fetch timeouts shared by all providers, web search, and HTTP MCP servers."
+    "description": "Tune the LLM API retry policy of every provider route, the per-route provider timeouts (stream idle, SDK request, and Files API), and the process-wide HTTP fetch timeouts shared by all providers, web search, and HTTP MCP servers."
   }
 }

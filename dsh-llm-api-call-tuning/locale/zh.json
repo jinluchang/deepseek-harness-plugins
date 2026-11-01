@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "LLM API 调用调优",
-    "description": "调优各提供方路由的 LLM API 重试策略，以及所有提供方、联网搜索与 HTTP MCP 服务器共用的进程级 HTTP 抓取超时。"
+    "description": "调优各提供方路由的 LLM API 重试策略、各路由的提供方超时（流空闲、SDK 请求与文件 API），以及所有提供方、联网搜索与 HTTP MCP 服务器共用的进程级 HTTP 抓取超时。"
   }
 }

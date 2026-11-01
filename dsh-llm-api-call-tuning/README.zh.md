@@ -4,10 +4,11 @@
 
 一个 DSH 插件，用**一个**设置页统一管理**每个已激活模型提供方路由**的模型请求重试策略。DSH 为每个路由解析一份重试策略——重试模式、最大重试次数、可重试错误码，以及带抖动的有界指数退避（`packages/llm/llm/src/retry-policy.ts`）——但每份策略归提供方自己所有（`llm-deepseek` 与 `llm-deepseek-account` 在 `retryPolicy` 下，`llm-pi-ai` 在 `providers.<id>.retryPolicy` 下），而 DSH 没有全局设置命名空间、命令行开关、环境变量或 GUI 核心页面。手工调整意味着逐行修改每个提供方行，并让五个数值保持一致。
 
-页面分为三部分：
+页面分为四部分：
 
 - **全局默认值**——六个重试值保存在本插件自己的设置命名空间（`llm-api-call-tuning`）中，作为**预设**。保存它们**不会改动任何提供方**。
 - **各提供方重试策略**——每个已激活提供方路由一行，显示该路由的**生效值**，并通过**叶子路径操作**直接写入该提供方自己的设置命名空间。只有当该路由的设置命名空间可用时才可编辑；已声明但未激活的路由、没有设置命名空间的路由，以及命名空间不可用的路由都以只读行列出。
+- **提供方超时**——每个已激活路由一行，编辑按路由生效的应用层超时：所有路由都有 `streamIdleTimeoutMs`，`llm-pi-ai` 路由另有 `timeoutMs`，两个 DeepSeek 路由另有 `filesApiTimeoutMs`。留空表示保持包/SDK 默认值；`0` 会被拒绝；**不限**预设填入 `2147483647` 毫秒上限（这是上限，不是关闭开关）。
 - **抓取超时**——两个进程级 HTTP 计时器 `headersTimeoutMs` 与 `bodyTimeoutMs`，由宿主应用到所有提供方、联网搜索与 HTTP MCP 服务器共用的 fetch 调度器上。两者默认都是 `unset`，因此全新安装不改变任何行为；`0` 表示显式禁用该计时器，正整数表示以毫秒为单位的时长。
 
 提供方行是权威来源；只有在明确要求时（某一行的**使用默认值**，或**应用默认值到全部提供方**）才会复制全局默认值。两个抓取计时器则是独立的**进程级**副作用：它们不属于重试预设，也不会被复制到任何提供方路由。线格式冻结在 [CONTRACT.md](CONTRACT.md)。
@@ -42,7 +43,8 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 1. **全局默认值**——下表六个重试字段各一个控件、**保存默认值**、以及**应用默认值到全部启用的提供方**。这些值存储在 `llm-api-call-tuning` 命名空间中，只是预设：保存不会改动任何提供方。
 2. **各提供方重试策略**——每个已激活提供方路由一个**可编辑**行（账户路由和官方路由在前），显示其命名空间、*覆盖* / *默认* 徽标、从该路由生效策略初始化的六个字段，以及**保存**、**重置**、**使用默认值**。已声明但未激活的路由、没有设置命名空间的路由，以及当前部署不提供其设置命名空间的路由以只读行列出，并会说明原因。
-3. **抓取超时**——两个进程级 HTTP 计时器的文本框，以及**保存超时设置**与**恢复系统默认**。空输入是 `unset`（系统默认）状态，`0` 表示禁用该计时器，正整数表示以毫秒为单位的时限。
+3. **提供方超时**——每个已激活路由一行，每个字段都有**保存超时设置**、**重置超时设置**与**不限**预设。留空保持包/SDK 默认值，`0` 被拒绝，预设填入 `2147483647` 毫秒。只有已激活路由可编辑：向休眠路由写入超时叶子会生成不完整的提供方配置，并可能将其激活。
+4. **抓取超时**——两个进程级 HTTP 计时器的文本框，以及**保存超时设置**与**恢复系统默认**。空输入是 `unset`（系统默认）状态，`0` 表示禁用该计时器，正整数表示以毫秒为单位的时限。
 
 重试字段表（与 Host `Config` 及上游重试解析器使用的值一致），后面是两个进程级抓取字段：
 
@@ -71,6 +73,24 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 **应用默认值到全部启用的提供方**会把已校验的默认值逐个写入每个可编辑行，每次使用该行表单**新读取**的 revision。每次写入前都会重新检查该行：表单仍在加载、只读或缺少数字 revision 的行会被**跳过**（其正文已说明原因，因此不再显示额外徽标）。它**不是事务**：拒绝的提供方保留原策略，已写入的提供方保持写入，逐行结果会说明哪个是哪种情况。它绝不会把两个抓取计时器写入提供方：它们是进程级的，不是重试设置。
 
+### 提供方超时（按路由）
+
+本卡片编辑位于**各提供方自己的**命名空间中的应用层超时，与重试卡片走同一条跨命名空间写入路径。默认值就是上游包/SDK 的值；留空不写入任何值，路由保持默认。
+
+| 字段 | 适用路由 | 命名空间 / 路径 | 默认值 | 接受范围 |
+| --- | --- | --- | --- | --- |
+| `streamIdleTimeoutMs` | 所有已激活路由 | `llm-pi-ai` → `providers.<route>.streamIdleTimeoutMs`；`llm-deepseek` / `llm-deepseek-account` → `streamIdleTimeoutMs` | `300000` 毫秒（5 分钟） | 留空（包默认）或 1..2147483647 的整数；`0` 被拒绝 |
+| `timeoutMs` | 仅 `llm-pi-ai` 路由 | `llm-pi-ai` → `providers.<route>.timeoutMs` | 未设置 = SDK 默认（约 `600000` 毫秒） | 留空（SDK 默认）或 1..2147483647 的整数；`0` 被拒绝 |
+| `filesApiTimeoutMs` | 仅 `llm-deepseek` 与 `llm-deepseek-account` | `llm-deepseek` / `llm-deepseek-account` 命名空间根 → `filesApiTimeoutMs` | `60000` 毫秒（1 分钟） | 留空（包默认）或 1..2147483647 的整数；`0` 被拒绝 |
+
+为什么拒绝 `0` 而没有关闭开关：DeepSeek 与流空闲 schema 要求严格为正（加载期断言拒绝 `<= 0`），而 SDK 请求超时为 0 会让每个请求立即中止。这些 schema 没有“禁用”状态，因此**不限**预设写入上限 `2147483647` 毫秒（约 24.8 天）——这是一个极大的上限，而不是禁用。直接调用 `settings.mutate`（或手工编辑 profile patch）仍可能持久化 `0`；对两个看门狗而言这会触发提供方加载期断言失败，路由随之无法解析——这正是页面要阻止的情况。
+
+与其他两层超时的配合：对 SSE 路由，SDK 请求超时约束的是**等待响应头**的时间，`streamIdleTimeoutMs` 约束的是流式数据块之间的静默时间，进程级抓取 `bodyTimeoutMs` 约束的是传输层数据块之间的时间。当空闲窗口提高到默认 `600000` 毫秒的 SDK 请求超时以上时，若 `timeoutMs` 更短、或抓取正文超时低于空闲窗口，该行会给出**非阻断**警告。只提高空闲窗口而让更短的 SDK 或传输期限先触发是无效的。
+
+诊断指引：`llm-pi-ai` 报出 **stream idle timeout after 300000 ms** 时，是默认空闲看门狗中止了慢速首个 token（TTFT 卡顿），不是传输失败。请在本卡片提高 `streamIdleTimeoutMs`（并在更短时同步提高 `timeoutMs` 与抓取 `bodyTimeoutMs`），而不是手工改 profile patch。
+
+`connectTimeoutMs` **不在范围内**：undici 6/7/8 没有按请求的 connect 超时，只能用脆弱的 agent 重建来实现。传输层连接上限应在上游 `packages/util/http-proxy/src/install.ts`（代理感知调度器安装处）修复，而不是本页面。
+
 ### 抓取超时（进程级）
 
 抓取卡片编辑本插件命名空间顶层的两个叶子。三态契约如下：
@@ -86,12 +106,13 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 - 保存走共享设置表单 API——与模型页面相同的 `settings.mutate` 路径——设置服务会把变更持久化到活动 profile 的 `cordis.patch.yml`（profile 自己的 patch，与它的 `package.json` 相邻）。插件自身不存储任何内容。
 - 重试策略的变更预期在**下一次模型请求**生效，**无需重启后端**：每条路由的策略在**注册时**捕获（`packages/llm/llm/src/index.ts:435-470`），各提供方在 loader 报告 volatile 值变化（即设置保存之后）时重新注册路由。`llm-deepseek`/`llm-deepseek-account` 在 `llm-deepseek/src/host.ts:82-90` 完成；`llm-pi-ai` 把 `retryPolicy` 纳入注册事实，并在 `loader/volatile-update` 时重新注册（`llm-pi-ai/src/index.ts:108-120,289-319`）。
 - 已经在进行中的请求保持其开始时的策略。
+- 提供方超时的修改持久化在提供方自己的命名空间中，并在下一次请求/路由注册时生效，无需重启后端；休眠路由或命名空间不可用的路由在此为只读。
 - 抓取计时器的修改会在**下一次 HTTP 调度**时生效（包装会在每次请求时重新读取实时值），**无需重启后端**。这些值和其他 Host 设置一样持久化在本插件的设置命名空间中；清空（或重置）后恢复系统默认状态。
 - 页面只在安装/升级后需要刷新（首次安装可能还需要重启后端）；修改数值则两者都不需要。
 
 ### 两半的职责
 
-`index.js`（Host）拥有全局默认值 `Config`——六个 `.volatile()` 重试字段加两个进程级抓取字段——以及 `DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、`validateTune()`（schema 无法表达的重试组合规则守卫）和 `apply(ctx, config)`。`apply()` 有两项职责：为该命名空间注册文档化的 `auto: false` 页面策略（当前只是面向未来的准备：本版本没有内置客户端会从 schema 生成页面），以及安装上述可选的抓取超时调度器包装。它从不把任何值投射到提供方。`client.js`（浏览器）是页面：从 Client Remote `llm` 命名空间读取提供方目录，从每个路由自己的配置表单读取生效策略，并通过同一表单写回叶子路径操作，同时拥有第三张抓取超时卡片。提供方行是事实来源；`DEFAULT_TUNE` 是页面提供的预设，而不是回退层；抓取计时器是进程级副作用，不是任何提供方的回退。
+`index.js`（Host）拥有全局默认值 `Config`——六个 `.volatile()` 重试字段加两个进程级抓取字段——以及 `DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、`PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS`（提供方卡片的冻结元数据，**不是** `Config` 字段）、`validateTune()`（schema 无法表达的重试组合规则守卫）和 `apply(ctx, config)`。`apply()` 有两项职责：为该命名空间注册文档化的 `auto: false` 页面策略（当前只是面向未来的准备：本版本没有内置客户端会从 schema 生成页面），以及安装上述可选的抓取超时调度器包装。它从不把任何值投射到提供方。`client.js`（浏览器）是页面：从 Client Remote `llm` 命名空间读取提供方目录，从每个路由自己的配置表单读取生效策略，并通过同一表单写回叶子路径操作，同时拥有第三张提供方超时卡片与第四张进程级抓取超时卡片。提供方行是事实来源；`DEFAULT_TUNE` 是页面提供的预设，而不是回退层；抓取计时器是进程级副作用，不是任何提供方的回退。
 
 ## 故障排查
 
@@ -103,6 +124,8 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 - **显示值与输入不一致。** 页面始终显示 Host 报告的生效值。`always` 模式下重试上限和错误码列表不可编辑，并会在保存时被清除。
 - **提供方目录不可用。** 本部署未暴露 Remote `llm` 目录（`providers.unavailable`），或读取失败（`providers.error`）。此时无法列出提供方行，但全局默认值卡片仍可用。
 - **刚添加的提供方没有列出。** 目录只在页面挂载时读取一次，不会实时刷新；请离开后重新进入（或刷新页面）以重新读取。
+- **`llm-pi-ai` 调用报 stream idle timeout after 300000 ms。** 这是包默认空闲看门狗（慢速首个 token / TTFT 卡顿），不是传输错误。请在提供方超时卡片提高 `streamIdleTimeoutMs`，并在更短时同步提高请求 `timeoutMs` 与进程级抓取 `bodyTimeoutMs`。若仍有更短的期限先触发，该行会显示非阻断警告。
+- **提供方超时行为只读。** 休眠路由、没有设置命名空间的路由，以及命名空间不可用的路由不能被写入：写入超时叶子会生成不完整的提供方配置并可能激活休眠路由。
 
 ## 校验
 
@@ -110,16 +133,16 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/verify.mjs
 ```
 
-在本仓库根目录运行（或在插件目录内导出同一变量后运行）。套件是封闭的——纯 Node、`node:assert/strict`、`node:vm` 中的 Context/表单/React 替身，无网络、无服务器、无文件写入——并通过 `$DSH_HARNESS_CHECKOUT` 解析**真实的** `@deepseek-ai/schemastery` 与上游 `retry-policy.ts`，因此 schema 或常量漂移会显式失败。它覆盖 manifest 与 bundle patch、Host `Config` 的接受/拒绝矩阵、`validateTune()` 规则、`apply()`、客户端注册、en/zh 文案一致性（97 个键）、默认值/普通/always/重置/抓取保存/抓取重置的精确操作形状、校验、拒绝、逐写门控/跳过与 revision 重试路径、提供方目录合并与所有降级路径、抓取超时调度器对记录型假调度器与宿主真实 `undici` 全局对象的安装/填充/恢复/dispose/`NODE_USE_ENV_PROXY` 行为（含 `undici` 不可解析时的子进程场景），以及本 README 与 CONTRACT.md 中的字段表。“由其他位置管理”分类只作为防御性单元路径用会 reject 的假表单测试；真实设置表单的拒绝会解析为 `false`。
+在本仓库根目录运行（或在插件目录内导出同一变量后运行）。套件是封闭的——纯 Node、`node:assert/strict`、`node:vm` 中的 Context/表单/React 替身，无网络、无服务器、无文件写入——并通过 `$DSH_HARNESS_CHECKOUT` 解析**真实的** `@deepseek-ai/schemastery` 与上游 `retry-policy.ts`，因此 schema 或常量漂移会显式失败。它覆盖 manifest 与 bundle patch、Host `Config` 的接受/拒绝矩阵、`validateTune()` 规则、`apply()`、客户端注册、en/zh 文案一致性（121 个键）、默认值/普通/always/重置/抓取保存/抓取重置/提供方超时保存与重置的精确操作形状、提供方超时元数据（冻结的键/默认值/边界/作用域及其镜像的上游 schema 与默认值）、校验、拒绝、逐写门控/跳过与 revision 重试路径、提供方目录合并与所有降级路径、提供方超时卡片（按族显示字段、从用户层播种、协议显示、警告、仅激活门控、不限预设、拒绝 0）、抓取超时调度器对记录型假调度器与宿主真实 `undici` 全局对象的安装/填充/恢复/dispose/`NODE_USE_ENV_PROXY` 行为（含 `undici` 不可解析时的子进程场景），以及本 README 与 CONTRACT.md 中的字段表。“由其他位置管理”分类只作为防御性单元路径用会 reject 的假表单测试；真实设置表单的拒绝会解析为 `false`。
 
-绿色运行会打印 `104 passed, 0 failed, 0 skipped (104 checks)` 并以 `0` 退出。这是离线契约检查，不是真实 GUI 测试：它不启动 Host 或浏览器，也不会执行真实设置保存、真实导航行、下一请求延迟，或一次真实 HTTP 请求在已安装调度器下真正超时的验证。这些仍属于部署检查；套件证明的是线格式契约与调度器形状，而不是真实计时。
+绿色运行会打印 `127 passed, 0 failed, 0 skipped (127 checks)` 并以 `0` 退出。这是离线契约检查，不是真实 GUI 测试：它不启动 Host 或浏览器，也不会执行真实设置保存、真实导航行、下一请求延迟、一次真实 HTTP 请求在已安装调度器下真正超时的验证，或真实提供方路由因超时中止慢速首个 token 的验证。这些仍属于部署检查；套件证明的是线格式契约与调度器形状，而不是真实计时。
 
 ## 文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | Host 半部：六个重试全局默认字段与两个进程级抓取字段（`Config`）、`DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、`validateTune()`，以及抑制自动页面并安装/恢复可选抓取超时调度器包装的 `apply(ctx, config)`。 |
-| `client.js` | 浏览器半部：**LLM API 调用调优**设置页（默认值卡片 + 每个已激活提供方一个可编辑行 + 抓取超时卡片）、本地校验，以及通过提供方表单和本插件命名空间的叶子路径写入。 |
+| `index.js` | Host 半部：六个重试全局默认字段与两个进程级抓取字段（`Config`）、`DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、冻结的 `PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS` 元数据、`validateTune()`，以及抑制自动页面并安装/恢复可选抓取超时调度器包装的 `apply(ctx, config)`。 |
+| `client.js` | 浏览器半部：**LLM API 调用调优**设置页（默认值卡片 + 每个已激活提供方一个可编辑重试行 + 提供方超时卡片 + 抓取超时卡片）、本地校验，以及通过提供方表单和本插件命名空间的叶子路径写入。 |
 | `cordis.patch.yml` | 插入 `llm-api-call-tuning` 行且**不带初始值**的 bundle patch。 |
 | `locale/en.json`、`locale/zh.json` | 供 Plugin Manager 与设置清单使用的插件显示元数据。 |
 | `package.json` | Bundle manifest（`dsh.bundle.patch`、`dsh.client` injects、`exports`、`files`）。 |
@@ -136,6 +159,9 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/veri
 - **未激活的 `llm-pi-ai` 路由以及没有设置命名空间的路由为只读。**
 - **提供方目录每次挂载只读取一次**，没有实时刷新：页面保持打开时新增或移除的提供方需要刷新页面。
 - **不存在命令行、环境变量或 GUI 核心设置**——本页面是唯一受支持的 UI；手工编辑 profile patch 会绕过其校验。
+- **提供方超时按路由生效，且拒绝 `0`。** 页面拒绝 `0`，因为 DeepSeek/流空闲 schema 拒绝它，而 SDK 请求超时为 0 会让每个请求立即中止；**不限**预设写入 `2147483647` 毫秒上限（约 24.8 天）而不是关闭开关。直接调用 `settings.mutate` 仍可持久化 `0`，这会触发提供方加载期断言失败并使路由无法解析。
+- **休眠路由在提供方超时卡片中为只读。** 写入超时叶子会生成不完整的提供方配置并可能激活该路由，因此设计上禁止写入。
+- **`connectTimeoutMs` 不在范围内。** undici 6/7/8 没有按请求的 connect 超时；传输层连接上限应在上游 `packages/util/http-proxy/src/install.ts` 修复，而不是本页面。
 - **抓取计时器是进程级的。** 它们作用于 Host 进程内所有提供方路由、联网搜索与 HTTP MCP 服务器；没有按提供方区分的 HTTP 超时。`unset` 保持宿主默认不变，`0` 禁用该计时器，调用方为单次请求设置的超时始终优先。
 - **抓取调度器包装是过渡方案**，改编自 MIT 许可的 `dsh-fetch-timeouts` 项目；署名与来源记录在仓库根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。它不是 DSH 原生设置。
 - **真实计时无法离线证明。** `verify.mjs` 只是用记录型假调度器固定安装/填充/恢复的形状，无法证明真实请求会在配置的毫秒数后超时；那属于部署检查。

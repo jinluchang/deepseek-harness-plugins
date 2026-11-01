@@ -65,6 +65,15 @@
  * same anchors as the schema library), so a deployed profile works without any
  * install step. Both halves degrade to a warning instead of failing the boot.
  *
+ * Finally, the module publishes frozen METADATA for the three per-route
+ * provider timeouts the page also tunes (`PROVIDER_TIMEOUT_FIELDS`,
+ * `PROVIDER_TIMEOUT_KEYS`, `PROVIDER_TIMEOUT_OPTIONS`). Those values live in
+ * the provider namespaces (`llm-pi-ai`, `llm-deepseek`,
+ * `llm-deepseek-account`), not in this plugin: the page writes them straight
+ * through each namespace's own form, so there is no `Config` field, no
+ * `apply()` step, and no runtime behavior here — only the pinned contract the
+ * page, the docs and `verify.mjs` read.
+ *
  * The module has no default export: the loader reads `name`, `Config`, and
  * `apply` as named bindings.
  *
@@ -442,6 +451,138 @@ export const FETCH_OPTIONS = Object.freeze(FETCH_FIELDS.map(field => Object.free
 export const Config = z === undefined ? undefined : z.object(Object.fromEntries(
   [...TUNE_FIELDS, ...FETCH_FIELDS].map(field => [field.key, field.build(z)]),
 ))
+
+/**
+ * Metadata for the "Provider timeouts" card: three per-route leaves that live
+ * in the PROVIDER namespaces, not in this plugin's `Config`.
+ *
+ * These values are DSH provider settings (`streamIdleTimeoutMs` and
+ * `filesApiTimeoutMs` are `.volatile()` leaves of `llm-deepseek`/
+ * `llm-deepseek-account`; every `llm-pi-ai` route is a leaf under the volatile
+ * `providers` dict), so the settings page writes them DIRECTLY through each
+ * namespace's own form — the same cross-namespace write the retry card already
+ * performs. This module therefore only publishes the frozen metadata the page,
+ * the docs and verify.mjs read: it never reads, writes, or applies these
+ * values, and `Config` deliberately has no field for them.
+ *
+ * The facts recorded here are the upstream schema contract:
+ *
+ * - `streamIdleTimeoutMs`: `packages/llm/llm-pi-ai/src/config.ts` (per-route)
+ *   and `packages/llm/llm-deepseek/src/config.ts` (root) bound it to
+ *   `(0, MAX_TIMER_DELAY_MS]` and the package default is 300 000 ms
+ *   (`llm-pi-ai/src/config.ts`, `llm-deepseek/src/defaults.ts`); a `<= 0`
+ *   value fails the load-time assert. It is the only one of the three that
+ *   exists on every route.
+ * - `timeoutMs`: `llm-pi-ai` only, DSH has no default of its own, and the
+ *   Anthropic/OpenAI SDKs fall back to about 600 000 ms. The DSH schema is
+ *   `z.natural()` (0 is schema-legal) but 0 aborts every request immediately,
+ *   so the page refuses it and the metadata marks it zero-rejected.
+ * - `filesApiTimeoutMs`: `llm-deepseek`/`llm-deepseek-account` only, package
+ *   default 60 000 ms, same `(0, MAX_TIMER_DELAY_MS]` bound and assert.
+ *
+ * The page narrows all three to integers even where the upstream schema would
+ * accept a fractional millisecond (`integerOnly`), and because the schemas have
+ * no "off" switch, "unlimited" is expressed as the 2 147 483 647 cap
+ * (`unlimitedPreset`), never as 0.
+ *
+ * `scopes` are the exact namespace/path templates one write addresses. The
+ * literal `<route>` placeholder stands for the joined provider route id and is
+ * substituted by the page from the row's `settingsPath`, exactly like the
+ * retry card. Every nested object and array is frozen: this table is a pinned
+ * contract for the docs and the verify gate.
+ */
+export const PROVIDER_TIMEOUT_FIELDS = Object.freeze([
+  Object.freeze({
+    key: 'streamIdleTimeoutMs',
+    family: 'streamIdle',
+    default: 300_000,
+    defaultText: '300000 ms (5 min); unset = package default 300000',
+    range: 'integer 1..2147483647; 0 is refused (schema and load-time assert)',
+    unit: 'ms',
+    integerOnly: true,
+    zeroRejected: true,
+    unlimitedPreset: MAX_TIMER_DELAY_MS,
+    scopes: Object.freeze([
+      Object.freeze({
+        ns: 'llm-pi-ai',
+        pathTemplate: Object.freeze(['providers', '<route>', 'streamIdleTimeoutMs']),
+      }),
+      Object.freeze({
+        ns: 'llm-deepseek',
+        pathTemplate: Object.freeze(['streamIdleTimeoutMs']),
+      }),
+      Object.freeze({
+        ns: 'llm-deepseek-account',
+        pathTemplate: Object.freeze(['streamIdleTimeoutMs']),
+      }),
+    ]),
+    description: 'Maximum silence between streamed chunks before the idle watchdog aborts the attempt; applies to every route; 0 is refused, so the unlimited preset is 2147483647.',
+  }),
+  Object.freeze({
+    key: 'timeoutMs',
+    family: 'request',
+    default: null,
+    defaultText: 'unset = SDK default (about 600000 ms)',
+    range: 'integer 1..2147483647; 0 is refused by the page (schema-legal but aborts every request)',
+    unit: 'ms',
+    integerOnly: true,
+    zeroRejected: true,
+    unlimitedPreset: MAX_TIMER_DELAY_MS,
+    scopes: Object.freeze([
+      Object.freeze({
+        ns: 'llm-pi-ai',
+        pathTemplate: Object.freeze(['providers', '<route>', 'timeoutMs']),
+      }),
+    ]),
+    description: 'SDK request timeout for a pi-ai route (bounds the wait for response headers, not the stream body); unset keeps the SDK default of about 600000 ms.',
+  }),
+  Object.freeze({
+    key: 'filesApiTimeoutMs',
+    family: 'files',
+    default: 60_000,
+    defaultText: '60000 ms (1 min); unset = package default 60000',
+    range: 'integer 1..2147483647; 0 is refused (schema and load-time assert)',
+    unit: 'ms',
+    integerOnly: true,
+    zeroRejected: true,
+    unlimitedPreset: MAX_TIMER_DELAY_MS,
+    scopes: Object.freeze([
+      Object.freeze({
+        ns: 'llm-deepseek',
+        pathTemplate: Object.freeze(['filesApiTimeoutMs']),
+      }),
+      Object.freeze({
+        ns: 'llm-deepseek-account',
+        pathTemplate: Object.freeze(['filesApiTimeoutMs']),
+      }),
+    ]),
+    description: 'Timeout for the DeepSeek Files API calls on a DeepSeek route; unset keeps the package default of 60000 ms.',
+  }),
+])
+
+/** The three per-route provider-timeout keys, in the order the page renders them. */
+export const PROVIDER_TIMEOUT_KEYS = Object.freeze(PROVIDER_TIMEOUT_FIELDS.map(field => field.key))
+
+/**
+ * Public provider-timeout metadata, one frozen projection per field with every
+ * key a doc table or a verify pin reads: key, family, code default, its default
+ * text, the allowed range, unit, integer/zero rules, the unlimited preset, the
+ * exact namespace/path templates, and a one-line description.
+ */
+export const PROVIDER_TIMEOUT_OPTIONS = Object.freeze(PROVIDER_TIMEOUT_FIELDS.map(field => Object.freeze({
+  key: field.key,
+  family: field.family,
+  default: field.default,
+  defaultText: field.defaultText,
+  range: field.range,
+  unit: field.unit,
+  integerOnly: field.integerOnly,
+  zeroRejected: field.zeroRejected,
+  unlimitedPreset: field.unlimitedPreset,
+  scopes: field.scopes,
+  description: field.description,
+})))
+
 
 /** Plugin name reported to the Host loader; also the settings and locale namespace. */
 export const name = 'llm-api-call-tuning'

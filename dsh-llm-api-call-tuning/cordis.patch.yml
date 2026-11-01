@@ -2,8 +2,10 @@
 #
 # One row owns the GLOBAL DEFAULT retry values the settings page offers as a
 # preset. The provider rows stay authoritative: the page edits their
-# `retryPolicy` directly, through the settings form API, so nothing is projected
-# from this row and a fresh install changes no provider by itself. `apply()`
+# `retryPolicy` directly, through the settings form API, and its provider-timeout
+# card writes the per-route `streamIdleTimeoutMs` / `timeoutMs` /
+# `filesApiTimeoutMs` leaves the same way; nothing is projected from this row and
+# a fresh install changes no provider by itself. `apply()`
 # does two things for the row: it suppresses the auto-generated settings page
 # for this namespace (the hand-written page is the only page for the row), and
 # it owns the opt-in process-wide fetch-timeout dispatcher. `headersTimeoutMs`

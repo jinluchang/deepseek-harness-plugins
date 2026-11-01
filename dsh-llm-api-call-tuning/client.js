@@ -23,7 +23,24 @@
  * union schema ignores them once the mode is `always`
  * (`packages/llm/llm/src/retry-policy.ts:105-112`).
  *
- * A third card owns the two PROCESS-WIDE HTTP timers the host settings schema
+ * A third card owns the PER-ROUTE application-layer timeouts, read and written
+ * through each row's own provider namespace: `streamIdleTimeoutMs` on every
+ * route, `timeoutMs` (SDK request timeout) on pi-ai routes only, and
+ * `filesApiTimeoutMs` on the two DeepSeek routes only. A blank field is the
+ * unset state and writes `{op: 'unset', path: [<leaf>]}` (or is skipped when it
+ * already was blank), so the package/SDK default stays in force; `Save` writes
+ * only the leaves that differ from the seeded user layer, and `Reset` unsets
+ * only this card's leaves for that row. `0` is refused on all three fields (the
+ * package schemas reject it for the two watchdogs, and a zero SDK request
+ * timeout aborts every request immediately); the per-field "Unlimited" preset
+ * fills the 2147483647 ms schema cap, never an off switch. Dormant or
+ * unaddressed routes render no controls at all: writing a timeout leaf would
+ * materialize a partial provider profile and could activate a dormant route.
+ * Two advisory notes are computed but never block Save: an SDK request timeout
+ * below a raised idle window, and a process-wide fetch `bodyTimeoutMs` below
+ * it.
+ *
+ * The fourth card owns the two PROCESS-WIDE HTTP timers the host settings schema
  * declares at the TOP LEVEL of this plugin's namespace (`headersTimeoutMs`,
  * `bodyTimeoutMs`), mirroring the `dsh-fetch-timeouts` plugin. Their tri-state
  * contract is what makes a fresh install behavior-neutral:
@@ -164,6 +181,37 @@ window.__ModuleLoader__.load({
     ]);
 
     /**
+     * The per-route application-layer timeouts this page owns, in render and
+     * submit order.
+     *
+     * Unlike the fetch timers these live in the PROVIDER namespaces, not in this
+     * plugin's own namespace: the `llm-pi-ai` namespace keeps them under
+     * `providers.<route>`, the `llm-deepseek` / `llm-deepseek-account`
+     * namespaces keep them at the section root. `family` decides which rows get
+     * a control: `all` on every editable route, `pi-ai` only on pi-ai routes,
+     * `deepseek` only on the two DeepSeek routes.
+     *
+     * `placeholder` is the package/SDK default a BLANK field leaves in force
+     * (300 000 ms idle watchdog, 600 000 ms SDK request timeout, 60 000 ms files
+     * API). The page never writes a placeholder: blank stays unset, and `0` is
+     * refused for all three (the schemas reject it for the two watchdogs, and
+     * the SDKs abort every request immediately on a zero request timeout).
+     * `MAX_TIMER_DELAY_MS` is the only "unlimited" the schema can express, so
+     * the per-field preset fills that cap instead of an off switch.
+     */
+    const PROVIDER_TIMEOUT_FIELDS = Object.freeze([
+      { key: 'streamIdleTimeoutMs', family: 'all', placeholder: 300_000 },
+      { key: 'timeoutMs', family: 'pi-ai', placeholder: 600_000 },
+      { key: 'filesApiTimeoutMs', family: 'deepseek', placeholder: 60_000 },
+    ]);
+
+    /** The SDK request timeout in force while `timeoutMs` is blank (advisory copy only). */
+    const SDK_REQUEST_TIMEOUT_MS = 600_000;
+
+    /** The per-field "unlimited" preset: the schema cap, never an off switch. */
+    const UNLIMITED_TIMEOUT_MS = MAX_TIMER_DELAY_MS;
+
+    /**
      * The config-editor refusal a home patch or command-line overlay produces
      * (`packages/boot/config-editor/src/index.ts:139`); the settings RPC wraps
      * it as `settings/rejected`. Either form means the value is managed
@@ -184,7 +232,7 @@ window.__ModuleLoader__.load({
     const en = {
       'nav': 'LLM API call tuning',
       'title': 'LLM API call tuning',
-      'intro': 'Set one global default retry policy for this deployment, then inspect or override the retry policy of each active model provider; also set the process-wide HTTP fetch timeouts shared by every provider. Provider rows write straight to the provider\u2019s own settings namespace.',
+      'intro': 'Set one global default retry policy for this deployment, then inspect or override the retry policy and the per-route timeouts of each active model provider; also set the process-wide HTTP fetch timeouts shared by every provider. Provider rows write straight to the provider\u2019s own settings namespace.',
       'defaults.heading': 'Global defaults',
       'defaults.description': 'A preset for the provider controls below and for "Apply defaults to all". The values are stored in this plugin\u2019s own settings namespace; a provider keeps using its own policy until one is written to it.',
       'defaults.note': 'Saving these defaults changes no provider. Use "Apply defaults to all active providers" or a row\u2019s "Use defaults" button to copy them.',
@@ -222,6 +270,21 @@ window.__ModuleLoader__.load({
       'fetch.hint': 'empty = system default (leave empty); 0 = disabled; 1800000 ms = 30 min',
       'fetch.status.loading': 'Loading the fetch timeouts\u2026',
       'fetch.status.unavailable': 'This deployment does not serve the llm-api-call-tuning settings namespace, so the fetch timeouts cannot be edited here.',
+      'timeouts.heading': 'Provider timeouts',
+      'timeouts.description': 'Per-route application-layer limits: how long one stream read may wait for the next chunk, the SDK request timeout, and the DeepSeek files API timeout. Blank leaves the package or SDK default in force; 0 is not allowed; the Unlimited preset fills the 2147483647 ms cap (a limit, not an off switch). Saving writes only the leaves you changed on that route.',
+      'timeouts.note': 'Only active routes are written: a dormant route is read-only here, because writing a timeout leaf would materialize a partial provider profile. These leaves are separate from the retry policy and from the process-wide fetch limits.',
+      'timeouts.unit': 'milliseconds, blank or 1 to 2147483647',
+      'timeouts.hint': 'blank = package/SDK default; Unlimited fills 2147483647 (a cap, not an off switch)',
+      'timeouts.unlimited': 'Unlimited',
+      'timeouts.save': 'Save timeouts',
+      'timeouts.saving': 'Saving timeouts\u2026',
+      'timeouts.reset': 'Reset timeouts',
+      'timeouts.resetting': 'Resetting\u2026',
+      'timeouts.resetDone': 'Reset. This route no longer overrides the timeouts shown here.',
+      'timeouts.protocol': 'Protocol',
+      'timeouts.protocol.catalog': 'catalog default',
+      'timeouts.advisory.sdkFirst': 'The SDK request timeout (600000 ms by default) may fire before this idle window; raise Request timeout to match.',
+      'timeouts.advisory.transportFirst': 'The process-wide fetch body timeout is set below this idle window, so the transport may abort first; raise Response body timeout on the fetch card.',
       'field.mode.label': 'Retry mode',
       'field.mode.description': 'Normal retries only the selected transient failure codes, up to the retry limit. Always retries every model-request failure until success, cancellation, or shutdown.',
       'field.mode.unit': 'normal or always',
@@ -252,6 +315,12 @@ window.__ModuleLoader__.load({
       'field.bodyTimeoutMs.label': 'Response body timeout',
       'field.bodyTimeoutMs.description': 'Time allowed between response body chunks. Empty keeps the system default; 0 disables the timer.',
       'field.bodyTimeoutMs.unit': 'milliseconds, empty or 0 to 2147483647',
+      'field.streamIdleTimeoutMs.label': 'Stream idle timeout',
+      'field.streamIdleTimeoutMs.description': 'How long one stream read may wait for the next chunk before the app-layer idle watchdog aborts (package default 300000 ms). Raise it for a slow first token.',
+      'field.timeoutMs.label': 'Request timeout',
+      'field.timeoutMs.description': 'SDK request timeout, covering the wait for response headers rather than the stream body (SDK default 600000 ms). 0 is not allowed because it would abort every request immediately.',
+      'field.filesApiTimeoutMs.label': 'Files API timeout',
+      'field.filesApiTimeoutMs.description': 'DeepSeek files-API request timeout (package default 60000 ms).',
       'mode.normal': 'Normal \u2014 selected codes',
       'mode.always': 'Always \u2014 every failure',
       'code.EMPTY_RESPONSE': 'Empty response',
@@ -276,6 +345,9 @@ window.__ModuleLoader__.load({
       'error.retryableCodes': 'Select at least one retryable code; unknown or duplicate codes are not allowed.',
       'error.headersTimeoutMs': 'The headers timeout must be empty (system default) or a whole number of milliseconds from 0 to 2147483647.',
       'error.bodyTimeoutMs': 'The body timeout must be empty (system default) or a whole number of milliseconds from 0 to 2147483647.',
+      'error.streamIdleTimeoutMs': 'The stream idle timeout must be blank (package default) or a whole number from 1 to 2147483647; 0 is not allowed. Use the Unlimited preset or leave it blank.',
+      'error.timeoutMs': 'The request timeout must be blank (SDK default) or a whole number from 1 to 2147483647; 0 would abort every request immediately.',
+      'error.filesApiTimeoutMs': 'The files API timeout must be blank (package default) or a whole number from 1 to 2147483647; 0 is not allowed.',
       'apply.outcome.saved': 'Applied',
       'apply.outcome.refused': 'Refused',
       'apply.outcome.managed': 'Managed elsewhere',
@@ -284,7 +356,7 @@ window.__ModuleLoader__.load({
     const zh = {
       'nav': 'LLM \u8c03\u7528\u8c03\u4f18',
       'title': 'LLM \u8c03\u7528\u8c03\u4f18',
-      'intro': '\u5728\u6b64\u5904\u8bbe\u7f6e\u4e00\u5957\u5168\u5c40\u9ed8\u8ba4\u91cd\u8bd5\u7b56\u7565\uff0c\u5e76\u53ef\u67e5\u770b\u6216\u8986\u76d6\u6bcf\u4e2a\u542f\u7528\u4e2d\u7684\u6a21\u578b\u63d0\u4f9b\u65b9\u91cd\u8bd5\u7b56\u7565\uff0c\u8fd8\u53ef\u8bbe\u7f6e\u6240\u6709\u63d0\u4f9b\u65b9\u5171\u7528\u7684\u8fdb\u7a0b\u7ea7 HTTP \u6293\u53d6\u8d85\u65f6\u3002\u63d0\u4f9b\u65b9\u884c\u4f1a\u76f4\u63a5\u5199\u5165\u8be5\u63d0\u4f9b\u65b9\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u3002',
+      'intro': '\u5728\u6b64\u5904\u8bbe\u7f6e\u4e00\u5957\u5168\u5c40\u9ed8\u8ba4\u91cd\u8bd5\u7b56\u7565\uff0c\u5e76\u53ef\u67e5\u770b\u6216\u8986\u76d6\u6bcf\u4e2a\u542f\u7528\u4e2d\u7684\u6a21\u578b\u63d0\u4f9b\u65b9\u7684\u91cd\u8bd5\u7b56\u7565\u4e0e\u5404\u8def\u7531\u8d85\u65f6\uff0c\u8fd8\u53ef\u8bbe\u7f6e\u6240\u6709\u63d0\u4f9b\u65b9\u5171\u7528\u7684\u8fdb\u7a0b\u7ea7 HTTP \u6293\u53d6\u8d85\u65f6\u3002\u63d0\u4f9b\u65b9\u884c\u4f1a\u76f4\u63a5\u5199\u5165\u8be5\u63d0\u4f9b\u65b9\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u3002',
       'defaults.heading': '\u5168\u5c40\u9ed8\u8ba4\u503c',
       'defaults.description': '\u4f5c\u4e3a\u4e0b\u65b9\u5404\u63d0\u4f9b\u65b9\u63a7\u4ef6\u4ee5\u53ca\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u63d0\u4f9b\u65b9\u201d\u7684\u9884\u8bbe\u3002\u8fd9\u4e9b\u503c\u4fdd\u5b58\u5728\u672c\u63d2\u4ef6\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u4e2d\uff1b\u5728\u5411\u67d0\u4e2a\u63d0\u4f9b\u65b9\u5199\u5165\u4e4b\u524d\uff0c\u5b83\u4ecd\u4f7f\u7528\u81ea\u5df1\u7684\u7b56\u7565\u3002',
       'defaults.note': '\u4fdd\u5b58\u8fd9\u4e9b\u9ed8\u8ba4\u503c\u4e0d\u4f1a\u6539\u53d8\u4efb\u4f55\u63d0\u4f9b\u65b9\u3002\u8bf7\u4f7f\u7528\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u542f\u7528\u4e2d\u7684\u63d0\u4f9b\u65b9\u201d\u6216\u67d0\u4e00\u884c\u7684\u201c\u4f7f\u7528\u9ed8\u8ba4\u503c\u201d\u6309\u94ae\u6765\u62f7\u8d1d\u5b83\u4eec\u3002',
@@ -322,6 +394,21 @@ window.__ModuleLoader__.load({
       'fetch.hint': '\u7559\u7a7a = \u7cfb\u7edf\u9ed8\u8ba4\uff08\u4fdd\u6301\u7559\u7a7a\uff09\uff1b0 = \u7981\u7528\uff1b1800000 \u6beb\u79d2 = 30 \u5206\u949f',
       'fetch.status.loading': '\u6b63\u5728\u52a0\u8f7d\u6293\u53d6\u8d85\u65f6\u8bbe\u7f6e\u2026',
       'fetch.status.unavailable': '\u5f53\u524d\u90e8\u7f72\u672a\u63d0\u4f9b llm-api-call-tuning \u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\uff0c\u65e0\u6cd5\u5728\u6b64\u7f16\u8f91\u6293\u53d6\u8d85\u65f6\u3002',
+      'timeouts.heading': '\u63d0\u4f9b\u65b9\u8d85\u65f6',
+      'timeouts.description': '\u6309\u8def\u7531\u751f\u6548\u7684\u5e94\u7528\u5c42\u8d85\u65f6\uff1a\u5355\u6b21\u6d41\u8bfb\u53d6\u7b49\u5f85\u4e0b\u4e00\u6570\u636e\u5757\u7684\u6700\u957f\u65f6\u95f4\u3001SDK \u8bf7\u6c42\u8d85\u65f6\uff0c\u4ee5\u53ca DeepSeek \u6587\u4ef6 API \u8d85\u65f6\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u5305\u6216 SDK \u9ed8\u8ba4\u503c\uff1b\u4e0d\u5141\u8bb8 0\uff1b\u201c\u4e0d\u9650\u201d\u9884\u8bbe\u4f1a\u586b\u5165 2147483647 \u6beb\u79d2\u7684\u4e0a\u9650\uff08\u8fd9\u662f\u4e0a\u9650\uff0c\u4e0d\u662f\u5173\u95ed\u5f00\u5173\uff09\u3002\u4fdd\u5b58\u53ea\u5199\u5165\u8be5\u8def\u7531\u4e0a\u6539\u52a8\u8fc7\u7684\u5b57\u6bb5\u3002',
+      'timeouts.note': '\u53ea\u5199\u5165\u5df2\u542f\u7528\u7684\u8def\u7531\uff1a\u4f11\u7720\u8def\u7531\u5728\u6b64\u4e3a\u53ea\u8bfb\uff0c\u56e0\u4e3a\u5199\u5165\u8d85\u65f6\u5b57\u6bb5\u4f1a\u751f\u6210\u4e0d\u5b8c\u6574\u7684\u63d0\u4f9b\u65b9\u914d\u7f6e\u5e76\u53ef\u80fd\u5c06\u5176\u6fc0\u6d3b\u3002\u8fd9\u4e9b\u5b57\u6bb5\u4e0e\u91cd\u8bd5\u7b56\u7565\u3001\u8fdb\u7a0b\u7ea7\u6293\u53d6\u4e0a\u9650\u5f7c\u6b64\u72ec\u7acb\u3002',
+      'timeouts.unit': '\u6beb\u79d2\uff0c\u7559\u7a7a\u6216 1 \u5230 2147483647',
+      'timeouts.hint': '\u7559\u7a7a = \u5305/SDK \u9ed8\u8ba4\u503c\uff1b\u201c\u4e0d\u9650\u201d\u586b\u5165 2147483647\uff08\u4e0a\u9650\uff0c\u4e0d\u662f\u5173\u95ed\u5f00\u5173\uff09',
+      'timeouts.unlimited': '\u4e0d\u9650',
+      'timeouts.save': '\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e',
+      'timeouts.saving': '\u6b63\u5728\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e\u2026',
+      'timeouts.reset': '\u91cd\u7f6e\u8d85\u65f6\u8bbe\u7f6e',
+      'timeouts.resetting': '\u6b63\u5728\u91cd\u7f6e\u2026',
+      'timeouts.resetDone': '\u5df2\u91cd\u7f6e\u3002\u8be5\u8def\u7531\u4e0d\u518d\u8986\u76d6\u6b64\u5904\u663e\u793a\u7684\u8d85\u65f6\u8bbe\u7f6e\u3002',
+      'timeouts.protocol': '\u534f\u8bae',
+      'timeouts.protocol.catalog': '\u76ee\u5f55\u9ed8\u8ba4',
+      'timeouts.advisory.sdkFirst': 'SDK \u8bf7\u6c42\u8d85\u65f6\uff08\u9ed8\u8ba4 600000 \u6beb\u79d2\uff09\u53ef\u80fd\u5148\u4e8e\u6b64\u7a7a\u95f2\u7a97\u53e3\u89e6\u53d1\uff1b\u8bf7\u540c\u6b65\u63d0\u9ad8\u201c\u8bf7\u6c42\u8d85\u65f6\u201d\u3002',
+      'timeouts.advisory.transportFirst': '\u8fdb\u7a0b\u7ea7\u6293\u53d6\u6b63\u6587\u8d85\u65f6\u4f4e\u4e8e\u6b64\u7a7a\u95f2\u7a97\u53e3\uff0c\u4f20\u8f93\u5c42\u53ef\u80fd\u5148\u4e2d\u65ad\uff1b\u8bf7\u5728\u6293\u53d6\u8d85\u65f6\u5361\u7247\u4e2d\u63d0\u9ad8\u201c\u54cd\u5e94\u6b63\u6587\u8d85\u65f6\u201d\u3002',
       'field.mode.label': '\u91cd\u8bd5\u6a21\u5f0f',
       'field.mode.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4ec5\u5728\u91cd\u8bd5\u4e0a\u9650\u5185\u91cd\u8bd5\u6240\u9009\u7684\u4e34\u65f6\u9519\u8bef\u7801\u3002\u201c\u603b\u662f\u201d\u6a21\u5f0f\u5bf9\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\u90fd\u91cd\u8bd5\uff0c\u76f4\u5230\u6210\u529f\u3001\u53d6\u6d88\u6216\u5173\u95ed\u3002',
       'field.mode.unit': 'normal \u6216 always',
@@ -352,6 +439,12 @@ window.__ModuleLoader__.load({
       'field.bodyTimeoutMs.label': '\u54cd\u5e94\u6b63\u6587\u8d85\u65f6',
       'field.bodyTimeoutMs.description': '\u54cd\u5e94\u6b63\u6587\u5404\u6570\u636e\u5757\u4e4b\u95f4\u5141\u8bb8\u7684\u6700\u957f\u95f4\u9694\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u7cfb\u7edf\u9ed8\u8ba4\uff1b0 \u8868\u793a\u7981\u7528\u8be5\u8ba1\u65f6\u5668\u3002',
       'field.bodyTimeoutMs.unit': '\u6beb\u79d2\uff0c\u7559\u7a7a\u6216 0 \u5230 2147483647',
+      'field.streamIdleTimeoutMs.label': '\u6d41\u7a7a\u95f2\u8d85\u65f6',
+      'field.streamIdleTimeoutMs.description': '\u5355\u6b21\u6d41\u8bfb\u53d6\u7b49\u5f85\u4e0b\u4e00\u6570\u636e\u5757\u7684\u6700\u957f\u65f6\u95f4\uff0c\u8d85\u65f6\u540e\u7531\u5e94\u7528\u5c42\u7a7a\u95f2\u770b\u95e8\u72d7\u4e2d\u6b62\uff08\u5305\u9ed8\u8ba4\u503c 300000 \u6beb\u79d2\uff09\u3002\u9996\u4e2a\u4ee4\u724c\u8f83\u6162\u65f6\u53ef\u8c03\u9ad8\u3002',
+      'field.timeoutMs.label': '\u8bf7\u6c42\u8d85\u65f6',
+      'field.timeoutMs.description': 'SDK \u8bf7\u6c42\u8d85\u65f6\uff0c\u7ea6\u675f\u7684\u662f\u7b49\u5f85\u54cd\u5e94\u5934\u7684\u65f6\u95f4\uff0c\u800c\u975e\u6d41\u6b63\u6587\uff08SDK \u9ed8\u8ba4\u503c 600000 \u6beb\u79d2\uff09\u3002\u4e0d\u5141\u8bb8 0\uff0c\u56e0\u4e3a\u90a3\u4f1a\u8ba9\u6bcf\u4e2a\u8bf7\u6c42\u7acb\u5373\u4e2d\u6b62\u3002',
+      'field.filesApiTimeoutMs.label': '\u6587\u4ef6 API \u8d85\u65f6',
+      'field.filesApiTimeoutMs.description': 'DeepSeek \u6587\u4ef6 API \u8bf7\u6c42\u8d85\u65f6\uff08\u5305\u9ed8\u8ba4\u503c 60000 \u6beb\u79d2\uff09\u3002',
       'mode.normal': '\u666e\u901a \u2014 \u6240\u9009\u9519\u8bef\u7801',
       'mode.always': '\u603b\u662f \u2014 \u6bcf\u6b21\u5931\u8d25',
       'code.EMPTY_RESPONSE': '\u7a7a\u54cd\u5e94',
@@ -376,6 +469,9 @@ window.__ModuleLoader__.load({
       'error.retryableCodes': '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u53ef\u91cd\u8bd5\u9519\u8bef\u7801\uff1b\u4e0d\u5141\u8bb8\u672a\u77e5\u6216\u91cd\u590d\u7684\u9519\u8bef\u7801\u3002',
       'error.headersTimeoutMs': '\u54cd\u5e94\u5934\u8d85\u65f6\u5fc5\u987b\u662f\u7559\u7a7a\uff08\u7cfb\u7edf\u9ed8\u8ba4\uff09\u6216 0 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\u6beb\u79d2\u503c\u3002',
       'error.bodyTimeoutMs': '\u54cd\u5e94\u6b63\u6587\u8d85\u65f6\u5fc5\u987b\u662f\u7559\u7a7a\uff08\u7cfb\u7edf\u9ed8\u8ba4\uff09\u6216 0 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\u6beb\u79d2\u503c\u3002',
+      'error.streamIdleTimeoutMs': '\u6d41\u7a7a\u95f2\u8d85\u65f6\u5fc5\u987b\u662f\u7559\u7a7a\uff08\u5305\u9ed8\u8ba4\u503c\uff09\u6216 1 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\uff1b\u4e0d\u5141\u8bb8 0\uff0c\u8bf7\u4f7f\u7528\u201c\u4e0d\u9650\u201d\u9884\u8bbe\u6216\u7559\u7a7a\u3002',
+      'error.timeoutMs': '\u8bf7\u6c42\u8d85\u65f6\u5fc5\u987b\u7559\u7a7a\uff08SDK \u9ed8\u8ba4\u503c\uff09\u6216\u4e3a 1 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\uff1b0 \u4f1a\u8ba9\u6bcf\u4e2a\u8bf7\u6c42\u7acb\u5373\u4e2d\u6b62\u3002',
+      'error.filesApiTimeoutMs': '\u6587\u4ef6 API \u8d85\u65f6\u5fc5\u987b\u7559\u7a7a\uff08\u5305\u9ed8\u8ba4\u503c\uff09\u6216\u4e3a 1 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\uff1b\u4e0d\u5141\u8bb8 0\u3002',
       'apply.outcome.saved': '\u5df2\u5e94\u7528',
       'apply.outcome.refused': '\u88ab\u62d2\u7edd',
       'apply.outcome.managed': '\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406',
@@ -419,6 +515,9 @@ window.__ModuleLoader__.load({
       '.dlct-badge-override { color: var(--accent, #2563eb); }',
       '.dlct-badge-default { color: var(--text-tertiary, #7a8493); }',
       '.dlct-outcome { font-size: 0.82rem; color: var(--text-secondary, #5b6472); }',
+      '.dlct-presets { display: flex; flex-wrap: wrap; gap: 8px; }',
+      '.dlct-advisory { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--warning-surface, #fef7e0); color: var(--warning, #8a6100); font-size: 0.82rem; line-height: 1.45; }',
+      '.dlct-protocol { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }',
     ].join('\n');
 
     /* ══ path / value helpers ═══════════════════════════════════════════════ */
@@ -497,6 +596,101 @@ window.__ModuleLoader__.load({
         headersTimeoutMs: text(normalized.headersTimeoutMs),
         bodyTimeoutMs: text(normalized.bodyTimeoutMs),
       };
+    }
+
+    /**
+     * The family of one joined provider row, from its settings path: pi-ai
+     * routes live under `settingsPath[0] === 'providers'`, the two DeepSeek
+     * routes sit at their namespace root (`settingsPath === []`).
+     * @param row - one joined provider row.
+     * @returns `'pi-ai'` or `'deepseek'`.
+     */
+    function timeoutFamily(row) {
+      return Array.isArray(row.settingsPath) && row.settingsPath[0] === 'providers' ? 'pi-ai' : 'deepseek';
+    }
+
+    /**
+     * The per-route timeout fields one row owns, in render and submit order.
+     * @param family - `'pi-ai'` or `'deepseek'`.
+     * @returns the visible `PROVIDER_TIMEOUT_FIELDS` entries.
+     */
+    function timeoutFieldsFor(family) {
+      return PROVIDER_TIMEOUT_FIELDS.filter(field => field.family === 'all' || field.family === family);
+    }
+
+    /**
+     * Whether the USER layer of a row's namespace stores one timeout leaf.
+     * Presence, never value comparison — the same rule the retry badge uses.
+     * @param user - the form snapshot's user layer.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param key - the timeout leaf.
+     * @returns true when the user layer names the leaf.
+     */
+    function timeoutHasOverride(user, settingsPath, key) {
+      if (!isPlainObject(user)) return false;
+      const profile = getAt(user, settingsPath);
+      if (!isPlainObject(profile)) return false;
+      return Object.prototype.hasOwnProperty.call(profile, key) && profile[key] !== undefined;
+    }
+
+    /**
+     * Seed one timeout control as TEXT from the USER layer only. A user value
+     * paints as its number (an override); anything absent paints BLANK, which
+     * means "leave the package/SDK default in force". The EFFECTIVE value is
+     * deliberately not used: it already contains the package default (300 000,
+     * 600 000, 60 000), and painting that would make an untouched route look
+     * like an override the page had written.
+     * @param user - the form snapshot's user layer.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param key - the timeout leaf.
+     * @returns the draft text ('' = unset).
+     */
+    function timeoutSeedText(user, settingsPath, key) {
+      if (!isPlainObject(user)) return '';
+      const profile = getAt(user, settingsPath);
+      if (!isPlainObject(profile)) return '';
+      const value = profile[key];
+      return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+    }
+
+    /**
+     * Build the two/three-field timeout draft of one row from its user layer.
+     * @param user - the form snapshot's user layer.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @returns the text draft for every timeout field ('' = unset).
+     */
+    function timeoutSeedDraft(user, settingsPath) {
+      const draft = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) draft[field.key] = timeoutSeedText(user, settingsPath, field.key);
+      return draft;
+    }
+
+    /**
+     * Validate one row's timeout draft. Blank means "unset: keep the
+     * package/SDK default"; a value must be a whole number from 1 to
+     * 2147483647. `0` is refused for every field: the two watchdogs reject it in
+     * their schema, and a zero SDK request timeout aborts every request
+     * immediately. Fractional, negative, exponent, overflowing, and malformed
+     * text are refused too — a deliberate UI narrowing of schemas that
+     * technically tolerate fractions.
+     * @param draft - the row's text draft.
+     * @param family - `'pi-ai'` or `'deepseek'`.
+     * @returns `{ok:true, values}` (null = unset) or `{ok:false, errors}`.
+     */
+    function validateTimeoutDraft(draft, family) {
+      const errors = {};
+      const values = {};
+      for (const field of timeoutFieldsFor(family)) {
+        const text = typeof draft[field.key] === 'string' ? draft[field.key].trim() : '';
+        if (text === '') {
+          values[field.key] = null;
+          continue;
+        }
+        const value = parseIntegerText(text);
+        if (value === undefined || value < 1 || value > MAX_TIMER_DELAY_MS) errors[field.key] = `error.${field.key}`;
+        else values[field.key] = value;
+      }
+      return Object.keys(errors).length === 0 ? { ok: true, values } : { ok: false, errors };
     }
 
     /**
@@ -773,6 +967,72 @@ window.__ModuleLoader__.load({
         { op: 'unset', path: ['headersTimeoutMs'] },
         { op: 'unset', path: ['bodyTimeoutMs'] },
       ];
+    }
+
+    /**
+     * The leaf ops that persist one row's CHANGED timeout leaves only. A leaf
+     * whose draft text equals the seeded user layer is skipped (an untouched
+     * route writes nothing); a cleared leaf emits `{op:'unset', path:[...]}`
+     * and a value emits `{op:'set', ..., value}`. The paths are the row's own
+     * `settingsPath` plus the leaf: `['providers', <route>, 'streamIdleTimeoutMs']`
+     * in `llm-pi-ai`, or the flat `['streamIdleTimeoutMs']` /
+     * `['filesApiTimeoutMs']` in `llm-deepseek` / `llm-deepseek-account`.
+     * `retryPolicy` and whole provider objects are never touched.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param family - `'pi-ai'` or `'deepseek'`.
+     * @param baseline - the seeded text draft ('' = unset).
+     * @param values - the validated draft values (null = unset).
+     * @returns ordered leaf-path ops; empty when nothing changed.
+     */
+    function timeoutOps(settingsPath, family, baseline, values) {
+      const ops = [];
+      for (const field of timeoutFieldsFor(family)) {
+        const value = values[field.key];
+        const path = [...settingsPath, field.key];
+        if (value === null || value === undefined) {
+          if (baseline[field.key] !== '') ops.push({ op: 'unset', path });
+          continue;
+        }
+        if (baseline[field.key] === String(value)) continue;
+        ops.push({ op: 'set', path, value });
+      }
+      return ops;
+    }
+
+    /**
+     * The unsets that restore the package/SDK defaults for one row: every
+     * timeout leaf THIS card owns for the row's family, and nothing else —
+     * never `retryPolicy`, never a whole provider profile.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param family - `'pi-ai'` or `'deepseek'`.
+     * @returns ordered flat leaf-path unsets.
+     */
+    function timeoutResetOps(settingsPath, family) {
+      return timeoutFieldsFor(family).map(field => ({ op: 'unset', path: [...settingsPath, field.key] }));
+    }
+
+    /**
+     * The non-blocking advisories for one row, from its own draft and the
+     * process-wide fetch card's body-timeout draft. They never disable Save.
+     * @param family - `'pi-ai'` or `'deepseek'`.
+     * @param draft - the row's text draft.
+     * @param bodyTimeoutText - the fetch card's `bodyTimeoutMs` draft text.
+     * @returns ordered dictionary keys to render as notes.
+     */
+    function timeoutAdvisories(family, draft, bodyTimeoutText) {
+      const advisories = [];
+      const streamIdle = parseIntegerText(draft.streamIdleTimeoutMs);
+      if (family === 'pi-ai'
+        && streamIdle !== undefined && streamIdle > SDK_REQUEST_TIMEOUT_MS) {
+        const requestText = typeof draft.timeoutMs === 'string' ? draft.timeoutMs.trim() : '';
+        const request = requestText === '' ? SDK_REQUEST_TIMEOUT_MS : parseIntegerText(requestText);
+        if (request === undefined || request < streamIdle) advisories.push('timeouts.advisory.sdkFirst');
+      }
+      const body = parseIntegerText(bodyTimeoutText);
+      if (streamIdle !== undefined && body !== undefined && body > 0 && body < streamIdle) {
+        advisories.push('timeouts.advisory.transportFirst');
+      }
+      return advisories;
     }
 
     /* ══ failure classification and submission ═════════════════════════════ */
@@ -1131,7 +1391,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The two process-wide fetch-timer controls of the third card. A plain
+     * The two process-wide fetch-timer controls of the fourth card. A plain
      * render helper (no hooks) like {@link renderRetryFields}: ids and the
      * draft come from the caller, so the section stays hook-count stable.
      * @param options - `{t, ids, draft, errors, disabled, stage}`.
@@ -1163,6 +1423,59 @@ window.__ModuleLoader__.load({
           }),
           h('p', { className: 'dlct-description' }, t(`field.${field.key}.description`)),
           h('span', { className: 'dlct-default' }, t('fetch.hint')),
+          invalid === undefined ? null : h('p', { className: 'dlct-error', role: 'alert' }, t(invalid)),
+        ));
+      }
+      return nodes;
+    }
+
+    /**
+     * The timeout controls of one row. A plain render helper (no hooks) like
+     * {@link renderRetryFields}: only the fields the row's family owns are
+     * rendered, and each carries its blank-by-default draft, the package/SDK
+     * default as the placeholder, a per-field override/default state badge, and
+     * the "unlimited" preset that fills the schema cap.
+     * @param options - `{t, ids, family, draft, errors, overrides, disabled, stage, preset}`.
+     * @returns the control nodes, in `timeoutFieldsFor(family)` order.
+     */
+    function renderTimeoutFields(options) {
+      const { t, ids, family, draft, errors, overrides, disabled, stage, preset } = options;
+      const nodes = [];
+      for (const field of timeoutFieldsFor(family)) {
+        const invalid = errors[field.key];
+        const override = overrides[field.key] === true;
+        nodes.push(h('div', { className: 'dlct-field', key: field.key },
+          h('div', { className: 'dlct-field-head' },
+            h('label', { className: 'dlct-field-label', htmlFor: ids[field.key] }, t(`field.${field.key}.label`)),
+            h('span', { className: 'dlct-unit' }, t('timeouts.unit')),
+            h('span', {
+              className: `dlct-badge ${override ? 'dlct-badge-override' : 'dlct-badge-default'}`,
+            }, t(override ? 'provider.source.override' : 'provider.source.default')),
+          ),
+          h('input', {
+            id: ids[field.key],
+            className: 'dlct-input',
+            type: 'text',
+            inputMode: 'numeric',
+            step: '1',
+            min: '1',
+            max: String(MAX_TIMER_DELAY_MS),
+            value: draft[field.key],
+            placeholder: String(field.placeholder),
+            disabled,
+            'aria-invalid': invalid === undefined ? undefined : 'true',
+            onChange: event => stage(field.key, event.target.value),
+          }),
+          h('p', { className: 'dlct-description' }, t(`field.${field.key}.description`)),
+          h('span', { className: 'dlct-default' }, t('timeouts.hint')),
+          h('div', { className: 'dlct-presets' },
+            h('button', {
+              type: 'button',
+              className: 'dlct-button dlct-outline dlct-preset',
+              disabled,
+              onClick: () => preset(field.key),
+            }, t('timeouts.unlimited')),
+          ),
           invalid === undefined ? null : h('p', { className: 'dlct-error', role: 'alert' }, t(invalid)),
         ));
       }
@@ -1347,9 +1660,175 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The "LLM API call tuning" settings page, three cards in order: the global
-     * retry defaults, one editable row per active provider route, and the
-     * process-wide fetch timers.
+     * One provider's timeout row: its live snapshot, its per-family timeout
+     * draft, and its Save/Reset actions. The row subscribes to the provider's
+     * own shared config form, so a write from anywhere re-seeds it. A dormant
+     * or unaddressed route renders the same read-only note as the retry row and
+     * offers no controls: writing a timeout leaf would materialize a partial
+     * `providers.<route>` profile and could activate a dormant route, so the
+     * active-only gate is a correctness requirement here, not just UX.
+     * @param props - slot props plus the joined row, its form, and the fetch
+     *   card's body-timeout draft text (advisory only, never written).
+     * @returns the row tree.
+     */
+    function ProviderTimeoutRow(props) {
+      const { row, t, form, bodyTimeoutMs } = props;
+      const store = form === undefined ? IDLE_FORM : form;
+      const subscribe = useCallback(listener => store.subscribe(listener), [store]);
+      const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
+      const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+
+      const ids = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) ids[field.key] = useId();
+
+      const [edits, setEdits] = useState({});
+      const [pending, setPending] = useState(null);
+      const [outcome, setOutcome] = useState(null);
+      const pendingRef = useRef(false);
+      const saving = pending !== null;
+
+      const family = timeoutFamily(row);
+      const editable = row.active && row.settingsNs !== '' && form !== undefined;
+      const status = snapshot !== null && snapshot !== undefined && typeof snapshot.status === 'string'
+        ? snapshot.status
+        : 'loading';
+      const ready = editable && status === 'ready';
+      const writable = ready && snapshot.writable !== false;
+      // The SAME gate as the retry rows: ready, writable, and a numeric
+      // revision, so this card never sends an unconditional write.
+      const disabled = !writeGate(row, snapshot, form).ok;
+      const value = snapshot === null || snapshot === undefined ? undefined : snapshot.value;
+      const user = snapshot === null || snapshot === undefined ? undefined : snapshot.user;
+
+      const userProfile = ready && isPlainObject(user) ? getAt(user, row.settingsPath) : undefined;
+      const seedKey = ready ? `${String(snapshot.revision)}|${JSON.stringify(userProfile === undefined ? null : userProfile)}` : '';
+      const baseline = timeoutSeedDraft(user, row.settingsPath);
+      const overrides = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) {
+        overrides[field.key] = timeoutHasOverride(user, row.settingsPath, field.key);
+      }
+      const draft = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) {
+        const edit = edits[field.key];
+        draft[field.key] = edit !== undefined && edit.seedKey === seedKey ? edit.value : baseline[field.key];
+      }
+      const check = validateTimeoutDraft(draft, family);
+      const errors = check.ok ? {} : check.errors;
+      const ops = check.ok ? timeoutOps(row.settingsPath, family, baseline, check.values) : [];
+
+      /** Stage one control value against the snapshot currently shown. */
+      const stage = (key, next) => {
+        setEdits(current => ({ ...current, [key]: { value: next, seedKey } }));
+        setOutcome(null);
+      };
+
+      /** Fill the schema cap (2147483647 ms) — a cap, not an off switch. */
+      const preset = key => stage(key, String(UNLIMITED_TIMEOUT_MS));
+
+      /** Write only this row's CHANGED timeout leaves. */
+      const save = () => {
+        if (disabled || saving || pendingRef.current || !check.ok || ops.length === 0) return;
+        pendingRef.current = true;
+        setPending('save');
+        setOutcome(null);
+        submitOps(form, ops).then((result) => {
+          pendingRef.current = false;
+          setPending(null);
+          setEdits({});
+          setOutcome(result);
+        });
+      };
+
+      /** Unset only this card's timeout leaves for this row. */
+      const reset = () => {
+        if (disabled || saving || pendingRef.current) return;
+        pendingRef.current = true;
+        setPending('reset');
+        setOutcome(null);
+        submitOps(form, timeoutResetOps(row.settingsPath, family)).then((result) => {
+          pendingRef.current = false;
+          setPending(null);
+          setEdits({});
+          setOutcome(result.kind === 'saved' ? { kind: 'reset' } : result);
+        });
+      };
+
+      const advisoryKeys = writable ? timeoutAdvisories(family, draft, bodyTimeoutMs) : [];
+      const protocol = family === 'deepseek'
+        ? 'anthropic-messages'
+        : ready && typeof getAt(value, [...row.settingsPath, 'api']) === 'string'
+          ? getAt(value, [...row.settingsPath, 'api'])
+          : '';
+      const namespaceText = [row.settingsNs, ...row.settingsPath].filter(part => part !== '').join(' \u203a ');
+
+      const rowBody = [];
+      if (!row.active) {
+        rowBody.push(h('p', { className: 'dlct-note', key: 'dormant' }, t('provider.status.dormant')));
+      } else if (row.settingsNs === '') {
+        rowBody.push(h('p', { className: 'dlct-note', key: 'no-settings' }, t('provider.status.noSettings')));
+      } else if (form === undefined) {
+        rowBody.push(h('p', { className: 'dlct-note', key: 'no-form' }, t('provider.status.unavailable')));
+      } else if (status === 'loading') {
+        rowBody.push(h('p', { className: 'dlct-note', key: 'loading' }, t('status.loading')));
+      } else if (status === 'unavailable') {
+        rowBody.push(h('p', { className: 'dlct-note', key: 'unavailable' }, t('provider.status.unavailable')));
+      } else if (!writable) {
+        rowBody.push(h('p', { className: 'dlct-note', key: 'read-only' }, t('status.readOnly')));
+      } else {
+        rowBody.push(h('div', { className: 'dlct-fields', key: 'fields' },
+          renderTimeoutFields({
+            t,
+            ids,
+            family,
+            draft,
+            errors,
+            overrides,
+            disabled: disabled || saving,
+            stage,
+            preset,
+          }),
+        ));
+        rowBody.push(h('div', { className: 'dlct-actions', key: 'actions' },
+          h('button', {
+            type: 'button',
+            className: 'dlct-button',
+            disabled: disabled || saving || !check.ok || ops.length === 0,
+            'aria-busy': pending === 'save' ? 'true' : undefined,
+            onClick: save,
+          }, pending === 'save' ? t('timeouts.saving') : t('timeouts.save')),
+          h('button', {
+            type: 'button',
+            className: 'dlct-button dlct-outline',
+            disabled: disabled || saving,
+            'aria-busy': pending === 'reset' ? 'true' : undefined,
+            onClick: reset,
+          }, pending === 'reset' ? t('timeouts.resetting') : t('timeouts.reset')),
+        ));
+        for (const key of advisoryKeys) {
+          rowBody.push(h('p', { className: 'dlct-advisory', role: 'status', key }, t(key)));
+        }
+        rowBody.push(h('div', { key: 'outcome' }, outcomeNode(outcome, t, 'timeouts.resetDone')));
+      }
+
+      return h('section', { className: 'dlct-provider' },
+        h('header', { className: 'dlct-provider-head' },
+          h('h4', { className: 'dlct-provider-name' }, row.displayName),
+          h('p', { className: 'dlct-provider-meta' },
+            h('code', { className: 'dlct-route' }, row.provider),
+            namespaceText === ''
+              ? null
+              : h('span', { className: 'dlct-namespace' }, `${t('provider.namespace')}: ${namespaceText}`),
+            h('span', { className: 'dlct-protocol' }, `${t('timeouts.protocol')}: ${protocol === '' ? t('timeouts.protocol.catalog') : protocol}`),
+          ),
+        ),
+        rowBody,
+      );
+    }
+
+    /**
+     * The "LLM API call tuning" settings page, four cards in order: the global
+     * retry defaults, one editable row per active provider route, the per-route
+     * provider timeouts, and the process-wide fetch timers.
      * @param props - slot props.
      * @param props.form - shared config form for this plugin's own namespace.
      * @param props.t - localized copy for this plugin's namespace.
@@ -1633,6 +2112,23 @@ window.__ModuleLoader__.load({
                 applyOutcome: applyOutcomes[rowKey(row)],
               })))
             : null,
+        ),
+        h('section', { className: 'dlct-card' },
+          h('header', { className: 'dlct-card-head' },
+            h('h3', { className: 'dlct-card-title' }, t('timeouts.heading')),
+            h('p', { className: 'dlct-card-description' }, t('timeouts.description')),
+          ),
+          providerNote,
+          providers.status === 'ready'
+            ? h('div', { className: 'dlct-providers' }, providers.rows.map(row => h(ProviderTimeoutRow, {
+                key: rowKey(row),
+                row,
+                t,
+                form: row.form,
+                bodyTimeoutMs: fetchValues.bodyTimeoutMs,
+              })))
+            : null,
+          h('p', { className: 'dlct-note' }, t('timeouts.note')),
         ),
         h('section', { className: 'dlct-card' },
           h('header', { className: 'dlct-card-head' },
