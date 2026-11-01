@@ -18,14 +18,22 @@ deployment that wants one policy for every route has to hand-edit each provider 
 This plugin fills that gap with **one** Settings page:
 
 - a **global defaults** card that stores the six retry values as a preset in this plugin's own settings
-  namespace (`llm-api-call-tuning`), and
+  namespace (`llm-api-call-tuning`),
 - one **provider row** per active provider route that shows the route's **effective** retry policy and
   writes leaf-path operations **directly into that provider's own settings namespace**; a
-  declared-but-dormant directory entry is listed as a read-only row.
+  declared-but-dormant directory entry is listed as a read-only row, and
+- a **fetch timeouts** card for two **process-wide** HTTP timers (`headersTimeoutMs`,
+  `bodyTimeoutMs`) that the Host applies to the undici dispatcher every provider route, web search, and
+  HTTP MCP server shares. Both are `unset` by default, so a fresh install changes no behavior. This part
+  is adapted from the MIT-licensed `dsh-fetch-timeouts` project: it is a **stopgap** until DSH offers a
+  native setting, and the upstream attribution lives in the repository root
+  `THIRD-PARTY-NOTICES.md` (not edited by this bundle).
 
-Non-goals: the plugin owns no projection state and never copies the defaults onto a provider on its
-own. It is not a new retry engine, it does not change any other profile, and it does not touch provider
-configuration outside `retryPolicy`.
+Non-goals: the plugin owns no projection state and never copies the retry defaults onto a provider on
+its own. It is not a new retry engine, it does not change any other profile, and it does not touch
+provider configuration outside `retryPolicy`. It does not install a per-provider HTTP timeout or replace
+the Host's dispatcher with a bare agent: the fetch feature only wraps the current dispatcher, only while
+a timer is set, and restores it on clear/dispose.
 
 ## Identity (do not change without updating both halves)
 
@@ -41,32 +49,42 @@ authoritative, and `verify.mjs` pins behaviour and the upstream constants rather
 | Settings namespace | `llm-api-call-tuning` — this plugin's own `Config`, read/written with `ctx.configForms.get('llm-api-call-tuning')` |
 | Locale namespace | `llm-api-call-tuning` |
 | Host `name` export | `llm-api-call-tuning` (`index.js:260`) |
-| Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
-| Host `inject` | none exported — `apply()` calls `ctx.inject(['settings'], …)` itself (`index.js:372-381`) |
+| Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `DEFAULT_FETCH`, `FETCH_KEYS`, `FETCH_OPTIONS`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
+| Host `inject` | none exported — `apply()` calls `ctx.inject(['settings'], …)` for the page policy and mounts its fetch-timeout effect itself (see *Fetch timeout dispatcher*) |
+| Host side effect | A process-wide undici dispatcher wrapper, installed only while at least one fetch value is a number; the previous dispatcher is restored on clear/dispose only while the wrapper is still the current dispatcher. With both values `unset` — the shipped default — nothing is installed. |
 | Client `inject` | `['slots', 'locale', 'configForms', 'remote']` (`client.js:1335`) |
 | Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:1357-1365`) |
 | Host ↔ Client wire | **No RPC channel of its own.** Reads and writes ride the shared settings form mirror (`configForms`), whose `mutate()` calls the Host `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:129-151`). The provider directory is read from the Client Remote namespace `llm` (`llm.listProviders()` + `llm.listConfigurableProviders()`). |
-| Mount patch seed | **nothing**: the row carries no `config`, so the global defaults start on the upstream code defaults and a fresh install changes no provider |
+| Mount patch seed | **nothing**: the row carries no `config`, so the global defaults start on the upstream code defaults, both fetch timers start `unset`, and a fresh install changes no provider behavior |
 
 The host `Config` is registered with `settings.configure({ auto: false }, ctx.fiber)` so the
 auto-generated generic page for this namespace is suppressed and the hand-written page is the only page
-for the row (`index.js:372-381`). This is the documented own-page idiom, but it is currently a **no-op
+for the row. This is the documented own-page idiom, but the suppression itself is currently a **no-op
 guarantee**: `autoGenerate` exists for clients that build pages from a namespace schema, and no shipped
-DSH client does so yet (`packages/settings/settings/README.md:39`), so the call is future-proofing. It
+DSH client does so yet (`packages/settings/settings/README.md:39`), so that call is future-proofing. It
 is guarded: a policy conflict warns instead of failing boot.
+
+`apply(ctx, config)` has a **second, independent job** besides that page policy: it installs, updates,
+and restores the process-wide fetch-timeout dispatcher (see *Fetch timeout dispatcher*). That job lives
+in its own `ctx.effect`, so the wrapper and its two reload listeners are owned by this row's fiber.
+`apply()` therefore no longer "only suppresses the page"; it has exactly these two jobs and still owns no
+projection state.
 
 ## Config fields (this plugin's own namespace)
 
-Six fields, one per retry value. **Every leaf is `.volatile()`**: a settings edit commits into the
-running fiber without a remount (`vendor/loader/src/config/entry.ts` `_commitVolatile`,
+Six retry fields, one per retry value, **plus two process-wide fetch fields** — eight fields total, in
+that order in `Config.dict`. **Every leaf is `.volatile()`**: a settings edit commits into the running
+fiber without a remount (`vendor/loader/src/config/entry.ts` `_commitVolatile`,
 `vendor/loader/src/config/diff.ts` `equalExceptVolatile`). The root is a plain schemastery object
 because `volatileForm()` only descends object roots
 (`packages/settings/settings/src/schema.ts:37-47`); a transform/refine/union at the root would cost the
 whole settings section.
 
-The *Code default* column is the upstream resolution fallback (`retry-policy.ts:14-22`), also the value
-an unconfigured provider route resolves to (`retry-policy.ts:149-158`). It is recorded once in
-`index.js` (`DEFAULT_TUNE`, `TUNE_OPTIONS`) and pinned by `verify.mjs` against the upstream file text.
+For the six retry rows, the *Code default* column is the upstream resolution fallback
+(`retry-policy.ts:14-22`), also the value an unconfigured provider route resolves to
+(`retry-policy.ts:149-158`). It is recorded once in `index.js` (`DEFAULT_TUNE`, `TUNE_OPTIONS`) and
+pinned by `verify.mjs` against the upstream file text. The two fetch rows carry `unset` because their
+schema deliberately has no `.default()`: see *Fetch timeout fields (tri-state)*.
 
 | Field | Schemastery shape | Code default | Range (enforced by) |
 | --- | --- | --- | --- |
@@ -76,8 +94,31 @@ an unconfigured provider route resolves to (`retry-policy.ts:149-158`). It is re
 | `maxDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(10000).volatile()` | `10000` | finite and > 0, at most 2147483647; must not be below initialDelayMs (upstream schema `retry-policy.ts:83`; load-time asserts `retry-policy.ts:130-135`) |
 | `jitterRatio` | `number().min(0).max(1).default(0.1).volatile()` | `0.1` | number in [0, 1] (upstream schema `retry-policy.ts:84`; load-time assert `retry-policy.ts:136-138`) |
 | `retryableCodes` | `array(union(five consts)).min(1).default(all five).volatile()` | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` | non-empty array of unique codes from the five upstream codes (upstream schema `retry-policy.ts:90`; load-time asserts `retry-policy.ts:170-178`; uniqueness is cross-field and lives in `validateTune`) |
+| `headersTimeoutMs` | `number().step(1).min(0).max(2147483647).volatile()` — deliberately **no** `.default()` | `unset` | `unset` (absent materializes as `undefined`; `null` in `DEFAULT_FETCH`), or integer `0..2147483647`; `0` disables the timer (Host schema; `.step(1)` refuses fractions, `.min(0)` allows disabled, `.max` is the timer cap) |
+| `bodyTimeoutMs` | `number().step(1).min(0).max(2147483647).volatile()` — deliberately **no** `.default()` | `unset` | `unset` (absent materializes as `undefined`; `null` in `DEFAULT_FETCH`), or integer `0..2147483647`; `0` disables the timer (same Host schema bounds) |
 
 `DEFAULT_TUNE` is frozen, and so is its `retryableCodes` array.
+
+### Fetch timeout fields (tri-state)
+
+The two process-wide fetch fields are the last two rows of the field table above; they are declared once
+in `FETCH_FIELDS`/`FETCH_OPTIONS` and merged after the retry fields in `Config`. They are deliberately
+**not** in `TUNE_KEYS`, `TUNE_OPTIONS`, `DEFAULT_TUNE`, or `validateTune()`: the retry surface is
+pinned and documented separately.
+
+The tri-state contract is exactly three states per field:
+
+- **absent / `null` = `unset`** — the shipped state and what a fresh install resolves. `unset` means
+  **no behavior change**: no wrapper timeout is filled, the Host/Node/undici default applies, and the
+  plugin installs no timer. `Config({})` materializes both leaves as absent volatile nodes; an explicit
+  `null` input is accepted and materializes `null`.
+- **`0` = explicitly disabled** — a real value, not unset. The wrapper passes it through, and undici
+  treats a zero timeout as disabled.
+- **integer `1..2147483647` = custom milliseconds** — the wrapper fills that value on requests that do
+  not set their own.
+
+`FETCH_KEYS`, `DEFAULT_FETCH`, and `FETCH_OPTIONS` are frozen. `DEFAULT_FETCH` is the single place the
+unset default lives; flipping it to a number would seed a timer and is not the shipped state.
 
 ### Why the delay floor is `Number.MIN_VALUE`
 
@@ -101,6 +142,8 @@ refusal, and the page's own pre-check uses the same `> 0` rule.
   hand-written provider `retryPolicy` naming another string is shown on the page as the five known
   codes (unknown entries are dropped; an all-unknown list falls back to all five), and a page save then
   writes the known subset.
+- **The fetch fields have no cross-field rule.** Their whole contract is the per-field tri-state above,
+  so `validateTune()` does not cover them: the schema is the enforcement boundary, and `0` is valid.
 
 ### `validateTune(values)` — the cross-field half
 
@@ -138,6 +181,10 @@ preset, never a fallback layer.
 - **The plugin's row is not a fallback.** A provider with no `retryPolicy` keeps resolving the upstream
   code defaults, not this plugin's stored defaults; the defaults are a value the user can copy, not a
   layer that silently feeds every route.
+- **The fetch timers are not a preset and not a per-provider fallback.** They are a process-wide side
+  effect of this plugin's row. The retry-defaults card, provider Save/Reset, and "Apply defaults to all"
+  never read, write, or project the two fetch leaves onto a provider route; conversely, the fetch card
+  writes only its two flat leaves in this plugin's own namespace.
 - **Per-write gate and revision fencing.** A write is attempted only when the target form's freshest
   snapshot is `ready`, not explicitly read-only (`writable !== false`), and carries a **numeric**
   revision; that same read supplies the fence as one atomic `mutate(ops, revision)`, so the page never
@@ -152,6 +199,51 @@ preset, never a fallback layer.
 - **Local-first validation.** The page refuses an invalid draft itself (no Host call). A direct
   `settings.mutate` written outside the page can bypass that, which is why `validateTune()` and the
   schema bounds are also documented as Host-side rules.
+
+## Fetch timeout dispatcher (host side effect)
+
+`apply(ctx, config)` mounts a second `ctx.effect` that calls `installFetchTimeouts(ctx, config)`. This
+is opt-in by value, not by a flag: it performs **no** dispatcher work while both fetch fields are
+`unset`, and installs only once at least one of them is a number. There is deliberately no extra
+enable/disable boolean.
+
+**Resolution.** The bundle ships no `node_modules`. The host half resolves `undici` from the running
+Host through `createRequire` anchors, in order: the Host-context anchor derived from `ctx.baseUrl` (the
+profile directory the deployed GUI actually resolves plugins from), this module's own location, the
+process entry, and `$DSH_HARNESS_CHECKOUT`'s pnpm store. If no anchor resolves a module with
+`getGlobalDispatcher`/`setGlobalDispatcher`/`EnvHttpProxyAgent`, the effect warns **once** and is a
+no-op; a missing `undici` never fails the Host boot. A failed resolution is cached for the module
+lifetime.
+
+**Install / update / restore.**
+
+- On the first numeric value it snapshots `getGlobalDispatcher()`, wraps **that** dispatcher (never a
+  bare agent, so DSH's own proxy routing survives), and calls `setGlobalDispatcher()` with the wrapper.
+- When `NODE_USE_ENV_PROXY` is set, the wrapper's target is a new `EnvHttpProxyAgent`; otherwise it
+  wraps the snapshot dispatcher itself.
+- The wrapper fills `headersTimeout`/`bodyTimeout` only for options the request left nullish. A
+  per-request value always wins. `0` is passed through as a real "disabled" value; an `unset` field is
+  left absent, so the dispatcher's own default applies.
+- The live values are re-read on every dispatch, so changing one on an installed wrapper takes effect on
+  the next request **without reinstalling**. The wrapper also delegates every other member to the
+  target, so `close()`, `destroy()`, and interceptors keep working.
+- Volatile-only settings commits do not re-run `apply()`, so the effect also re-reads the live values on
+  `loader/volatile-update` and `app-boot/config-reload`: setting a first value installs, clearing the
+  last one restores.
+- Clearing every value restores the previous dispatcher **only while the wrapper is still the current
+  dispatcher**; a dispatcher installed after ours wins. Both listeners stay registered while the values
+  are `unset` (a later live save must be able to install again); the disposer detaches them, restores
+  the previous dispatcher under the same "still current" rule, and closes an env-proxy agent it created.
+- Applying with both values `unset` is a pure no-op: no dispatcher is read, replaced, or restored.
+
+**Blast radius.** The timer limits are **process-wide** and shared by every provider route, web search,
+and HTTP MCP server in the Host process; there is no per-provider HTTP timeout. A request already
+in flight keeps the timeout it started with.
+
+**Why a stopgap.** DSH has no native global fetch-timeout setting. The wrapper behavior is adapted from
+the MIT-licensed `dsh-fetch-timeouts` project (© 2026 Dev Mehra); the attribution and provenance are in
+the repository root `THIRD-PARTY-NOTICES.md`. The stopgap may be removed once DSH exposes an equivalent
+native setting.
 
 ## Provider namespaces and retry-policy addresses
 
@@ -227,9 +319,41 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   The provider then falls back to its namespace/schema defaults; there is no set of a whole
   `retryPolicy` object.
 
+- **Fetch timeouts Save** — exactly two ordered FLAT leaf ops on this plugin's own namespace, one per
+  field in `FETCH_KEYS` order. An empty draft field is `unset`; a typed value (including `0`) is `set`:
+
+  ```json
+  [
+    { "op": "set", "path": ["headersTimeoutMs"], "value": 0 },
+    { "op": "set", "path": ["bodyTimeoutMs"], "value": 1800000 }
+  ]
+  ```
+
+  Clearing a seeded field in the same Save emits its unset, for example:
+
+  ```json
+  [
+    { "op": "unset", "path": ["headersTimeoutMs"] },
+    { "op": "set", "path": ["bodyTimeoutMs"], "value": 1800000 }
+  ]
+  ```
+
+- **Fetch timeouts Reset** — exactly two unsets, in field order, so the process-wide system defaults
+  apply again:
+
+  ```json
+  [
+    { "op": "unset", "path": ["headersTimeoutMs"] },
+    { "op": "unset", "path": ["bodyTimeoutMs"] }
+  ]
+  ```
+
 **Never:** a whole `retryPolicy` object set (that would materialize schema defaults over a hand-written
 profile), a whole `providers` dict set (that would clobber sibling provider fields), or a profile-object
-set. Every op addresses one leaf; `Reset` is the only op that unsets a subtree.
+set. Every op addresses one leaf; `Reset` is the only op that unsets a subtree. The two fetch leaves are
+always **flat** (`['headersTimeoutMs']`, `['bodyTimeoutMs']`), never nested under a `fetchTimeouts`
+object, and they never appear in the retry defaults, provider Save/Reset, or "Apply defaults to all"
+op lists.
 
 ### Refusal copy, and the defensive "managed elsewhere" branch
 
@@ -268,6 +392,10 @@ exercises it as a unit test of the classification path, explicitly marked defens
   volatile config commit (`vendor/loader/src/config/entry.ts:181-195`). `verify.mjs` pins the write
   path and the page contract, not a live save; the live latency is a deployment property.
 - **A request already in flight keeps the policy it started with.** There is no mid-request update.
+- **Fetch-timer changes take effect on the next HTTP dispatch.** The wrapper re-reads the live values on
+  every request, so a save needs no backend restart. The two leaves persist in this plugin's own
+  settings namespace like every other Host setting; Reset (or clearing both) restores the system-default
+  state. A request already in flight keeps the timeout it started with.
 - The **page itself** needs a full page reload to appear after install/upgrade; a first install may also
   need a backend restart before the bundle patch is discovered. Neither is needed for a value change.
 - Uninstalling the bundle removes this plugin's row and page. It does **not** revert `retryPolicy`
@@ -314,9 +442,21 @@ exercises it as a unit test of the classification path, explicitly marked defens
 - **The page's local validation is not the Host schema.** A direct `settings.mutate` (or a hand-edited
   profile patch) can still write a provider policy that the provider's own loader will reject at load
   time; the page's refusal is a UX guard, not an enforcement boundary.
+- **The fetch timers are process-wide.** They limit the shared undici dispatcher for every provider
+  route, web search, and HTTP MCP server in the Host process. There is no per-provider HTTP timeout; a
+  per-request timeout set by a caller always wins. `unset` leaves the system/DSH default untouched, `0`
+  disables that timer, and a positive integer sets it.
+- **The dispatcher wrapper is a stopgap adapted from upstream.** It is adapted from the MIT-licensed
+  `dsh-fetch-timeouts` project (© 2026 Dev Mehra); attribution and provenance are in the repository root
+  `THIRD-PARTY-NOTICES.md`. It is not a DSH-native setting, and its resolution depends on the running
+  Host/profile providing `undici`; when it does not, the plugin warns once and applies no timer.
+- **The live timing cannot be proven offline.** `verify.mjs` pins the wrapper's install, fill, re-read,
+  restore, and dispose shape against a recording fake dispatcher plus the Host's real `undici` globals,
+  and covers the missing-`undici` no-op in a child process. It cannot prove that a real HTTP request
+  actually times out after the configured milliseconds; that remains a deployment check.
 - **Not published to any npm registry**, and `verify.mjs` is a hermetic offline suite: it starts no
   Host and no browser, so it cannot confirm a live GUI save, the nav row's real position in the shell,
-  or the next-request latency.
+  the next-request latency, or live dispatcher timing.
 
 ## Client contract
 
@@ -386,9 +526,21 @@ runs **once per mount** with no refresh subscription (see *Known limitations*). 
 
 ### Page copy
 
-The en and zh dictionaries are inline in `client.js` and carry the **same 77 keys**. English copy never
-contains CJK text; every key has a non-empty Chinese value. The nav label is the `nav` key, and the
-page header/title is the `title` key.
+The en and zh dictionaries are inline in `client.js` and carry the **same 95 keys** (77 retry/card keys
+plus 18 fetch-timeout keys). English copy never contains CJK text; every key has a non-empty Chinese
+value. The nav label is the `nav` key, and the page header/title is the `title` key.
+
+### Fetch-timeout card
+
+The third card, after the defaults and provider cards, renders one text input per `FETCH_KEYS` field.
+Its draft is built from the two top-level leaves of this plugin's own namespace: an absent/`null` leaf
+is painted as **empty** (the system-default state), `0` is painted as `0` (disabled), and a positive
+integer is painted as its digits. Local validation refuses negative, fractional, overflow, and
+non-integer text with `error.headersTimeoutMs` / `error.bodyTimeoutMs`, and Save stays disabled; empty,
+`0`, and `1..2147483647` are accepted. Save submits the two op shapes documented in *Write operation
+shapes*; Reset submits the same two unsets. Neither action ever writes a provider namespace or the retry
+defaults. The card's own outcome copy is `status.fetchReset` for Reset, the same `status.saved` /
+`error.refused` / `error.managed` classification otherwise.
 
 ## Verify
 
@@ -397,12 +549,18 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/veri
 ```
 
 The suite is hermetic (`node:assert/strict`, fake Context/form/React doubles in `node:vm`, no network,
-no server, no filesystem writes) and resolves the **real** `@deepseek-ai/schemastery` and the upstream
-`retry-policy.ts` through `$DSH_HARNESS_CHECKOUT`, so schema and constant drift fail loudly. It covers
-the manifest and bundle patch, the host `Config` accept/reject matrix, `validateTune()`, the `apply()`
-wiring, the en/zh copy parity, the client registration and every op shape, the validation, refusal,
-per-write gate/skip, and revision-retry paths, the provider-directory join and its degradation, and the
-docs' field tables. The "managed elsewhere" classification is exercised as a **defensive unit test** of
-`submitOps`/`refusalKind` with a rejecting fake form, not as real `ConfigForm` behaviour.
-It does **not** boot a Host or a browser: live GUI behaviour, the real nav row, and next-request latency
-remain deployment checks.
+no server, no filesystem writes) and resolves the **real** `@deepseek-ai/schemastery`, the upstream
+`retry-policy.ts`, and the Host's `undici` through `$DSH_HARNESS_CHECKOUT`, so schema and constant drift
+fail loudly. It covers the manifest and bundle patch, the host `Config` accept/reject matrix (including
+the fetch tri-state: unset/absent/null, `0` disabled, boundaries, and the refused shapes),
+`validateTune()`, the `apply()` wiring, the fetch-timeout dispatcher against a recording fake dispatcher
+(no install when unset; install and nullish-fill when numeric; `0` pass-through; live re-read on
+`loader/volatile-update`/`app-boot/config-reload`; restore-on-clear; restore-on-dispose only while still
+current; `NODE_USE_ENV_PROXY`; missing-`undici` warn-once no-op in a child process), the en/zh copy
+parity (95 keys), the client registration and every op shape (defaults/normal/always/reset plus fetch
+Save/unset/Reset), the validation, refusal, per-write gate/skip, and revision-retry paths, the
+provider-directory join and its degradation, and the docs' field tables in both languages. The "managed
+elsewhere" classification is exercised as a **defensive unit test** of `submitOps`/`refusalKind` with a
+rejecting fake form, not as real `ConfigForm` behaviour. It does **not** boot a Host or a browser: live
+GUI behaviour, the real nav row, next-request latency, and whether a real HTTP request actually times
+out remain deployment checks.

@@ -23,6 +23,23 @@
  * union schema ignores them once the mode is `always`
  * (`packages/llm/llm/src/retry-policy.ts:105-112`).
  *
+ * A third card owns the two PROCESS-WIDE HTTP timers the host settings schema
+ * declares at the TOP LEVEL of this plugin's namespace (`headersTimeoutMs`,
+ * `bodyTimeoutMs`), mirroring the `dsh-fetch-timeouts` plugin. Their tri-state
+ * contract is what makes a fresh install behavior-neutral:
+ * - an EMPTY field is the fresh-install state and writes the leaf as UNSET
+ *   (`{op: 'unset', path: ['<key>']}`), so the host leaves the system default
+ *   in place and this plugin installs no timeout of its own;
+ * - `0` is an explicit "disable this timer" (undici treats a zero
+ *   `headersTimeout`/`bodyTimeout` as disabled), visually distinct from empty;
+ * - a positive integer is a custom limit in milliseconds, at most 2147483647.
+ * Those leaves are written straight to this plugin's own namespace and are
+ * deliberately NOT part of the retry defaults preset: `defaultsOps` and
+ * `resetPolicyOps` stay retry-only, and "Apply defaults to all" never projects
+ * a fetch timer onto a provider route. The card's own Reset is the same two
+ * unsets, so it restores the system-default (fresh-install) state — never a
+ * seeded 1800000 ms.
+ *
  * The upstream schema does NOT enforce the cross-field rules the resolver
  * checks (`initialDelayMs <= maxDelayMs`, non-empty unique retryable codes),
  * so the draft is validated locally first and a row whose draft is invalid
@@ -93,9 +110,24 @@ window.__ModuleLoader__.load({
 
     /**
      * Largest timer delay upstream accepts (`@deepseek-ai/dsh-timeout`
-     * `MAX_TIMER_DELAY_MS`, used by `retry-policy.ts:82-84,127-135`).
+     * `MAX_TIMER_DELAY_MS`, used by `retry-policy.ts:82-84,127-135`). The fetch
+     * timers use the same bound.
      */
     const MAX_TIMER_DELAY_MS = 2147483647;
+
+    /**
+     * The fresh-install state of both process-wide fetch timers: UNSET. An
+     * absent leaf means "leave the process-wide system default in place" — the
+     * host installs no timeout of its own, so a fresh install behaves exactly
+     * as if this plugin were not installed. Both the empty input and the card's
+     * Reset restore this state; a number here would instead seed a timer. The
+     * sentinel is `null`, matching the host's `DEFAULT_FETCH`, so the unset
+     * state compares and serializes identically on both halves.
+     */
+    const DEFAULT_FETCH = Object.freeze({
+      headersTimeoutMs: null,
+      bodyTimeoutMs: null,
+    });
 
     /**
      * The five fields a retry draft carries beyond the mode; the order is the
@@ -116,6 +148,19 @@ window.__ModuleLoader__.load({
       { key: 'initialDelayMs', inputMode: 'numeric', step: '1', min: '1', max: String(MAX_TIMER_DELAY_MS) },
       { key: 'maxDelayMs', inputMode: 'numeric', step: '1', min: '1', max: String(MAX_TIMER_DELAY_MS) },
       { key: 'jitterRatio', inputMode: 'decimal', step: '0.01', min: '0', max: '1' },
+    ]);
+
+    /**
+     * The two process-wide fetch timers this page owns, in render and submit
+     * order. They are NOT in `NUMERIC_FIELDS`: that list drives the retry
+     * draft and its delays are strictly positive (`>0`), while these fields are
+     * OPTIONAL integers — empty ("system default") or `0`..`2147483647` — and
+     * `0` disables the timer. They are not in `RETRY_FIELDS` either, because
+     * they are neither a retry-policy leaf nor projected onto a provider route.
+     */
+    const FETCH_FIELDS = Object.freeze([
+      { key: 'headersTimeoutMs', inputMode: 'numeric', step: '1', min: '0', max: String(MAX_TIMER_DELAY_MS) },
+      { key: 'bodyTimeoutMs', inputMode: 'numeric', step: '1', min: '0', max: String(MAX_TIMER_DELAY_MS) },
     ]);
 
     /**
@@ -166,6 +211,15 @@ window.__ModuleLoader__.load({
       'provider.saving': 'Saving\u2026',
       'provider.resetting': 'Resetting\u2026',
       'provider.alwaysNote': 'Always mode retries every model-request failure and ignores the retry limit and the retryable codes; saving clears both.',
+      'fetch.heading': 'Fetch timeouts',
+      'fetch.description': 'Process-wide HTTP timer limits, applied by the host to the fetch dispatcher that every provider, web search, and HTTP MCP server shares. Leave a field empty to keep the system default; 0 disables that timer; a positive value is the limit in milliseconds.',
+      'fetch.note': 'An empty field writes nothing: the host leaves the process-wide system default in place, so a fresh install behaves exactly as if this plugin were absent. Saving writes only these two leaves; they are not provider retry settings, so "Apply defaults to all" never copies them onto a provider route.',
+      'fetch.save': 'Save timeouts',
+      'fetch.saving': 'Saving timeouts\u2026',
+      'fetch.reset': 'Reset to system defaults',
+      'fetch.resetting': 'Resetting\u2026',
+      'fetch.placeholder': 'system default (leave empty)',
+      'fetch.hint': 'empty = system default (leave empty); 0 = disabled; 1800000 ms = 30 min',
       'field.mode.label': 'Retry mode',
       'field.mode.description': 'Normal retries only the selected transient failure codes, up to the retry limit. Always retries every model-request failure until success, cancellation, or shutdown.',
       'field.mode.unit': 'normal or always',
@@ -190,6 +244,12 @@ window.__ModuleLoader__.load({
       'field.retryableCodes.description': 'Stable transient failure codes that normal mode retries. At least one code must stay selected.',
       'field.retryableCodes.unit': 'at least one code',
       'field.retryableCodes.default': 'code default all five codes',
+      'field.headersTimeoutMs.label': 'Response headers timeout',
+      'field.headersTimeoutMs.description': 'Time allowed before response headers arrive. Empty keeps the system default; 0 disables the timer.',
+      'field.headersTimeoutMs.unit': 'milliseconds, empty or 0 to 2147483647',
+      'field.bodyTimeoutMs.label': 'Response body timeout',
+      'field.bodyTimeoutMs.description': 'Time allowed between response body chunks. Empty keeps the system default; 0 disables the timer.',
+      'field.bodyTimeoutMs.unit': 'milliseconds, empty or 0 to 2147483647',
       'mode.normal': 'Normal \u2014 selected codes',
       'mode.always': 'Always \u2014 every failure',
       'code.EMPTY_RESPONSE': 'Empty response',
@@ -202,6 +262,7 @@ window.__ModuleLoader__.load({
       'status.readOnly': 'These values are read-only in this deployment.',
       'status.saved': 'Saved.',
       'status.reset': 'Reset. This provider no longer stores a retryPolicy override.',
+      'status.fetchReset': 'Reset. The fetch timeouts return to the system defaults.',
       'error.refused': 'The host refused the write. The values shown are the ones the host reports now.',
       'error.managed': 'These values are managed elsewhere \u2014 a home patch or command-line overlay overrides them \u2014 so this page cannot change them.',
       'error.mode': 'The retry mode must be normal or always.',
@@ -211,6 +272,8 @@ window.__ModuleLoader__.load({
       'error.initialDelayOrder': 'The initial delay must be less than or equal to the maximum delay.',
       'error.jitterRatio': 'Jitter must be a finite number from 0 to 1.',
       'error.retryableCodes': 'Select at least one retryable code; unknown or duplicate codes are not allowed.',
+      'error.headersTimeoutMs': 'The headers timeout must be empty (system default) or a whole number of milliseconds from 0 to 2147483647.',
+      'error.bodyTimeoutMs': 'The body timeout must be empty (system default) or a whole number of milliseconds from 0 to 2147483647.',
       'apply.outcome.saved': 'Applied',
       'apply.outcome.refused': 'Refused',
       'apply.outcome.managed': 'Managed elsewhere',
@@ -246,6 +309,15 @@ window.__ModuleLoader__.load({
       'provider.saving': '\u6b63\u5728\u4fdd\u5b58\u2026',
       'provider.resetting': '\u6b63\u5728\u91cd\u7f6e\u2026',
       'provider.alwaysNote': '\u201c\u603b\u662f\u201d\u6a21\u5f0f\u4f1a\u91cd\u8bd5\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff0c\u5ffd\u7565\u91cd\u8bd5\u4e0a\u9650\u4e0e\u53ef\u91cd\u8bd5\u9519\u8bef\u7801\uff1b\u4fdd\u5b58\u65f6\u4f1a\u6e05\u9664\u8fd9\u4e24\u9879\u3002',
+      'fetch.heading': '\u6293\u53d6\u8d85\u65f6',
+      'fetch.description': '\u8fdb\u7a0b\u7ea7\u7684 HTTP \u8ba1\u65f6\u4e0a\u9650\uff0c\u7531\u5bbf\u4e3b\u5e94\u7528\u5230\u6240\u6709\u63d0\u4f9b\u65b9\u3001\u8054\u7f51\u641c\u7d22\u4e0e HTTP MCP \u670d\u52a1\u5668\u5171\u7528\u7684 fetch \u8c03\u5ea6\u5668\u4e0a\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u7cfb\u7edf\u9ed8\u8ba4\uff1b0 \u8868\u793a\u7981\u7528\u8be5\u8ba1\u65f6\u5668\uff1b\u6b63\u6570\u8868\u793a\u4ee5\u6beb\u79d2\u4e3a\u5355\u4f4d\u7684\u65f6\u957f\u3002',
+      'fetch.note': '\u7559\u7a7a\u5b57\u6bb5\u4e0d\u4f1a\u5199\u5165\u4efb\u4f55\u503c\uff1a\u5bbf\u4e3b\u4fdd\u6301\u8fdb\u7a0b\u7ea7\u7684\u7cfb\u7edf\u9ed8\u8ba4\uff0c\u56e0\u6b64\u5168\u65b0\u5b89\u88c5\u7684\u884c\u4e3a\u4e0e\u672a\u5b89\u88c5\u672c\u63d2\u4ef6\u65f6\u5b8c\u5168\u4e00\u81f4\u3002\u4fdd\u5b58\u53ea\u5199\u5165\u8fd9\u4e24\u4e2a\u5b57\u6bb5\uff1b\u5b83\u4eec\u4e0d\u662f\u63d0\u4f9b\u65b9\u7684\u91cd\u8bd5\u8bbe\u7f6e\uff0c\u6240\u4ee5\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u63d0\u4f9b\u65b9\u201d\u4e0d\u4f1a\u628a\u5b83\u4eec\u590d\u5236\u5230\u4efb\u4f55\u63d0\u4f9b\u65b9\u8def\u7531\u4e0a\u3002',
+      'fetch.save': '\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e',
+      'fetch.saving': '\u6b63\u5728\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e\u2026',
+      'fetch.reset': '\u6062\u590d\u7cfb\u7edf\u9ed8\u8ba4',
+      'fetch.resetting': '\u6b63\u5728\u6062\u590d\u2026',
+      'fetch.placeholder': '\u7cfb\u7edf\u9ed8\u8ba4\uff08\u7559\u7a7a\uff09',
+      'fetch.hint': '\u7559\u7a7a = \u7cfb\u7edf\u9ed8\u8ba4\uff08\u4fdd\u6301\u7559\u7a7a\uff09\uff1b0 = \u7981\u7528\uff1b1800000 \u6beb\u79d2 = 30 \u5206\u949f',
       'field.mode.label': '\u91cd\u8bd5\u6a21\u5f0f',
       'field.mode.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4ec5\u5728\u91cd\u8bd5\u4e0a\u9650\u5185\u91cd\u8bd5\u6240\u9009\u7684\u4e34\u65f6\u9519\u8bef\u7801\u3002\u201c\u603b\u662f\u201d\u6a21\u5f0f\u5bf9\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\u90fd\u91cd\u8bd5\uff0c\u76f4\u5230\u6210\u529f\u3001\u53d6\u6d88\u6216\u5173\u95ed\u3002',
       'field.mode.unit': 'normal \u6216 always',
@@ -270,6 +342,12 @@ window.__ModuleLoader__.load({
       'field.retryableCodes.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4e0b\u4f1a\u91cd\u8bd5\u7684\u7a33\u5b9a\u4e34\u65f6\u9519\u8bef\u7801\u3002\u81f3\u5c11\u9700\u4fdd\u7559\u4e00\u9879\u3002',
       'field.retryableCodes.unit': '\u81f3\u5c11\u4e00\u4e2a\u9519\u8bef\u7801',
       'field.retryableCodes.default': '\u4ee3\u7801\u9ed8\u8ba4\u503c\uff1a\u5168\u90e8\u4e94\u4e2a\u9519\u8bef\u7801',
+      'field.headersTimeoutMs.label': '\u54cd\u5e94\u5934\u8d85\u65f6',
+      'field.headersTimeoutMs.description': '\u7b49\u5f85\u54cd\u5e94\u5934\u8fd4\u56de\u7684\u6700\u957f\u65f6\u95f4\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u7cfb\u7edf\u9ed8\u8ba4\uff1b0 \u8868\u793a\u7981\u7528\u8be5\u8ba1\u65f6\u5668\u3002',
+      'field.headersTimeoutMs.unit': '\u6beb\u79d2\uff0c\u7559\u7a7a\u6216 0 \u5230 2147483647',
+      'field.bodyTimeoutMs.label': '\u54cd\u5e94\u6b63\u6587\u8d85\u65f6',
+      'field.bodyTimeoutMs.description': '\u54cd\u5e94\u6b63\u6587\u5404\u6570\u636e\u5757\u4e4b\u95f4\u5141\u8bb8\u7684\u6700\u957f\u95f4\u9694\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u7cfb\u7edf\u9ed8\u8ba4\uff1b0 \u8868\u793a\u7981\u7528\u8be5\u8ba1\u65f6\u5668\u3002',
+      'field.bodyTimeoutMs.unit': '\u6beb\u79d2\uff0c\u7559\u7a7a\u6216 0 \u5230 2147483647',
       'mode.normal': '\u666e\u901a \u2014 \u6240\u9009\u9519\u8bef\u7801',
       'mode.always': '\u603b\u662f \u2014 \u6bcf\u6b21\u5931\u8d25',
       'code.EMPTY_RESPONSE': '\u7a7a\u54cd\u5e94',
@@ -282,6 +360,7 @@ window.__ModuleLoader__.load({
       'status.readOnly': '\u5f53\u524d\u90e8\u7f72\u4e2d\u8fd9\u4e9b\u503c\u4e3a\u53ea\u8bfb\u3002',
       'status.saved': '\u5df2\u4fdd\u5b58\u3002',
       'status.reset': '\u5df2\u91cd\u7f6e\u3002\u8be5\u63d0\u4f9b\u65b9\u4e0d\u518d\u4fdd\u5b58 retryPolicy \u8986\u76d6\u3002',
+      'status.fetchReset': '\u5df2\u91cd\u7f6e\u3002\u6293\u53d6\u8d85\u65f6\u6062\u590d\u4e3a\u7cfb\u7edf\u9ed8\u8ba4\u3002',
       'error.refused': '\u5bbf\u4e3b\u62d2\u7edd\u4e86\u672c\u6b21\u5199\u5165\u3002\u5f53\u524d\u663e\u793a\u7684\u662f\u5bbf\u4e3b\u73b0\u5728\u62a5\u544a\u7684\u503c\u3002',
       'error.managed': '\u8fd9\u4e9b\u503c\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406\u2014\u2014\u5bb6\u5ead\u8865\u4e01\u6216\u547d\u4ee4\u884c\u8986\u76d6\u4e86\u5b83\u4eec\u2014\u2014\u56e0\u6b64\u672c\u9875\u9762\u65e0\u6cd5\u4fee\u6539\u3002',
       'error.mode': '\u91cd\u8bd5\u6a21\u5f0f\u5fc5\u987b\u662f normal \u6216 always\u3002',
@@ -291,6 +370,8 @@ window.__ModuleLoader__.load({
       'error.initialDelayOrder': '\u521d\u59cb\u5ef6\u8fdf\u5fc5\u987b\u5c0f\u4e8e\u6216\u7b49\u4e8e\u6700\u5927\u5ef6\u8fdf\u3002',
       'error.jitterRatio': '\u6296\u52a8\u6bd4\u4f8b\u5fc5\u987b\u662f 0 \u5230 1 \u4e4b\u95f4\u7684\u6709\u9650\u6570\u3002',
       'error.retryableCodes': '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u53ef\u91cd\u8bd5\u9519\u8bef\u7801\uff1b\u4e0d\u5141\u8bb8\u672a\u77e5\u6216\u91cd\u590d\u7684\u9519\u8bef\u7801\u3002',
+      'error.headersTimeoutMs': '\u54cd\u5e94\u5934\u8d85\u65f6\u5fc5\u987b\u662f\u7559\u7a7a\uff08\u7cfb\u7edf\u9ed8\u8ba4\uff09\u6216 0 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\u6beb\u79d2\u503c\u3002',
+      'error.bodyTimeoutMs': '\u54cd\u5e94\u6b63\u6587\u8d85\u65f6\u5fc5\u987b\u662f\u7559\u7a7a\uff08\u7cfb\u7edf\u9ed8\u8ba4\uff09\u6216 0 \u5230 2147483647 \u4e4b\u95f4\u7684\u6574\u6570\u6beb\u79d2\u503c\u3002',
       'apply.outcome.saved': '\u5df2\u5e94\u7528',
       'apply.outcome.refused': '\u88ab\u62d2\u7edd',
       'apply.outcome.managed': '\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406',
@@ -366,6 +447,52 @@ window.__ModuleLoader__.load({
     /** A jitter ratio the retry resolver accepts, or undefined. */
     function validJitter(value) {
       return Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+    }
+
+    /**
+     * A fetch timer the host schema accepts, or undefined. The field is an
+     * OPTIONAL integer: an absent leaf is the "system default" state and must
+     * stay undefined, while a present value is a whole millisecond count from
+     * `0` to `2147483647` (`0` disables the timer).
+     * @param value - the stored leaf.
+     * @returns the value when it is a whole millisecond count in range.
+     */
+    function validFetchTimeout(value) {
+      return Number.isSafeInteger(value) && value >= 0 && value <= MAX_TIMER_DELAY_MS ? value : undefined;
+    }
+
+    /**
+     * Normalize the flat process-wide fetch section into the two timer values
+     * the page edits. A leaf that is absent — or unusable, which the schema
+     * refuses anyway — stays UNSPECIFIED (`null` via `DEFAULT_FETCH`, or
+     * `undefined` when the wire omits it): that is the fresh-install "system
+     * default" state, never 0 and never a seeded 1800000.
+     * @param raw - the settings section value.
+     * @returns the two normalized timer values (`null` = unset).
+     */
+    function normalizeFetch(raw) {
+      const section = isPlainObject(raw) ? raw : {};
+      return {
+        headersTimeoutMs: validFetchTimeout(section.headersTimeoutMs) ?? DEFAULT_FETCH.headersTimeoutMs,
+        bodyTimeoutMs: validFetchTimeout(section.bodyTimeoutMs) ?? DEFAULT_FETCH.bodyTimeoutMs,
+      };
+    }
+
+    /**
+     * Build the editable fetch draft from the settings section. The unset state
+     * is painted as EMPTY TEXT (an empty input), so "system default" is
+     * visually distinct from an explicit `0`, and a half-typed value stays
+     * representable.
+     * @param raw - the settings section value, or undefined for the unset state.
+     * @returns the two-field text draft ('' = unset).
+     */
+    function fetchDraft(raw) {
+      const normalized = normalizeFetch(raw);
+      const text = value => (value === null || value === undefined ? '' : String(value));
+      return {
+        headersTimeoutMs: text(normalized.headersTimeoutMs),
+        bodyTimeoutMs: text(normalized.bodyTimeoutMs),
+      };
     }
 
     /**
@@ -527,6 +654,37 @@ window.__ModuleLoader__.load({
       return Object.keys(errors).length === 0 ? { ok: true, values } : { ok: false, errors };
     }
 
+    /**
+     * Validate the two fetch-timer draft values against the tri-state contract
+     * the host schema exposes (an OPTIONAL integer `0..2147483647`):
+     * - EMPTY (or whitespace-only) is legal and means UNSET — the fresh-install
+     *   "system default" state; it is carried as `null` in `values` so the op
+     *   builder emits an `unset` leaf;
+     * - `0` is legal and means "disable this timer";
+     * - a positive whole number up to 2147483647 is a custom limit;
+     * - negative, fractional, exponent, blank-after-digits and out-of-range
+     *   text are refused.
+     * A dedicated path is needed because the retry delays are strictly positive
+     * (`>0`) and the shared numeric draft rules do not apply.
+     * @param draft - the two-field text draft ('' = unset).
+     * @returns `{ok:true, values}` (null = unset) or `{ok:false, errors}`.
+     */
+    function validateFetchDraft(draft) {
+      const errors = {};
+      const values = {};
+      for (const field of FETCH_FIELDS) {
+        const text = typeof draft[field.key] === 'string' ? draft[field.key].trim() : '';
+        if (text === '') {
+          values[field.key] = null;
+          continue;
+        }
+        const value = parseIntegerText(text);
+        if (value === undefined || value > MAX_TIMER_DELAY_MS) errors[field.key] = `error.${field.key}`;
+        else values[field.key] = value;
+      }
+      return Object.keys(errors).length === 0 ? { ok: true, values } : { ok: false, errors };
+    }
+
     /* ══ operation builders ════════════════════════════════════════════════ */
 
     /**
@@ -573,6 +731,44 @@ window.__ModuleLoader__.load({
     /** The single unset that makes a provider fall back to its namespace defaults. */
     function resetPolicyOps(settingsPath) {
       return [{ op: 'unset', path: [...settingsPath, 'retryPolicy'] }];
+    }
+
+    /**
+     * The leaf ops that write the two process-wide fetch timers. The host
+     * settings schema exposes both at the TOP LEVEL of this plugin's namespace,
+     * so the paths are FLAT: `['headersTimeoutMs']` and `['bodyTimeoutMs']`,
+     * never a nested `fetchTimeouts` object. An UNSET draft value (`null`)
+     * emits `{op: 'unset', path: [key]}` — the shape the settings API and
+     * `ConfigFormController.unset` use — so the leaf disappears and the system
+     * default applies again; a value emits the usual `set`. This is
+     * deliberately separate from {@link defaultsOps}: the retry defaults are a
+     * preset that "Apply defaults to all" projects onto providers, while these
+     * timers are a process-wide side effect and are never projected anywhere.
+     * @param values - the two validated timer values (`null` = unset).
+     * @returns ordered flat leaf-path ops (one per field, in field order).
+     */
+    function fetchOps(values) {
+      return FETCH_FIELDS.map((field) => {
+        const value = values[field.key];
+        return value === null || value === undefined
+          ? { op: 'unset', path: [field.key] }
+          : { op: 'set', path: [field.key], value };
+      });
+    }
+
+    /**
+     * The two unsets that remove the user-layer timers, so the process-wide
+     * system defaults apply again. This is both the fetch card's Reset and the
+     * fresh-install state (`DEFAULT_FETCH`), and is NOT part of
+     * {@link resetPolicyOps}, which stays the retry-only single unset of a
+     * provider's whole `retryPolicy`.
+     * @returns ordered flat leaf-path unsets.
+     */
+    function fetchResetOps() {
+      return [
+        { op: 'unset', path: ['headersTimeoutMs'] },
+        { op: 'unset', path: ['bodyTimeoutMs'] },
+      ];
     }
 
     /* ══ failure classification and submission ═════════════════════════════ */
@@ -830,15 +1026,17 @@ window.__ModuleLoader__.load({
      * One outcome (save/reset) as a note or an alert.
      * @param outcome - `{kind}` from a submission, or null.
      * @param t - translate.
+     * @param resetKey - the copy a `reset` outcome uses; the provider rows keep
+     *   the retry-specific default, the fetch card names its own reset.
      * @returns the node, or null.
      */
-    function outcomeNode(outcome, t) {
+    function outcomeNode(outcome, t, resetKey = 'status.reset') {
       if (outcome === null || outcome === undefined) return null;
       if (outcome.kind === 'saved') {
         return h('p', { className: 'dlct-note', role: 'status' }, t('status.saved'));
       }
       if (outcome.kind === 'reset') {
-        return h('p', { className: 'dlct-note', role: 'status' }, t('status.reset'));
+        return h('p', { className: 'dlct-note', role: 'status' }, t(resetKey));
       }
       return h('p', { className: 'dlct-alert', role: 'alert' }, t(outcome.kind === 'managed' ? 'error.managed' : 'error.refused'));
     }
@@ -928,7 +1126,44 @@ window.__ModuleLoader__.load({
       return nodes;
     }
 
-    /* ══ the settings section ══════════════════════════════════════════════ */
+    /**
+     * The two process-wide fetch-timer controls of the third card. A plain
+     * render helper (no hooks) like {@link renderRetryFields}: ids and the
+     * draft come from the caller, so the section stays hook-count stable.
+     * @param options - `{t, ids, draft, errors, disabled, stage}`.
+     * @returns the control nodes, in FETCH_FIELDS order.
+     */
+    function renderFetchFields(options) {
+      const { t, ids, draft, errors, disabled, stage } = options;
+      const nodes = [];
+      for (const field of FETCH_FIELDS) {
+        const invalid = errors[field.key];
+        nodes.push(h('div', { className: 'dlct-field', key: field.key },
+          h('div', { className: 'dlct-field-head' },
+            h('label', { className: 'dlct-field-label', htmlFor: ids[field.key] }, t(`field.${field.key}.label`)),
+            h('span', { className: 'dlct-unit' }, t(`field.${field.key}.unit`)),
+          ),
+          h('input', {
+            id: ids[field.key],
+            className: 'dlct-input',
+            type: 'text',
+            inputMode: field.inputMode,
+            step: field.step,
+            min: field.min,
+            max: field.max,
+            value: draft[field.key],
+            placeholder: t('fetch.placeholder'),
+            disabled,
+            'aria-invalid': invalid === undefined ? undefined : 'true',
+            onChange: event => stage(field.key, event.target.value),
+          }),
+          h('p', { className: 'dlct-description' }, t(`field.${field.key}.description`)),
+          h('span', { className: 'dlct-default' }, t('fetch.hint')),
+          invalid === undefined ? null : h('p', { className: 'dlct-error', role: 'alert' }, t(invalid)),
+        ));
+      }
+      return nodes;
+    }
 
     /**
      * One provider row: its live snapshot, its draft, and its three actions.
@@ -1087,7 +1322,7 @@ window.__ModuleLoader__.load({
 
       /* A skipped row shows no extra badge: its body already states why (the
        * loading / unavailable / read-only note), and the inline en/zh
-       * dictionaries are frozen at 77 keys, so no third copy is invented. The
+       * dictionaries own one key set only, so no third copy is invented. The
        * outcome itself is recorded in the page's `applyOutcomes` state. */
       if (applyOutcome !== undefined && applyOutcome !== 'skipped') {
         rowBody.push(h('span', { className: 'dlct-outcome', key: 'apply-outcome' }, `${t('defaults.heading')}: ${t(`apply.outcome.${applyOutcome}`)}`));
@@ -1108,8 +1343,9 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The "LLM API call tuning" settings page: the global defaults card and
-     * one editable row per active provider route.
+     * The "LLM API call tuning" settings page, three cards in order: the global
+     * retry defaults, one editable row per active provider route, and the
+     * process-wide fetch timers.
      * @param props - slot props.
      * @param props.form - shared config form for this plugin's own namespace.
      * @param props.t - localized copy for this plugin's namespace.
@@ -1128,11 +1364,23 @@ window.__ModuleLoader__.load({
 
       const ids = {};
       for (const field of RETRY_FIELDS) ids[field.key] = useId();
+      /* A second id block for the fetch card. `FETCH_FIELDS` is frozen, so the
+       * hook count of this component stays constant across renders. */
+      const fetchIds = {};
+      for (const field of FETCH_FIELDS) fetchIds[field.key] = useId();
 
       const [edits, setEdits] = useState({});
       const [saving, setSaving] = useState(false);
       const [outcome, setOutcome] = useState(null);
       const pendingRef = useRef(false);
+      /* The fetch card keeps its own draft/outcome/pending slots: it writes two
+       * flat leaves of the SAME own-namespace form, but it is not part of the
+       * retry defaults draft, so sharing either state would let one card clear
+       * the other's staged edits. */
+      const [fetchEdits, setFetchEdits] = useState({});
+      const [fetchPending, setFetchPending] = useState(null);
+      const [fetchOutcome, setFetchOutcome] = useState(null);
+      const fetchPendingRef = useRef(false);
       const [providers, setProviders] = useState({ status: 'loading', rows: [] });
       const [applying, setApplying] = useState(false);
       const [applyOutcomes, setApplyOutcomes] = useState({});
@@ -1178,6 +1426,25 @@ window.__ModuleLoader__.load({
         setOutcome(null);
       };
 
+      /* The fetch card reads the SAME own-namespace snapshot, but its baseline
+       * is the two flat top-level leaves rather than the retry defaults, and a
+       * staged edit obeys the same re-seed rule. Keeping the two drafts apart
+       * means one card's Save can never clear the other card's staged edit. */
+      const fetchBaseline = fetchDraft(value);
+      const fetchValues = {};
+      for (const field of FETCH_FIELDS) {
+        const edit = fetchEdits[field.key];
+        fetchValues[field.key] = edit !== undefined && edit.seedKey === seedKey ? edit.value : fetchBaseline[field.key];
+      }
+      const fetchCheck = validateFetchDraft(fetchValues);
+      const fetchErrors = fetchCheck.ok ? {} : fetchCheck.errors;
+      const fetchBusy = fetchPending !== null;
+
+      const stageFetch = (key, next) => {
+        setFetchEdits(current => ({ ...current, [key]: { value: next, seedKey } }));
+        setFetchOutcome(null);
+      };
+
       /** Persist the six defaults as leaf ops on this plugin's own namespace. */
       const saveDefaults = () => {
         if (disabled || saving || pendingRef.current || !check.ok) return;
@@ -1189,6 +1456,39 @@ window.__ModuleLoader__.load({
           setSaving(false);
           setEdits({});
           setOutcome(result);
+        });
+      };
+
+      /**
+       * Persist the two fetch timers as FLAT leaf ops on this plugin's own
+       * namespace. An EMPTY field emits `unset`, so the system default is
+       * restored/kept; a value emits `set`. Not a retry defaults write: no
+       * provider is touched.
+       */
+      const saveFetch = () => {
+        if (disabled || saving || fetchPendingRef.current || !fetchCheck.ok) return;
+        fetchPendingRef.current = true;
+        setFetchPending('save');
+        setFetchOutcome(null);
+        submitOps(form, fetchOps(fetchCheck.values)).then((result) => {
+          fetchPendingRef.current = false;
+          setFetchPending(null);
+          setFetchEdits({});
+          setFetchOutcome(result);
+        });
+      };
+
+      /** Clear both timer leaves so the system (fresh-install) defaults apply again. */
+      const resetFetch = () => {
+        if (disabled || saving || fetchPendingRef.current) return;
+        fetchPendingRef.current = true;
+        setFetchPending('reset');
+        setFetchOutcome(null);
+        submitOps(form, fetchResetOps()).then((result) => {
+          fetchPendingRef.current = false;
+          setFetchPending(null);
+          setFetchEdits({});
+          setFetchOutcome(result.kind === 'saved' ? { kind: 'reset' } : result);
         });
       };
 
@@ -1292,14 +1592,14 @@ window.__ModuleLoader__.load({
             h('button', {
               type: 'button',
               className: 'dlct-button',
-              disabled: disabled || saving || applying || !check.ok,
+              disabled: disabled || saving || applying || fetchBusy || !check.ok,
               'aria-busy': saving ? 'true' : undefined,
               onClick: saveDefaults,
             }, saving ? t('defaults.saving') : t('defaults.save')),
             h('button', {
               type: 'button',
               className: 'dlct-button dlct-outline',
-              disabled: disabled || saving || applying || !check.ok || applyTargets.length === 0,
+              disabled: disabled || saving || applying || fetchBusy || !check.ok || applyTargets.length === 0,
               'aria-busy': applying ? 'true' : undefined,
               onClick: applyAll,
             }, applying ? t('defaults.applying') : t('defaults.applyAll')),
@@ -1324,6 +1624,41 @@ window.__ModuleLoader__.load({
                 applyOutcome: applyOutcomes[rowKey(row)],
               })))
             : null,
+        ),
+        h('section', { className: 'dlct-card' },
+          h('header', { className: 'dlct-card-head' },
+            h('h3', { className: 'dlct-card-title' }, t('fetch.heading')),
+            h('p', { className: 'dlct-card-description' }, t('fetch.description')),
+          ),
+          statusNote,
+          h('div', { className: 'dlct-fields' },
+            renderFetchFields({
+              t,
+              ids: fetchIds,
+              draft: fetchValues,
+              errors: fetchErrors,
+              disabled: disabled || fetchBusy,
+              stage: stageFetch,
+            }),
+          ),
+          h('div', { className: 'dlct-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dlct-button',
+              disabled: disabled || saving || fetchBusy || !fetchCheck.ok,
+              'aria-busy': fetchPending === 'save' ? 'true' : undefined,
+              onClick: saveFetch,
+            }, fetchPending === 'save' ? t('fetch.saving') : t('fetch.save')),
+            h('button', {
+              type: 'button',
+              className: 'dlct-button dlct-outline',
+              disabled: disabled || saving || fetchBusy,
+              'aria-busy': fetchPending === 'reset' ? 'true' : undefined,
+              onClick: resetFetch,
+            }, fetchPending === 'reset' ? t('fetch.resetting') : t('fetch.reset')),
+          ),
+          h('div', null, outcomeNode(fetchOutcome, t, 'status.fetchReset')),
+          h('p', { className: 'dlct-note' }, t('fetch.note')),
         ),
       );
     }

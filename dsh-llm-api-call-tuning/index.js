@@ -14,9 +14,10 @@
  * DIRECTLY through the settings form API (`configForms.get(ns).mutate(ops,
  * rev)`), so no value is ever projected out of this module. The host half
  * therefore owns only a small set of GLOBAL DEFAULT values in this row's own
- * `Config` — the preset the page can copy into any active provider — and is
- * otherwise inert: `apply()` only suppresses the auto-generated settings page
- * for this namespace, exactly like the ui-settings precedent
+ * `Config` — the preset the page can copy into any active provider — plus the
+ * two process-wide fetch timeouts described below. `apply()` otherwise just
+ * suppresses the auto-generated settings page for this namespace, exactly like
+ * the ui-settings precedent
  * (`packages/client/ui-settings/src/index.ts:23-24`), so the hand-written page
  * is the only page for this row.
  *
@@ -46,6 +47,24 @@
  * `validateTune()`, which the settings page uses before every write and which
  * `verify.mjs` exercises directly.
  *
+ * The host half has a second, independent job: the two process-wide HTTP
+ * timeouts that upstream `dsh-fetch-timeouts` exposes, `headersTimeoutMs` and
+ * `bodyTimeoutMs` (see `FETCH_FIELDS`). Both are UNSET by default, and an unset
+ * field leaves the Host exactly as it is: no dispatcher, no listener side
+ * effect on requests. Only once at least one value is a number does `apply()`
+ * wrap the CURRENT dispatcher (DSH installs a proxy-aware global one before
+ * plugins mount, `packages/util/http-proxy/src/install.ts`) instead of
+ * replacing it, fill `headersTimeout`/`bodyTimeout` on requests that do not set
+ * their own, and restore the previous dispatcher when the last value is cleared
+ * or the plugin is disposed — and only when ours is still current. That
+ * mechanism is adapted from `dsh-fetch-timeouts` (MIT, © 2026 Dev Mehra); see
+ * THIRD-PARTY-NOTICES.md.
+ *
+ * None of it adds a dependency: the bundle ships no `node_modules`. undici is
+ * resolved from the running Host (the profile the Host boots from, then the
+ * same anchors as the schema library), so a deployed profile works without any
+ * install step. Both halves degrade to a warning instead of failing the boot.
+ *
  * The module has no default export: the loader reads `name`, `Config`, and
  * `apply` as named bindings.
  *
@@ -54,6 +73,54 @@
 
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/**
+ * Resolution anchors for a package the Host provides, in priority order:
+ *
+ * 1. this module's own location, for an install that did fetch dependencies;
+ * 2. the running process entry (`process.argv[1]`), which is inside the harness;
+ * 3. `$DSH_HARNESS_CHECKOUT` (the offline suites) through the pnpm workspace's
+ *    hoisted store.
+ *
+ * Shared by the schema library and undici so both resolve from the same places.
+ * @returns {string[]} candidate `createRequire` anchors, possibly empty entries.
+ */
+function hostAnchors() {
+  const anchors = [import.meta.url, process.argv[1]]
+  const checkout = process.env.DSH_HARNESS_CHECKOUT
+  if (typeof checkout === 'string' && checkout.length > 0) {
+    anchors.push(join(checkout, 'node_modules', '.pnpm', 'node_modules', '__dsh_plugin_anchor__.js'))
+  }
+  return anchors
+}
+
+/**
+ * Resolution anchors the RUNNING Host offers, ahead of the module anchors.
+ *
+ * `ctx.baseUrl` is the Host's own base URL: the boot path sets it to the
+ * profile directory (`packages/boot/app-boot/src/index.ts:1223`), and every
+ * plugin context inherits it. That directory is where the Host actually
+ * resolves its plugins from, so `<profile>/node_modules` holds the packages a
+ * real deployment uses (including `undici`), which `createRequire` reaches by
+ * walking up from it. Without this anchor, a deployed profile can resolve the
+ * schema library (a direct dependency of the CLI) but not `undici` (a
+ * dependency of bundles and packages, not of the CLI entry the plugin would
+ * otherwise anchor on).
+ * @param {object} ctx - the plugin context.
+ * @returns {string[]} candidate anchors derived from the Host context.
+ */
+function hostContextAnchors(ctx) {
+  const anchors = []
+  const baseUrl = ctx?.baseUrl
+  if (typeof baseUrl !== 'string' || baseUrl.length === 0) return anchors
+  try {
+    anchors.push(fileURLToPath(new URL('node_modules/__dsh_plugin_anchor__.js', baseUrl)))
+  } catch {
+    // A non-file base URL cannot anchor a filesystem resolution; skip it.
+  }
+  return anchors
+}
 
 /**
  * Resolve the config-schema library (`@deepseek-ai/schemastery`) without a
@@ -75,12 +142,7 @@ import { join } from 'node:path'
  *
  * The bundle ships no `node_modules`, and the Host that loads it always has the
  * library in its own resolution graph, so resolve from the Host — offline, and
- * stable across restarts:
- *
- * 1. this module's own location, for an install that did fetch dependencies;
- * 2. the running process entry (`process.argv[1]`), which is inside the harness;
- * 3. `$DSH_HARNESS_CHECKOUT` (the offline suites) through the pnpm workspace's
- *    hoisted store.
+ * stable across restarts.
  *
  * @returns {object|undefined} the library, or `undefined` when no anchor
  *   resolves it. `Config` is then undefined: the loader skips validation and
@@ -88,12 +150,7 @@ import { join } from 'node:path'
  *   the exports stay importable.
  */
 function resolveSchemaLibrary() {
-  const anchors = [import.meta.url, process.argv[1]]
-  const checkout = process.env.DSH_HARNESS_CHECKOUT
-  if (typeof checkout === 'string' && checkout.length > 0) {
-    anchors.push(join(checkout, 'node_modules', '.pnpm', 'node_modules', '__dsh_plugin_anchor__.js'))
-  }
-  for (const anchor of anchors) {
+  for (const anchor of hostAnchors()) {
     if (typeof anchor !== 'string' || anchor.length === 0) continue
     try {
       const loaded = createRequire(anchor)('@deepseek-ai/schemastery')
@@ -111,6 +168,48 @@ export const schemaLibrary = resolveSchemaLibrary()
 
 /** The resolved library, or `undefined`: `Config` is then absent by design. */
 const z = schemaLibrary
+
+/** Cached result of {@link resolveUndici}: `undefined` until the first attempt. */
+let undiciLibrary
+/** Whether {@link resolveUndici} already ran, so a failed load is not retried. */
+let undiciResolved = false
+
+/**
+ * Resolve `undici` from the Host, without a bundle-local `node_modules`.
+ *
+ * The dispatcher API this half needs (`getGlobalDispatcher`,
+ * `setGlobalDispatcher`, `EnvHttpProxyAgent`) is the Host's own, not a private
+ * copy: requiring a second instance is fine (undici shares one global
+ * dispatcher through `Symbol.for('undici.globalDispatcher.2')`), but resolving
+ * through the Host is what keeps the module dependency-free and lets the
+ * wrapper collaborate with the dispatcher DSH's `http-proxy` installed.
+ *
+ * The lazy cache means a failed load is not retried on every event, and the
+ * import stays cheap for the settings-only use of this module.
+ * @param {string[]} [extraAnchors] - Host-context anchors tried first, from
+ *   {@link hostContextAnchors}.
+ * @returns {object|undefined} undici, or `undefined` when no anchor resolves a
+ *   module with the dispatcher surface.
+ */
+function resolveUndici(extraAnchors = []) {
+  if (undiciResolved) return undiciLibrary
+  undiciResolved = true
+  for (const anchor of [...extraAnchors, ...hostAnchors()]) {
+    if (typeof anchor !== 'string' || anchor.length === 0) continue
+    try {
+      const loaded = createRequire(anchor)('undici')
+      if (typeof loaded?.getGlobalDispatcher === 'function'
+        && typeof loaded?.setGlobalDispatcher === 'function'
+        && typeof loaded?.EnvHttpProxyAgent === 'function') {
+        undiciLibrary = loaded
+        return undiciLibrary
+      }
+    } catch {
+      // The next anchor may be the one inside the Host installation.
+    }
+  }
+  return undefined
+}
 
 /**
  * Largest delay `setTimeout` accepts, matching `@deepseek-ai/dsh-timeout`
@@ -243,6 +342,89 @@ export const DEFAULT_TUNE = Object.freeze({
 })
 
 /**
+ * The two process-wide HTTP timeouts this plugin also owns, declared ONCE.
+ *
+ * `null` means UNSET, and unset is the shipped default: a fresh install must
+ * not change how the Host or Node already behaves. The wrapper is installed
+ * only while at least one of the two values is a number; `0` is a real value
+ * (undici treats a zero `headersTimeout`/`bodyTimeout` as "no timeout"), and
+ * any positive integer up to `MAX_TIMER_DELAY_MS` is a custom timeout in
+ * milliseconds. Clearing a field back to unset stops filling that one option;
+ * clearing both restores the dispatcher the Host had.
+ *
+ * This single object is the one place the defaults live: `FETCH_FIELDS` derives
+ * the schema and the `defaultText`/range shown to the page from it, so they
+ * cannot drift. Flip both to a number here to ship a non-inert preset (for
+ * example `1_800_000`, 30 minutes).
+ */
+export const DEFAULT_FETCH = Object.freeze({
+  headersTimeoutMs: null,
+  bodyTimeoutMs: null,
+})
+
+/**
+ * The two process-wide fetch timeouts, declared ONCE beside `TUNE_FIELDS` and
+ * kept separate from it: `TUNE_KEYS`, `TUNE_OPTIONS`, `DEFAULT_TUNE` and
+ * `validateTune()` are the retry-policy surface, pinned by verify.mjs and
+ * documented as such.
+ *
+ * `build(lib)` returns the exact schemastery field, `.volatile()` included, so
+ * a settings edit commits into the running fiber without a remount.
+ * `.step(1)` refuses a fractional timeout, `.min(0)` allows the documented
+ * "disabled" value, and `.max(MAX_TIMER_DELAY_MS)` mirrors what
+ * `setTimeout` / undici can carry.
+ *
+ * There is deliberately NO `.default(...)`: schemastery materializes an absent
+ * number leaf as `undefined` (a `.default(null)` would put a null default in
+ * the schema while still resolving to `undefined`), so the schema's own code
+ * default is "absent", i.e. unset. `DEFAULT_FETCH` records that as `null` for
+ * the runtime side, and both `undefined` and `null` mean unset there.
+ */
+const FETCH_FIELDS = Object.freeze([
+  {
+    key: 'headersTimeoutMs',
+    kind: 'optionalNonNegativeIntegerMs',
+    default: DEFAULT_FETCH.headersTimeoutMs,
+    defaultText: 'unset',
+    range: 'integer 0..2147483647, or unset; 0 disables the header timeout, unset leaves the Host default untouched',
+    build: lib => lib.number()
+      .step(1)
+      .min(0)
+      .max(MAX_TIMER_DELAY_MS)
+      .volatile(),
+  },
+  {
+    key: 'bodyTimeoutMs',
+    kind: 'optionalNonNegativeIntegerMs',
+    default: DEFAULT_FETCH.bodyTimeoutMs,
+    defaultText: 'unset',
+    range: 'integer 0..2147483647, or unset; 0 disables the body timeout, unset leaves the Host default untouched',
+    build: lib => lib.number()
+      .step(1)
+      .min(0)
+      .max(MAX_TIMER_DELAY_MS)
+      .volatile(),
+  },
+])
+
+/** The two owned fetch keys, in the order the settings page and `Config` use. */
+export const FETCH_KEYS = Object.freeze(FETCH_FIELDS.map(field => field.key))
+
+/**
+ * Public fetch-field metadata, mirroring `TUNE_OPTIONS`: key, kind, code
+ * default (`null`, meaning unset), its default text, and the allowed range. The
+ * docs checks and the client dictionary read this table instead of hardcoding
+ * the numbers.
+ */
+export const FETCH_OPTIONS = Object.freeze(FETCH_FIELDS.map(field => Object.freeze({
+  key: field.key,
+  kind: field.kind,
+  default: field.default,
+  defaultText: field.defaultText,
+  range: field.range,
+})))
+
+/**
  * The schema the settings page validates against.
  *
  * One field per owned value, every leaf `.volatile()`: a settings edit commits
@@ -251,9 +433,14 @@ export const DEFAULT_TUNE = Object.freeze({
  * (`packages/settings/settings/src/schema.ts:37-47`); a transform/refine/union
  * on the ROOT would cost the whole settings section, which is why the only
  * union here is a leaf allowlist.
+ *
+ * The retry fields come first, then the two fetch timeouts, so the dictionary
+ * order the settings page renders is stable. The two fetch leaves carry no
+ * schema default (unset means "leave the Host dispatcher alone"), so
+ * `Config({})` materializes them as absent volatile nodes.
  */
 export const Config = z === undefined ? undefined : z.object(Object.fromEntries(
-  TUNE_FIELDS.map(field => [field.key, field.build(z)]),
+  [...TUNE_FIELDS, ...FETCH_FIELDS].map(field => [field.key, field.build(z)]),
 ))
 
 /** Plugin name reported to the Host loader; also the settings and locale namespace. */
@@ -347,6 +534,16 @@ function warn(ctx, message) {
 }
 
 /**
+ * Log an informational line without assuming the context carries a logger.
+ * @param {object} ctx - the plugin context.
+ * @param {string} message - the message.
+ */
+function info(ctx, message) {
+  const logger = ctx.get?.('logger') ?? ctx.logger
+  if (logger !== undefined && typeof logger.info === 'function') logger.info(message)
+}
+
+/**
  * Message of a thrown value without assuming it is an `Error`.
  * @param {unknown} error - the thrown value.
  * @returns {string} its message or its string form.
@@ -356,20 +553,306 @@ function errorMessage(error) {
 }
 
 /**
+ * Read a possibly-volatile config field.
+ *
+ * `.volatile()` wraps its value, so a configured value and an absent key are
+ * both wrapper objects; only `.get()` tells them apart (`undefined` versus a
+ * number). Plain values pass through, for a raw config and for tests.
+ * @param {unknown} value - the raw or wrapped config field.
+ * @returns {unknown} the underlying value, or `undefined` when absent.
+ */
+function volatileValue(value) {
+  if (value === undefined || value === null) return undefined
+  return typeof value === 'object' && typeof value.get === 'function' ? value.get() : value
+}
+
+/**
+ * One timeout value read from a config source, with `null` for "unset".
+ *
+ * `undefined` (key absent) and `null` (explicitly cleared) both mean unset, and
+ * both are deliberately distinct from `0`, which is a real value: undici treats
+ * a zero timeout as disabled and must receive it. The schema already bounds the
+ * field, so the range check is a defensive guard for a raw config and for a bad
+ * volatile write; an impossible number is treated as unset rather than handed
+ * to undici, whose `Request` constructor would throw `invalid headersTimeout`
+ * on every request.
+ * @param {object} source - a possibly-volatile config object.
+ * @param {'headersTimeoutMs'|'bodyTimeoutMs'} key - one of `FETCH_KEYS`.
+ * @returns {number|null} the live value, or `null` when the field is unset.
+ */
+function fetchValue(source, key) {
+  const value = volatileValue(source?.[key])
+  if (value === undefined || value === null) return DEFAULT_FETCH[key]
+  if (!Number.isInteger(value) || value < 0 || value > MAX_TIMER_DELAY_MS) return DEFAULT_FETCH[key]
+  return value === 0 ? 0 : value
+}
+
+/**
+ * Read the live fetch timeouts from this plugin's own (possibly wrapped) config.
+ *
+ * Called at install time and again on every reload signal, never captured as
+ * plain numbers: a volatile settings edit commits new values into the running
+ * fiber's config in place. The fiber's resolved config is authoritative because
+ * the loader commits the new values into the refs it finds THERE
+ * (`vendor/loader/src/config/entry.ts:164-186`), which is not necessarily the
+ * object `apply()` captured; the captured object is the fallback for a context
+ * without a fiber (the offline doubles).
+ * @param {object} ctx - the plugin context.
+ * @param {object} [config] - the config captured by `apply()`.
+ * @returns {{headersTimeoutMs: number|null, bodyTimeoutMs: number|null}} the
+ *   live values; `null` per field means unset.
+ */
+function liveFetchValues(ctx, config) {
+  const fiber = ctx.fiber
+  const source = fiber?.effectiveConfig ?? fiber?.config ?? config ?? {}
+  return {
+    headersTimeoutMs: fetchValue(source, 'headersTimeoutMs'),
+    bodyTimeoutMs: fetchValue(source, 'bodyTimeoutMs'),
+  }
+}
+
+/**
+ * The proxy-aware agent upstream `dsh-fetch-timeouts` installs, kept identical
+ * in behavior: Node honours `HTTP_PROXY` and friends only when
+ * `NODE_USE_ENV_PROXY` is set, so build an `EnvHttpProxyAgent` for exactly that
+ * case and `undefined` otherwise (which keeps the dispatcher already installed,
+ * so DSH's own proxy routing is never replaced with a direct one).
+ * @param {object} undici - the resolved undici library.
+ * @param {object} env - the process environment.
+ * @returns {object|undefined} the agent, or `undefined` when env proxying is off.
+ */
+function envProxyAgent(undici, env) {
+  if (!env.NODE_USE_ENV_PROXY) return undefined
+  return new undici.EnvHttpProxyAgent()
+}
+
+/**
+ * The same dispatcher, with the currently set timeouts on every request that
+ * does not set its own. Adapted from `dsh-fetch-timeouts` `withTimeouts` (MIT,
+ * © 2026 Dev Mehra; see THIRD-PARTY-NOTICES.md).
+ *
+ * Each field is filled only when the live value is a number: an unset field
+ * leaves `headersTimeout`/`bodyTimeout` absent, so the dispatcher's own default
+ * (DSH's, Node's, or undici's) applies exactly as before. A per-request value
+ * always wins over this plugin's, and `0` is a real value ("disabled") that is
+ * passed through, not treated as absent. The values are read on every dispatch,
+ * so a volatile edit takes effect on the next request without re-installing
+ * anything. Every other member is delegated to the target (bound to it), so
+ * `close()`, `destroy()`, and the interceptor chain keep working on the
+ * dispatcher the Host installed.
+ * @param {object} dispatcher - the dispatcher to wrap.
+ * @param {() => {headersTimeoutMs: number|null, bodyTimeoutMs: number|null}} read
+ *   - reads the live values.
+ * @returns {object} a Proxy with the dispatcher's interface.
+ */
+function withTimeouts(dispatcher, read) {
+  const dispatch = (opts, handler) => {
+    const values = read()
+    const next = { ...opts }
+    const unset = candidate => candidate === undefined || candidate === null
+    if (values.headersTimeoutMs !== null && unset(next.headersTimeout)) next.headersTimeout = values.headersTimeoutMs
+    if (values.bodyTimeoutMs !== null && unset(next.bodyTimeout)) next.bodyTimeout = values.bodyTimeoutMs
+    return dispatcher.dispatch(next, handler)
+  }
+  return new Proxy(dispatcher, {
+    get(target, key) {
+      if (key === 'dispatch') return dispatch
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
+/**
+ * Close an agent this plugin created, ignoring every failure: the Host may
+ * already be shutting down, and a cleanup must never mask the real disposal.
+ * @param {object|undefined} agent - the agent, when one was created.
+ */
+function closeQuietly(agent) {
+  if (agent === undefined || agent === null) return
+  try {
+    const closing = agent.close()
+    if (closing !== null && typeof closing?.catch === 'function') closing.catch(() => {})
+  } catch {
+    // Best effort only: the process is going away.
+  }
+}
+
+/**
+ * Keep the process-wide fetch timeouts installed exactly as long as a value is
+ * set, and never touch a dispatcher otherwise.
+ *
+ * Order matters, and mirrors `dsh-fetch-timeouts` (MIT, © 2026 Dev Mehra; see
+ * THIRD-PARTY-NOTICES.md): DSH's own `http-proxy` package installs a
+ * proxy-aware global dispatcher before plugins mount
+ * (`packages/util/http-proxy/src/install.ts`), so snapshot whatever dispatcher
+ * is current, wrap THAT (never replace it with a bare Agent — that would drop
+ * the proxy routing), and on removal restore the previous dispatcher only when
+ * the current one is still ours, so a dispatcher installed after us wins.
+ *
+ * The wrapper is installed ONLY when at least one value is a number, so a fresh
+ * install that leaves both unset changes nothing at all: undici is not even
+ * required in that case. Volatile-only settings commits do not re-run `apply()`
+ * (`vendor/loader/src/config/entry.ts` `_commitVolatile` emits
+ * `loader/volatile-update` instead), so the same reconcile path runs from that
+ * event and from `app-boot/config-reload` (the settings-write completion
+ * signal, consumed the same way at `packages/settings/settings/src/index.ts:234`):
+ * setting a first value installs, clearing the last one restores. A value
+ * change on an installed wrapper does not re-install it; the wrapper reads the
+ * mutable value snapshot.
+ *
+ * The two listeners stay registered while both fields are unset for one reason:
+ * a later live save must be able to install the wrapper again, and a
+ * volatile-only commit never re-runs `apply()`. They are removed by the
+ * disposer, together with the wrapper.
+ *
+ * Every failure is reported and degrades to a no-op: a missing undici or a
+ * refused dispatcher must not fail the Host boot.
+ * @param {object} ctx - the plugin context.
+ * @param {object} [config] - the config captured by `apply()`.
+ * @returns {() => void} the disposer: detaches both listeners, restores the
+ *   previous dispatcher when ours is still current, and closes the env-proxy
+ *   agent.
+ */
+function installFetchTimeouts(ctx, config) {
+  /** The Host anchors the first resolution should try first. */
+  const contextAnchors = hostContextAnchors(ctx)
+  /** Resolved undici, loaded on first use so an all-unset row requires nothing. */
+  let undici
+  /** Whether the missing-undici warning already ran (one per instance). */
+  let warnedNoUndici = false
+  /** The installed wrapper plus what its removal must restore. */
+  let installed
+  /** The live values the wrapper reads; `null` per field means unset. */
+  let values = liveFetchValues(ctx, config)
+
+  /**
+   * Resolve undici the first time a value actually needs a dispatcher.
+   * @returns {object|undefined} the library, or `undefined` when unresolvable.
+   */
+  const library = () => {
+    if (undici === undefined) undici = resolveUndici(contextAnchors)
+    return undici
+  }
+
+  /** Remove the wrapper, restoring the dispatcher it wrapped when still current. */
+  const uninstall = () => {
+    if (installed === undefined) return
+    const { dispatcher, previous, own } = installed
+    installed = undefined
+    try {
+      // Only step back if nobody installed another dispatcher after us: a newer
+      // dispatcher (a host proxy reload, say) owns the global now, not ours to drop.
+      if (undici?.getGlobalDispatcher() === dispatcher) undici.setGlobalDispatcher(previous)
+    } catch (error) {
+      warn(ctx, `${name}: the previous global dispatcher could not be restored: ${errorMessage(error)}`)
+    }
+    closeQuietly(own)
+  }
+
+  /** Install the wrapper around whatever dispatcher is current right now. */
+  const install = () => {
+    const lib = library()
+    if (lib === undefined) {
+      if (!warnedNoUndici) {
+        warnedNoUndici = true
+        warn(ctx, `${name}: undici could not be resolved from the Host, so the fetch timeouts are not applied`)
+      }
+      return
+    }
+    let previous
+    try {
+      previous = lib.getGlobalDispatcher()
+    } catch (error) {
+      warn(ctx, `${name}: the current global dispatcher could not be read: ${errorMessage(error)}`)
+      return
+    }
+    let own
+    try {
+      own = envProxyAgent(lib, process.env)
+    } catch (error) {
+      // A malformed proxy variable must not cost the timeouts as well.
+      warn(ctx, `${name}: the environment proxy agent could not be created: ${errorMessage(error)}`)
+      own = undefined
+    }
+    const dispatcher = withTimeouts(own ?? previous, () => values)
+    try {
+      lib.setGlobalDispatcher(dispatcher)
+    } catch (error) {
+      warn(ctx, `${name}: the global dispatcher could not be replaced: ${errorMessage(error)}`)
+      closeQuietly(own)
+      return
+    }
+    installed = { dispatcher, previous, own }
+    const applied = []
+    if (values.headersTimeoutMs !== null) applied.push(`headers ${values.headersTimeoutMs} ms`)
+    if (values.bodyTimeoutMs !== null) applied.push(`body ${values.bodyTimeoutMs} ms`)
+    info(ctx, `${name}: ${applied.join(', ')} (process-wide${own === undefined ? '' : ', env proxy'})`)
+  }
+
+  /**
+   * Re-read the live values and make the installed state match them: install
+   * when a first value is set, remove the wrapper when the last one is cleared.
+   */
+  const reconcile = () => {
+    values = liveFetchValues(ctx, config)
+    const active = values.headersTimeoutMs !== null || values.bodyTimeoutMs !== null
+    if (installed === undefined) {
+      if (active) install()
+      return
+    }
+    if (!active) uninstall()
+  }
+
+  reconcile()
+
+  const detachers = []
+  for (const event of ['loader/volatile-update', 'app-boot/config-reload']) {
+    if (typeof ctx.on !== 'function') continue
+    try {
+      const detach = ctx.on(event, reconcile)
+      if (typeof detach === 'function') detachers.push(detach)
+    } catch (error) {
+      warn(ctx, `${name}: the "${event}" listener could not be registered: ${errorMessage(error)}`)
+    }
+  }
+
+  return () => {
+    for (const detach of detachers.splice(0)) {
+      try {
+        detach()
+      } catch {
+        // A fiber-scoped disposer may already have run.
+      }
+    }
+    uninstall()
+  }
+}
+
+/**
  * Apply the host half.
  *
- * The bundle ships its own settings page, so suppress the auto-generated
- * generic config form for this same row; otherwise one namespace renders two
- * pages. This is a HOST call by construction: only the Host can register an
- * instance page policy (`settings.configure`, see the ui-settings precedent
- * `packages/client/ui-settings/src/index.ts:23-24`). Guarded, because a policy
- * conflict must not fail the boot.
+ * Two independent jobs:
  *
- * Nothing else runs here: the page edits provider rows through the settings
- * form API, and the host half stores no projection state.
+ * 1. The bundle ships its own settings page, so suppress the auto-generated
+ *    generic config form for this same row; otherwise one namespace renders two
+ *    pages. This is a HOST call by construction: only the Host can register an
+ *    instance page policy (`settings.configure`, see the ui-settings precedent
+ *    `packages/client/ui-settings/src/index.ts:23-24`). Guarded, because a
+ *    policy conflict must not fail the boot.
+ * 2. Keep the process-wide fetch timeouts in step with the two fetch settings
+ *    (see {@link installFetchTimeouts}). This lives in its own `ctx.effect`, so
+ *    the disposer that restores the previous dispatcher is owned by this row's
+ *    fiber. With both settings unset — the shipped default — nothing is
+ *    installed and the Host's dispatcher is untouched.
+ *
+ * The page itself edits provider rows through the settings form API, and the
+ * host half stores no projection state.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context.
+ * @param {object} [config] - this row's validated config (the loader always
+ *   passes it; the offline doubles may omit it).
  */
-export function apply(ctx) {
+export function apply(ctx, config = {}) {
   ctx.inject(['settings'], child => child.effect(() => {
     try {
       return child.settings.configure({ auto: false }, ctx.fiber)
@@ -378,4 +861,21 @@ export function apply(ctx) {
       return () => {}
     }
   }))
+
+  const install = () => {
+    try {
+      return installFetchTimeouts(ctx, config)
+    } catch (error) {
+      // Belt and braces: no install failure may fail the Host boot.
+      warn(ctx, `${name}: the fetch timeouts could not be installed: ${errorMessage(error)}`)
+      return () => {}
+    }
+  }
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(install, `${name}: fetch timeouts`)
+  } else {
+    // A context without lifecycle effects (the offline doubles) still gets the
+    // side effect; it just has no fiber to dispose it.
+    install()
+  }
 }

@@ -41,6 +41,47 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## dsh-fetch-timeouts — MIT
+
+`dsh-llm-api-call-tuning/index.js` adapts the global-dispatcher wrapper of `dsh-fetch-timeouts`
+(v0.1.1, 57 lines): the Proxy that fills a per-request `headersTimeout`/`bodyTimeout` only when the
+request omits it, the `EnvHttpProxyAgent` selection gated on `NODE_USE_ENV_PROXY`, the
+`getGlobalDispatcher` / `setGlobalDispatcher` install, and the "restore only if still current"
+disposer. Source: <https://github.com/d3vmeh/dsh-fetch-timeouts>, `src/index.js`, sha256
+`edc25750a145b8dd2acb4afd0fed9eddc04534a5a83ab7127855e9b5bcd2106b`. The adaptation is rewritten
+against this bundle's own config, schema, and fiber lifecycle (the two timeouts are live-reloadable
+`Config` leaves rather than a startup read), so it is a derivative of that code rather than a
+verbatim copy.
+
+Provenance: `dsh-fetch-timeouts` is licensed under the MIT License, Copyright (c) 2026 Dev Mehra,
+reproduced in full below (source: the upstream `LICENSE` file, sha256
+`6f2b9d232d7122539300f626dd9aa9deafc441e9726918f89af9479aba6c4fb7`). The MIT License applies to
+that adapted code alone; it does not extend to the rest of this repository's code.
+
+```text
+MIT License
+
+Copyright (c) 2026 Dev Mehra
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## This repository
 
 Copyright (c) 2026 Luchang Jin.

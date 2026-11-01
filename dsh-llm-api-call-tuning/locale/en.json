@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "LLM API call tuning",
-    "description": "Set the default model-request retry values — retry mode, max retries, backoff delays, jitter, and retryable failure codes — once, and inspect or edit the retry policy of every active provider route."
+    "description": "Tune the LLM API retry policy of every provider route, plus the process-wide HTTP fetch timeouts shared by all providers, web search, and HTTP MCP servers."
   }
 }

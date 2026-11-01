@@ -13,16 +13,22 @@
  *   DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/verify.mjs
  *
  * What it does NOT cover: the live mechanism against a booted Host (a real
- * settings save, the real nav row, next-request latency) is a deployment
- * property, not this file. The client half is therefore evaluated in
- * `node:vm` with a minimal React double that pins the element tree and the
- * exact write shapes, not a real browser render.
+ * settings save, the real nav row, next-request latency, or a live model call
+ * whose headers/body actually time out under the installed dispatcher) is a
+ * deployment property, not this file. The dispatcher side effect is exercised
+ * against a recording fake dispatcher and the Host's real `undici` globals;
+ * the client half is evaluated in `node:vm` with a minimal React double that
+ * pins the element tree and the exact write shapes, not a real browser render.
+ * The missing-`undici` degradation runs in a child process, because the host
+ * half caches its resolution for the lifetime of the module.
  */
 
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createContext, runInContext } from 'node:vm'
 import * as host from './index.js'
 
@@ -222,6 +228,15 @@ const buttonWithText = (tree, keys) => findAll(
 /** The rendered text inputs of one surface, in field order. */
 const numericInputs = tree => findAll(tree, node => node.type === 'input' && node.props.inputMode !== undefined)
 
+/**
+ * The two fetch-timer inputs of the third card, in FETCH_KEYS order. They are
+ * the only text inputs carrying a placeholder (the retry controls have none).
+ */
+const fetchInputs = tree => findAll(
+  tree,
+  node => node.type === 'input' && node.props.inputMode !== undefined && node.props.placeholder !== undefined,
+)
+
 /** The mode select of one surface. */
 const modeSelect = tree => findAll(tree, node => node.type === 'select')[0]
 
@@ -232,6 +247,13 @@ const codeCheckboxes = tree => findAll(tree, node => node.type === 'input' && no
 function setNumeric(tree, index, text) {
   const input = numericInputs(tree)[index]
   if (input === undefined) throw new Error(`no rendered numeric input at index ${String(index)}`)
+  input.props.onChange({ target: { value: text } })
+}
+
+/** Type text into one fetch-timer input by index (headers, body). */
+function setFetchNumeric(tree, index, text) {
+  const input = fetchInputs(tree)[index]
+  if (input === undefined) throw new Error(`no rendered fetch input at index ${String(index)}`)
   input.props.onChange({ target: { value: text } })
 }
 
@@ -332,6 +354,15 @@ const TUNE_VALUE = Object.freeze({
   jitterRatio: 0.1,
   retryableCodes: Object.freeze(['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
 })
+
+/**
+ * The fresh-install state of the two process-wide fetch timers: both UNSET
+ * (`null` in the host metadata), so the fetch card renders two empty inputs.
+ */
+const FETCH_VALUE = Object.freeze({ headersTimeoutMs: null, bodyTimeoutMs: null })
+
+/** A ready own-namespace snapshot: the retry defaults plus the given fetch leaves. */
+const tuningSnapshot = (fetch = {}, revision = 7) => readySnapshot({ ...TUNE_VALUE, ...fetch }, revision)
 
 /** The provider directory the fake Remote `llm` answers with. */
 const REGISTERED = [
@@ -586,8 +617,9 @@ await check('the host half has no default export and exposes only the frozen nam
   assert.deepEqual(
     Object.keys(host).sort(),
     [
-      'Config', 'DEFAULT_TUNE', 'RETRYABLE_CODES', 'RETRY_MODES', 'TUNE_KEYS', 'TUNE_OPTIONS',
-      'TUNE_PROBLEMS', 'apply', 'name', 'schemaLibrary', 'validateTune',
+      'Config', 'DEFAULT_FETCH', 'DEFAULT_TUNE', 'FETCH_KEYS', 'FETCH_OPTIONS',
+      'RETRYABLE_CODES', 'RETRY_MODES', 'TUNE_KEYS', 'TUNE_OPTIONS', 'TUNE_PROBLEMS',
+      'apply', 'name', 'schemaLibrary', 'validateTune',
     ],
     `index.js exported surface drifted: ${JSON.stringify(Object.keys(host).sort())}`,
   )
@@ -640,6 +672,27 @@ await check('RETRY_MODES, RETRYABLE_CODES, and TUNE_PROBLEMS are frozen and exac
     jitterRatio: 'jitterRatio',
     retryableCodes: 'retryableCodes',
   }, 'TUNE_PROBLEMS drifted')
+})
+
+await check('FETCH_KEYS, DEFAULT_FETCH, and FETCH_OPTIONS are frozen and exact', () => {
+  assert.equal(Object.isFrozen(host.FETCH_KEYS), true, 'FETCH_KEYS must stay frozen')
+  assert.deepEqual([...host.FETCH_KEYS], ['headersTimeoutMs', 'bodyTimeoutMs'], 'FETCH_KEYS drifted')
+  assert.equal(Object.isFrozen(host.DEFAULT_FETCH), true, 'DEFAULT_FETCH must stay frozen')
+  assert.deepEqual(plain(host.DEFAULT_FETCH), { headersTimeoutMs: null, bodyTimeoutMs: null }, `DEFAULT_FETCH drifted: ${JSON.stringify(host.DEFAULT_FETCH)}`)
+  assert.equal(Object.isFrozen(host.FETCH_OPTIONS), true, 'FETCH_OPTIONS must stay frozen')
+  assert.deepEqual(host.FETCH_OPTIONS.map(option => option.key), [...host.FETCH_KEYS], 'FETCH_OPTIONS is not one entry per fetch key, in order')
+  for (const option of host.FETCH_OPTIONS) {
+    assert.equal(Object.isFrozen(option), true, `${option.key} metadata must stay frozen`)
+    assert.equal(option.kind, 'optionalNonNegativeIntegerMs', `${option.key} has the unknown kind ${String(option.kind)}`)
+    assert.equal(option.default, null, `${option.key} metadata default must be null (unset)`)
+    assert.equal(option.defaultText, 'unset', `${option.key} defaultText drifted to ${String(option.defaultText)}`)
+    assert.deepEqual(plain(option.default), plain(host.DEFAULT_FETCH[option.key]), `${option.key} default drifted from DEFAULT_FETCH`)
+    for (const number of [0, 2_147_483_647]) {
+      assert.equal(option.range.includes(String(number)), true, `${option.key} range text lost the number ${number}`)
+    }
+    assert.match(option.range, /unset/i, `${option.key} range text does not say the value may be unset`)
+    assert.match(option.range, /disabl/i, `${option.key} range text does not say 0 disables the timer`)
+  }
 })
 
 await check('the loader id, host name, section id, locale NS, and dictionary NS all agree', () => {
@@ -770,11 +823,15 @@ await check('MAX_TIMER_DELAY_MS is the same literal the plugin records', () => {
 /** Read a schemastery-validated value (default materialization wraps it volatile). */
 const volatileValue = value => (value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value)
 
-await check('Config is a real schemastery object root, not a transform, refine, or union', () => {
+await check('Config is a real schemastery object root carrying the six retry fields then the two fetch fields', () => {
   assert.equal(typeof host.Config, 'function', `Config is ${typeof host.Config}, not a schema`)
   assert.equal(host.Config.type, 'object', `Config.type is ${String(host.Config.type)}: volatileForm only descends an object root`)
   assert.equal(host.Config['~standard']?.vendor, 'schemastery', `the schema vendor is ${String(host.Config['~standard']?.vendor)}`)
-  assert.deepEqual(Object.keys(host.Config.dict ?? {}).sort(), [...host.TUNE_KEYS].sort(), `Config.dict is not exactly the six owned fields: ${JSON.stringify(Object.keys(host.Config.dict ?? {}))}`)
+  assert.deepEqual(
+    Object.keys(host.Config.dict ?? {}),
+    [...host.TUNE_KEYS, ...host.FETCH_KEYS],
+    `Config.dict is not the six retry fields followed by the two fetch fields: ${JSON.stringify(Object.keys(host.Config.dict ?? {}))}`,
+  )
 })
 
 await check('Config declares all six fields as volatile nodes with the frozen shapes and code defaults', () => {
@@ -799,10 +856,38 @@ await check('Config declares all six fields as volatile nodes with the frozen sh
   assert.deepEqual(plain(host.Config.dict.retryableCodes.inner?.type ?? null), 'union', 'retryableCodes must be an array of union(const) allowlisted codes')
 })
 
-await check('Config({}) materializes exactly DEFAULT_TUNE', () => {
+await check('the fetch leaves are volatile, nullable, bounded 0..2147483647, and carry no schema default', () => {
+  for (const key of host.FETCH_KEYS) {
+    const node = host.Config.dict[key]
+    assert.ok(node !== undefined, `Config has no "${key}" field`)
+    assert.equal(node.type, 'number', `${key} is a ${String(node.type)} node, expected number`)
+    assert.equal(node.meta?.volatile, true, `${key} is not .volatile(), so a settings edit would remount the row`)
+    assert.equal(node.meta?.step, 1, `${key} must refuse fractional milliseconds`)
+    assert.equal(node.meta?.min, 0, `${key} must accept 0 (disabled)`)
+    assert.equal(node.meta?.max, 2_147_483_647, `${key} max drifted to ${String(node.meta?.max)}`)
+    assert.equal('default' in (node.meta ?? {}), false, `${key} must NOT carry a schema default: absent means unset`)
+  }
+  const parsed = host.Config({ headersTimeoutMs: null, bodyTimeoutMs: null })
+  assert.equal(volatileValue(parsed.headersTimeoutMs), null, 'an explicit null fetch leaf must materialize as null')
+  assert.equal(volatileValue(parsed.bodyTimeoutMs), null, 'an explicit null fetch leaf must materialize as null')
+  assert.equal(volatileValue(host.Config({}).headersTimeoutMs), undefined, 'an absent fetch leaf must materialize as undefined, not a seeded timer')
+})
+
+await check('Config({}) materializes only the six retry defaults; the fetch leaves stay absent (unset)', () => {
   const parsed = host.Config({})
-  const materialized = Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, volatileValue(value)]))
+  const materialized = Object.fromEntries(
+    Object.entries(parsed)
+      .map(([key, value]) => [key, volatileValue(value)])
+      .filter(([, value]) => value !== undefined),
+  )
   assert.deepEqual(materialized, plain(host.DEFAULT_TUNE), `Config({}) materialized ${JSON.stringify(materialized)}`)
+  assert.equal(volatileValue(parsed.headersTimeoutMs), undefined, 'Config({}) must leave headersTimeoutMs unset')
+  assert.equal(volatileValue(parsed.bodyTimeoutMs), undefined, 'Config({}) must leave bodyTimeoutMs unset')
+  assert.deepEqual(
+    Object.keys(materialized).sort(),
+    [...host.TUNE_KEYS].sort(),
+    `Config({}) materialized a key outside the six retry defaults: ${JSON.stringify(Object.keys(materialized))}`,
+  )
 })
 
 await check('the schema accepts every valid shape, including mode always and the boundary values', () => {
@@ -866,6 +951,38 @@ await check('schemastery bounds are not a finiteness check: NaN slips through Co
   // Pinned here so a schema change in either direction is noticed.
   assert.doesNotThrow(() => host.Config({ initialDelayMs: Number.NaN }), 'the schemastery NaN behaviour changed: revisit CONTRACT.md')
   assert.deepEqual([...host.validateTune({ initialDelayMs: Number.NaN })], ['initialDelayMs'], 'validateTune must refuse a NaN delay')
+})
+
+await check('the fetch schema accepts unset, absent, 0 (disabled), and both boundary integers', () => {
+  for (const [label, input] of [
+    ['both leaves absent', {}],
+    ['both leaves explicitly null (unset)', { headersTimeoutMs: null, bodyTimeoutMs: null }],
+    ['the unset boundary values', { headersTimeoutMs: undefined, bodyTimeoutMs: null }],
+    ['0 on both leaves (disabled)', { headersTimeoutMs: 0, bodyTimeoutMs: 0 }],
+    ['a 30-minute value', { headersTimeoutMs: 1_800_000, bodyTimeoutMs: 1_800_000 }],
+    ['the timer cap', { headersTimeoutMs: 2_147_483_647, bodyTimeoutMs: 2_147_483_647 }],
+    ['one leaf set, the other unset', { headersTimeoutMs: 500 }],
+  ]) {
+    assert.doesNotThrow(() => host.Config(input), `Config must accept ${label}`)
+  }
+  assert.equal(volatileValue(host.Config({ headersTimeoutMs: 0 }).headersTimeoutMs), 0, '0 must remain 0 (disabled), never fall back to unset')
+  assert.equal(volatileValue(host.Config({ headersTimeoutMs: 2_147_483_647 }).headersTimeoutMs), 2_147_483_647, 'the timer cap must be accepted verbatim')
+})
+
+await check('the fetch schema refuses negative, fractional, overflow, string, boolean, and object values', () => {
+  for (const [label, input] of [
+    ['a negative timeout', { headersTimeoutMs: -1 }],
+    ['a fractional timeout', { headersTimeoutMs: 1.5 }],
+    ['a timeout above the timer cap', { headersTimeoutMs: 2_147_483_648 }],
+    ['a stringified number', { headersTimeoutMs: '0' }],
+    ['a boolean', { headersTimeoutMs: true }],
+    ['an object', { headersTimeoutMs: {} }],
+    ['a negative body timeout', { bodyTimeoutMs: -1 }],
+    ['a fractional body timeout', { bodyTimeoutMs: 0.5 }],
+    ['a body timeout above the timer cap', { bodyTimeoutMs: 2_147_483_648 }],
+  ]) {
+    assert.throws(() => host.Config(input), `Config must refuse ${label}`)
+  }
 })
 
 /* ══ 5. validateTune, the cross-field guard ════════════════════════════════ */
@@ -987,12 +1104,270 @@ await check('a configure() refusal warns and still returns a disposer; a host wi
   assert.doesNotThrow(() => host.apply(bare.ctx), 'apply must not assume a logger')
 })
 
-await check('apply does nothing else: no projection, no loader event, no extra inject', () => {
+await check('with no lifecycle effects or loader events, apply() still adds no projection and no extra inject', () => {
+  // This fake context has no `ctx.on` and no `ctx.effect`, so the second job
+  // (the fetch-timeout dispatcher) runs its reconcile inline: with both fetch
+  // values unset that is a no-op. The new listener/effect surface is pinned by
+  // the dispatcher checks below.
   const { ctx, calls } = hostApplyContext()
   host.apply(ctx)
   assert.deepEqual(calls.injects, [['settings']], 'apply injected another service')
-  assert.equal(calls.effects, 1, 'apply mounted more than one effect')
+  assert.equal(calls.effects, 1, 'apply mounted more than one injected effect')
   assert.equal(calls.configures.length, 1, 'apply configured the settings service more than once')
+  assert.deepEqual(calls.warnings, [], `apply warned although both fetch values are unset: ${JSON.stringify(calls.warnings)}`)
+})
+
+/* ══ 6b. apply(), the process-wide fetch-timeout dispatcher ═══════════════ */
+
+/**
+ * Resolve the Host's real `undici` with the same anchors `index.js` uses, so
+ * the dispatcher checks can read and replace the process-wide dispatcher. This
+ * mirrors `hostAnchors()` rather than importing undici as a dependency (the
+ * bundle ships none).
+ * @returns {object|undefined} undici, or undefined when the checkout does not
+ *   expose it (in which case the dispatcher checks fail loudly).
+ */
+function resolveUndiciForChecks() {
+  const anchors = [import.meta.url, process.argv[1]]
+  if (checkout !== '') anchors.push(join(checkout, 'node_modules', '.pnpm', 'node_modules', '__dsh_plugin_anchor__.js'))
+  for (const anchor of anchors) {
+    if (typeof anchor !== 'string' || anchor.length === 0) continue
+    try {
+      const loaded = createRequire(anchor)('undici')
+      if (typeof loaded?.getGlobalDispatcher === 'function'
+        && typeof loaded?.setGlobalDispatcher === 'function'
+        && typeof loaded?.EnvHttpProxyAgent === 'function') {
+        return loaded
+      }
+    } catch {
+      // The next anchor may resolve it.
+    }
+  }
+  return undefined
+}
+
+/** The Host's real undici, used as the process-wide dispatcher of the checks. */
+const undici = resolveUndiciForChecks()
+
+/**
+ * A fake global dispatcher that records the options it is asked to dispatch.
+ * @returns the fake dispatcher.
+ */
+function fakeDispatcher() {
+  return {
+    calls: [],
+    dispatch(options) { this.calls.push(options); return Promise.resolve() },
+    close() { return Promise.resolve() },
+  }
+}
+
+/**
+ * A minimal Host context with the lifecycle seats the fetch-timeout effect
+ * needs: `inject` for the settings job, and `effect`/`on` for the dispatcher
+ * job. Every disposer and listener is tracked so a check can tear the state
+ * down (and so "the listener detaches only on dispose" is observable).
+ * @param config - the config passed to `apply()` (the fallback when there is no
+ *   fiber; a fiber's own `config` wins, exactly like the host half).
+ * @param fiber - an optional fiber whose live config drives re-reads.
+ * @returns the context, its recorded state, a `run()` applying the config, and
+ *   a disposer.
+ */
+function dispatcherHostContext(config = {}, fiber = undefined) {
+  const state = { warnings: [], infos: [], listeners: [], disposers: [], effectLabels: [] }
+  const logger = { warn(message) { state.warnings.push(message) }, info(message) { state.infos.push(message) } }
+  const child = {
+    effect(callback) { const dispose = callback(); return () => { if (typeof dispose === 'function') dispose() } },
+    settings: { configure() { return () => {} } },
+  }
+  const ctx = {
+    fiber,
+    get(service) { return service === 'logger' ? logger : undefined },
+    inject(services, callback) { callback(child); return child },
+    effect(callback, label) {
+      state.effectLabels.push(label)
+      const dispose = callback()
+      state.disposers.push(dispose)
+      return dispose
+    },
+    on(event, listener) {
+      const entry = { event, listener }
+      state.listeners.push(entry)
+      return () => { state.listeners = state.listeners.filter(candidate => candidate !== entry) }
+    },
+  }
+  const dispose = () => {
+    for (const teardown of state.disposers.splice(0).reverse()) {
+      try {
+        teardown()
+      } catch {
+        // A second uninstall is a no-op; keep the check's cleanup best-effort.
+      }
+    }
+  }
+  return { ctx, state, dispose, run: () => host.apply(ctx, config) }
+}
+
+await check('the dispatcher checks can resolve the Host\'s real undici (a loud prerequisite, never a skip)', () => {
+  assert.ok(undici !== undefined, `undici is not resolvable through ${checkout}: the dispatcher checks cannot run`)
+  assert.equal(typeof undici.getGlobalDispatcher, 'function', 'undici exposes no getGlobalDispatcher')
+  assert.equal(typeof undici.setGlobalDispatcher, 'function', 'undici exposes no setGlobalDispatcher')
+})
+
+await check('apply() with both fetch values unset touches no dispatcher and still watches both reload events', () => {
+  const original = undici.getGlobalDispatcher()
+  const { state, dispose, run } = dispatcherHostContext({}, undefined)
+  try {
+    run()
+    assert.equal(undici.getGlobalDispatcher(), original, 'an all-unset apply() replaced the global dispatcher')
+    assert.deepEqual(state.listeners.map(entry => entry.event), ['loader/volatile-update', 'app-boot/config-reload'], 'the two reload listeners were not registered')
+    assert.equal(state.effectLabels.includes('llm-api-call-tuning: fetch timeouts'), true, `the fetch-timeout effect label drifted: ${JSON.stringify(state.effectLabels)}`)
+    assert.deepEqual(state.warnings, [], `apply() with both values unset warned: ${JSON.stringify(state.warnings)}`)
+  } finally {
+    dispose()
+    undici.setGlobalDispatcher(original)
+  }
+  assert.deepEqual(state.listeners, [], 'dispose() did not detach both reload listeners')
+  assert.equal(undici.getGlobalDispatcher(), original, 'dispose() changed the global dispatcher although nothing was installed')
+})
+
+await check('a numeric fetch value installs a wrapper that fills only a nullish per-request timeout, and 0 is a real value', async () => {
+  const original = undici.getGlobalDispatcher()
+  const previous = fakeDispatcher()
+  undici.setGlobalDispatcher(previous)
+  const { state, dispose, run } = dispatcherHostContext({ headersTimeoutMs: 0, bodyTimeoutMs: 1_500 }, undefined)
+  try {
+    run()
+    const wrapper = undici.getGlobalDispatcher()
+    assert.notEqual(wrapper, previous, 'a numeric fetch value did not install the dispatcher wrapper')
+
+    await wrapper.dispatch({}, {})
+    assert.deepEqual(previous.calls[0], { headersTimeout: 0, bodyTimeout: 1_500 }, 'the wrapper did not fill both nullish timeouts (0 must pass through as disabled)')
+
+    await wrapper.dispatch({ headersTimeout: 42, bodyTimeout: null }, {})
+    assert.deepEqual(previous.calls[1], { headersTimeout: 42, bodyTimeout: 1_500 }, 'a per-request value must win and only nullish options are filled')
+
+    await wrapper.dispatch({ headersTimeout: 0 }, {})
+    assert.deepEqual(previous.calls[2], { headersTimeout: 0, bodyTimeout: 1_500 }, 'an explicit per-request 0 must not be overwritten')
+  } finally {
+    dispose()
+    undici.setGlobalDispatcher(original)
+  }
+  assert.deepEqual(state.warnings, [], `the dispatcher install warned: ${JSON.stringify(state.warnings)}`)
+})
+
+await check('a live value change is re-read without reinstalling, clearing restores the previous dispatcher, and re-enabling installs again', async () => {
+  const original = undici.getGlobalDispatcher()
+  const previous = fakeDispatcher()
+  undici.setGlobalDispatcher(previous)
+  const fiber = { config: { headersTimeoutMs: 300 } }
+  const { state, dispose, run } = dispatcherHostContext({}, fiber)
+  try {
+    run()
+    const wrapper = undici.getGlobalDispatcher()
+    assert.notEqual(wrapper, previous, 'the first value did not install the wrapper')
+    assert.equal(state.listeners.length, 2, 'the reload listeners are missing')
+
+    await wrapper.dispatch({}, {})
+    assert.deepEqual(previous.calls[0], { headersTimeout: 300 }, 'an unset body timeout must stay absent so the dispatcher default applies')
+
+    fiber.config = { headersTimeoutMs: 75 }
+    for (const entry of [...state.listeners]) entry.listener()
+    assert.equal(undici.getGlobalDispatcher(), wrapper, 'a value change reinstalled the wrapper instead of re-reading it')
+    await wrapper.dispatch({}, {})
+    assert.deepEqual(previous.calls[1], { headersTimeout: 75 }, 'the wrapper did not pick up the changed live value')
+
+    fiber.config = { headersTimeoutMs: null, bodyTimeoutMs: null }
+    for (const entry of [...state.listeners]) entry.listener()
+    assert.equal(undici.getGlobalDispatcher(), previous, 'clearing both values did not restore the previous dispatcher')
+    assert.equal(state.listeners.length, 2, 'clearing the values detached the reload listeners (a later live save must still install)')
+
+    fiber.config = { bodyTimeoutMs: 0 }
+    for (const entry of [...state.listeners]) entry.listener()
+    const reinstalled = undici.getGlobalDispatcher()
+    assert.notEqual(reinstalled, previous, 're-enabling a cleared value did not install the wrapper again')
+    await reinstalled.dispatch({}, {})
+    assert.deepEqual(previous.calls[2], { bodyTimeout: 0 }, '0 must be installed as a real "disabled" value')
+  } finally {
+    dispose()
+    undici.setGlobalDispatcher(original)
+  }
+  assert.deepEqual(state.warnings, [], `the live re-read path warned: ${JSON.stringify(state.warnings)}`)
+})
+
+await check('dispose() restores the previous dispatcher only while ours is still the current one', () => {
+  const original = undici.getGlobalDispatcher()
+  const previous = fakeDispatcher()
+  undici.setGlobalDispatcher(previous)
+  const { dispose, run } = dispatcherHostContext({ headersTimeoutMs: 250 }, undefined)
+  try {
+    run()
+    const ours = undici.getGlobalDispatcher()
+    assert.notEqual(ours, previous, 'the wrapper was not installed')
+    const newer = fakeDispatcher()
+    undici.setGlobalDispatcher(newer)
+    dispose()
+    assert.equal(undici.getGlobalDispatcher(), newer, 'dispose() replaced a dispatcher installed after ours')
+  } finally {
+    dispose()
+    undici.setGlobalDispatcher(original)
+  }
+})
+
+await check('NODE_USE_ENV_PROXY installs an EnvHttpProxyAgent as the wrapped target', () => {
+  const original = undici.getGlobalDispatcher()
+  const previous = fakeDispatcher()
+  undici.setGlobalDispatcher(previous)
+  const hadProxyFlag = process.env.NODE_USE_ENV_PROXY
+  process.env.NODE_USE_ENV_PROXY = '1'
+  const { dispose, run } = dispatcherHostContext({ headersTimeoutMs: 100 }, undefined)
+  try {
+    run()
+    const wrapper = undici.getGlobalDispatcher()
+    assert.notEqual(wrapper, previous, 'the wrapper was not installed with NODE_USE_ENV_PROXY set')
+    assert.equal(Object.getPrototypeOf(wrapper)?.constructor?.name, 'EnvHttpProxyAgent', 'the wrapper did not target an EnvHttpProxyAgent')
+  } finally {
+    dispose()
+    if (hadProxyFlag === undefined) delete process.env.NODE_USE_ENV_PROXY
+    else process.env.NODE_USE_ENV_PROXY = hadProxyFlag
+    undici.setGlobalDispatcher(original)
+  }
+})
+
+await check('an unresolvable undici warns once and never throws (isolated process; the module caches the failure)', () => {
+  const script = `
+import * as host from ${JSON.stringify(pathToFileURL(join(here, 'index.js')).href)}
+const symbol = Symbol.for('undici.globalDispatcher.2')
+const before = globalThis[symbol]
+const warnings = []
+const events = []
+const child = { effect(callback) { return callback() }, settings: { configure() { return () => {} } } }
+const ctx = {
+  inject(services, callback) { callback(child); return child },
+  effect(callback) { return callback() },
+  on(event, listener) { events.push([event, listener]); return () => {} },
+  get(service) { return service === 'logger' ? { warn(message) { warnings.push(message) }, info() {} } : undefined },
+}
+let threw = null
+try { host.apply(ctx, { headersTimeoutMs: 100, bodyTimeoutMs: 0 }) } catch (error) { threw = String(error && error.message ? error.message : error) }
+for (const [, listener] of events) listener()
+console.log(JSON.stringify({
+  threw,
+  warnings,
+  events: events.map(([event]) => event),
+  dispatcherUnchanged: before === globalThis[symbol],
+}))
+`
+  const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: here,
+    encoding: 'utf8',
+    env: { ...process.env, DSH_HARNESS_CHECKOUT: '' },
+  })
+  const result = JSON.parse(output.trim().split('\n').pop())
+  assert.equal(result.threw, null, `apply() threw without undici: ${String(result.threw)}`)
+  assert.equal(result.warnings.length, 1, `the missing-undici warning must run once per instance, got ${JSON.stringify(result.warnings)}`)
+  assert.match(result.warnings[0], /undici could not be resolved from the Host/, `the missing-undici warning drifted: ${String(result.warnings[0])}`)
+  assert.deepEqual(result.events, ['loader/volatile-update', 'app-boot/config-reload'], 'the reload listeners were not registered without undici')
+  assert.equal(result.dispatcherUnchanged, true, 'apply() changed a process-wide dispatcher although undici was unresolvable')
 })
 
 /* ══ 7. docs: identity, tables, operation shapes, limits ══════════════════ */
@@ -1029,9 +1404,11 @@ const plainCell = text => text.replace(/[`'"]/g, '').replace(/\s+/g, ' ').trim()
 /** Every number token in a piece of text. */
 const numberTokens = text => new Set((text.match(/\d+(?:\.\d+)?/g) ?? []).map(Number))
 
+const ALL_OPTIONS = [...host.TUNE_OPTIONS, ...host.FETCH_OPTIONS]
+
 await check('README.md and CONTRACT.md name every owned field and their default cells carry the host defaultText', () => {
   for (const [file, text] of [['README.md', readme], ['CONTRACT.md', contract]]) {
-    for (const option of host.TUNE_OPTIONS) {
+    for (const option of ALL_OPTIONS) {
       assert.ok(text.includes(`\`${option.key}\``), `${file} does not name the option ${option.key}`)
     }
   }
@@ -1040,9 +1417,9 @@ await check('README.md and CONTRACT.md name every owned field and their default 
     ['CONTRACT.md', markdownTable(contract, 'Code default'), 'Code default'],
   ]
   for (const [file, table, defaultColumn] of tables) {
-    assert.ok(table.rows.length >= host.TUNE_OPTIONS.length, `${file}: only ${table.rows.length} field rows`)
+    assert.ok(table.rows.length >= ALL_OPTIONS.length, `${file}: only ${table.rows.length} field rows`)
     const keyColumn = table.header[0]
-    for (const option of host.TUNE_OPTIONS) {
+    for (const option of ALL_OPTIONS) {
       const row = table.rows.find(candidate => plainCell(candidate[keyColumn] ?? '') === option.key)
       assert.ok(row !== undefined, `${file} has no field-table row for ${option.key}`)
       assert.equal(
@@ -1061,7 +1438,7 @@ await check('the README "Accepts" and CONTRACT range cells carry every host rang
   ]
   for (const [file, table, rangeColumn] of tables) {
     const keyColumn = table.header[0]
-    for (const option of host.TUNE_OPTIONS) {
+    for (const option of ALL_OPTIONS) {
       const row = table.rows.find(candidate => plainCell(candidate[keyColumn] ?? '') === option.key)
       assert.ok(row !== undefined, `${file} has no field-table row for ${option.key}`)
       const cell = plainCell(row[rangeColumn] ?? '')
@@ -1070,7 +1447,30 @@ await check('the README "Accepts" and CONTRACT range cells carry every host rang
       }
       if (option.kind === 'mode') assert.ok(/normal/.test(cell) && /always/.test(cell), `${file} mode range cell must name both modes: ${cell}`)
       if (option.kind === 'retryableCodes') assert.ok(/non-empty/.test(cell) && /unique/.test(cell), `${file} code range cell must state non-empty and unique: ${cell}`)
+      if (option.kind === 'optionalNonNegativeIntegerMs') {
+        assert.match(cell, /unset/i, `${file} fetch range cell for ${option.key} must say the value may be unset: ${cell}`)
+        assert.match(cell, /disabl/i, `${file} fetch range cell for ${option.key} must say 0 disables the timer: ${cell}`)
+      }
     }
+  }
+})
+
+await check('README.zh.md carries the two fetch rows with an unset default and the full range', () => {
+  const table = markdownTable(readmeZh, '代码默认值')
+  const keyColumn = table.header[0]
+  const rangeColumn = table.header[2]
+  const defaultColumn = table.header[3]
+  for (const option of host.FETCH_OPTIONS) {
+    const row = table.rows.find(candidate => plainCell(candidate[keyColumn] ?? '') === option.key)
+    assert.ok(row !== undefined, `README.zh.md has no field-table row for ${option.key}`)
+    const defaultCell = plainCell(row[defaultColumn] ?? '')
+    assert.match(defaultCell, /unset/i, `README.zh.md default cell for ${option.key} does not carry "unset": ${defaultCell}`)
+    assert.match(defaultCell, /未设置/, `README.zh.md default cell for ${option.key} does not say 未设置: ${defaultCell}`)
+    const rangeCell = plainCell(row[rangeColumn] ?? '')
+    for (const number of numberTokens(option.range)) {
+      assert.ok(numberTokens(rangeCell).has(number), `README.zh.md range cell for ${option.key} never mentions ${number}: ${rangeCell}`)
+    }
+    assert.match(rangeCell, /禁用/, `README.zh.md range cell for ${option.key} must say 0 禁用: ${rangeCell}`)
   }
 })
 
@@ -1088,9 +1488,32 @@ await check('CONTRACT.md documents the identity, addresses, and exact operation 
   ]) {
     assert.ok(contract.includes(token), `CONTRACT.md does not document ${JSON.stringify(token)}`)
   }
-  for (const option of host.TUNE_OPTIONS) {
+  for (const option of ALL_OPTIONS) {
     assert.ok(contract.includes(`\`${option.key}\``), `CONTRACT.md does not name the config field ${option.key}`)
   }
+})
+
+await check('CONTRACT.md documents the fetch-timeout host surface, apply(ctx, config), and the exact unset op shapes', () => {
+  for (const token of [
+    'DEFAULT_FETCH', 'FETCH_KEYS', 'FETCH_OPTIONS', 'apply(ctx, config)', 'installFetchTimeouts',
+    'undici', 'getGlobalDispatcher', 'setGlobalDispatcher', 'EnvHttpProxyAgent',
+    'loader/volatile-update', 'app-boot/config-reload', 'process-wide',
+    'two process-wide fetch fields',
+  ]) {
+    assert.ok(contract.includes(token), `CONTRACT.md does not document ${JSON.stringify(token)}`)
+  }
+  for (const [label, pattern] of [
+    ['the fetch Save path', /"path": \["headersTimeoutMs"\]/],
+    ['the body Save path', /"path": \["bodyTimeoutMs"\]/],
+    ['the headers unset op', /"op": "unset", "path": \["headersTimeoutMs"\]/],
+    ['the body unset op', /"op": "unset", "path": \["bodyTimeoutMs"\]/],
+    ['the dispatcher restoration rule', /restor\w*[\s\S]{0,120}(?:still current|current dispatcher)/i],
+    ['the no-dependency undici resolution', /resolve[sd]?[\s\S]{0,80}undici[\s\S]{0,120}(?:Host|profile)/i],
+  ]) {
+    assert.match(contract, pattern, `CONTRACT.md does not document ${label}`)
+  }
+  assert.doesNotMatch(contract, /no side effects/i, 'CONTRACT.md still claims apply() has no side effects')
+  assert.doesNotMatch(contract, /apply\(\) (?:only|does nothing)/i, 'CONTRACT.md still claims apply() only suppresses the page')
 })
 
 await check('CONTRACT.md states the documented limitations', () => {
@@ -1101,6 +1524,10 @@ await check('CONTRACT.md states the documented limitations', () => {
     ['the dormant-route caveat', /dormant/i],
     ['the npm note', /not published to any npm registry/i],
     ['the no-CLI/env/core-setting note', /environment variable/i],
+    ['the MIT attribution pointer', /THIRD-PARTY-NOTICES\.md/],
+    ['the upstream-adaptation note', /adapted from[\s\S]{0,80}dsh-fetch-timeouts|dsh-fetch-timeouts[\s\S]{0,120}MIT/i],
+    ['the stopgap note', /stopgap/i],
+    ['the no-offline-live-proof caveat', /cannot (?:confirm|prove)|not provable offline|deployment property/i],
   ]) {
     assert.match(contract, pattern, `CONTRACT.md does not state ${label}`)
   }
@@ -1113,7 +1540,7 @@ await check('README.md and README.zh.md document install, the page location, the
     assert.ok(text.includes('dsh-llm-api-call-tuning'), `${file} does not name the bundle`)
     assert.match(text, /order 45/, `${file} does not state the nav order`)
     assert.match(text, /npm/, `${file} does not carry the npm note`)
-    for (const option of host.TUNE_OPTIONS) {
+    for (const option of ALL_OPTIONS) {
       assert.ok(text.includes(`\`${option.key}\``), `${file} does not name the field ${option.key}`)
     }
   }
@@ -1122,6 +1549,47 @@ await check('README.md and README.zh.md document install, the page location, the
   }
   assert.ok(readmeZh.includes('LLM API 调用调优'), 'README.zh.md does not name the page')
   assert.ok(readme.includes('LLM API call tuning'), 'README.md does not name the page')
+})
+
+await check('all three docs state the tri-state fetch contract: unset = no behavior change, 0 = disabled', () => {
+  for (const [file, text, unsetPattern, disabledPattern, freshPattern] of [
+    ['README.md', readme, /unset/i, /0[^.]{0,48}disabl/i, /fresh install/i],
+    ['README.zh.md', readmeZh, /unset/i, /禁用/, /全新安装/],
+    ['CONTRACT.md', contract, /unset/i, /0[^.]{0,48}disabl/i, /fresh install/i],
+  ]) {
+    assert.match(text, unsetPattern, `${file} does not use the word "unset" for the empty fetch state`)
+    assert.match(text, disabledPattern, `${file} does not state that 0 disables the timer`)
+    assert.match(text, freshPattern, `${file} does not describe the fresh-install (unset) behavior`)
+  }
+  assert.match(readme, /no behavior change/i, 'README.md does not say an unset timer leaves behavior unchanged')
+  assert.match(readmeZh, /不改变[^。]*行为|行为[^。]*不改变/, 'README.zh.md does not say an unset timer leaves behavior unchanged')
+  assert.doesNotMatch(readme, /unset[^.]{0,80}1800000/, 'README.md implies an unset timer seeds the 1800000 ms preset')
+})
+
+await check('both READMEs and CONTRACT.md state the process-wide blast radius of the fetch timers', () => {
+  for (const [file, text, searchPattern, serverPattern] of [
+    ['README.md', readme, /web search/i, /HTTP MCP/],
+    ['README.zh.md', readmeZh, /联网搜索/, /HTTP MCP/],
+    ['CONTRACT.md', contract, /web search/i, /HTTP MCP/],
+  ]) {
+    assert.match(text, searchPattern, `${file} does not name web search among the affected clients`)
+    assert.match(text, serverPattern, `${file} does not name HTTP MCP servers among the affected clients`)
+  }
+  assert.match(readme, /process-wide/i, 'README.md does not call the fetch timers process-wide')
+  assert.match(readmeZh, /进程级/, 'README.zh.md does not call the fetch timers process-level')
+  assert.match(contract, /process-wide/i, 'CONTRACT.md does not call the fetch timers process-wide')
+})
+
+await check('the docs point at the MIT attribution and state the stopgap and no-offline-live-proof caveats', () => {
+  for (const [file, text] of [['README.md', readme], ['README.zh.md', readmeZh], ['CONTRACT.md', contract]]) {
+    assert.ok(text.includes('THIRD-PARTY-NOTICES.md'), `${file} does not point at THIRD-PARTY-NOTICES.md`)
+  }
+  assert.match(contract, /MIT/, 'CONTRACT.md does not name the MIT license of the adapted upstream')
+  assert.match(contract, /dsh-fetch-timeouts/, 'CONTRACT.md does not name the upstream project')
+  assert.match(readme, /stopgap/i, 'README.md does not describe the dispatcher wrapper as a stopgap')
+  assert.match(readmeZh, /过渡方案|临时方案/, 'README.zh.md does not describe the dispatcher wrapper as a stopgap')
+  assert.match(readme, /live GUI|does not start|offline/i, 'README.md does not caveat that the live dispatcher is not proven offline')
+  assert.match(contract, /cannot (?:confirm|prove)|not provable offline|deployment property/i, 'CONTRACT.md does not caveat the offline limits')
 })
 
 await check('the docs describe the real refusal path and mark managed-elsewhere as defensive-only', () => {
@@ -1154,11 +1622,11 @@ await check('apply registers one settings.section immediately, with the frozen i
   assert.equal(ctx.state.dictionaries[0].ns, 'llm-api-call-tuning', 'the dictionary NS drifted')
 })
 
-await check('the en and zh dictionaries carry the same 77 non-empty keys, and English has no CJK text', () => {
+await check('the en and zh dictionaries carry the same 95 non-empty keys, and English has no CJK text', () => {
   const en = COPY.en
   const zh = COPY.zh
   assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key sets')
-  assert.equal(Object.keys(en).length, 77, `the dictionary key count drifted to ${Object.keys(en).length}`)
+  assert.equal(Object.keys(en).length, 95, `the dictionary key count drifted to ${Object.keys(en).length}`)
   const cjk = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
   for (const [key, copy] of Object.entries(en)) {
     assert.equal(typeof copy, 'string', `en.${key} is not a string`)
@@ -1184,6 +1652,11 @@ await check('the en and zh dictionaries carry the same 77 non-empty keys, and En
     'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved', 'status.reset',
     'error.refused', 'error.managed', 'error.mode', 'error.maxRetries', 'error.initialDelayMs',
     'error.maxDelayMs', 'error.initialDelayOrder', 'error.jitterRatio', 'error.retryableCodes',
+    'fetch.heading', 'fetch.description', 'fetch.note', 'fetch.save', 'fetch.saving',
+    'fetch.reset', 'fetch.resetting', 'fetch.placeholder', 'fetch.hint',
+    'field.headersTimeoutMs.label', 'field.headersTimeoutMs.description', 'field.headersTimeoutMs.unit',
+    'field.bodyTimeoutMs.label', 'field.bodyTimeoutMs.description', 'field.bodyTimeoutMs.unit',
+    'error.headersTimeoutMs', 'error.bodyTimeoutMs', 'status.fetchReset',
     'apply.outcome.saved', 'apply.outcome.refused', 'apply.outcome.managed',
   ]) {
     assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing the key "${key}"`)
@@ -1218,23 +1691,38 @@ await check('a direct apply() without ctx.configForms registers no page (belt-an
 
 /* ══ 9. the page render ════════════════════════════════════════════════════ */
 
-await check('the page renders the defaults card with one control per field and both actions', async () => {
+await check('the page renders the defaults card with one control per retry field, both actions, and the empty fetch card', async () => {
   const { page, ctx } = mountPage()
   await flush()
   const text = renderedText(page.tree)
-  for (const key of ['title', 'intro', 'defaults.heading', 'defaults.description', 'defaults.note', 'defaults.applyAllNote', 'providers.heading', 'providers.description']) {
+  for (const key of ['title', 'intro', 'defaults.heading', 'defaults.description', 'defaults.note', 'defaults.applyAllNote', 'providers.heading', 'providers.description', 'fetch.heading', 'fetch.description', 'fetch.note']) {
     assert.ok(text.includes(EN[key]), `the page is missing the "${key}" copy`)
   }
-  assert.equal(numericInputs(page.tree).length, 4, `the defaults card rendered ${numericInputs(page.tree).length} numeric inputs`)
+  assert.equal(numericInputs(page.tree).length, 6, `the page rendered ${numericInputs(page.tree).length} numeric inputs (four retry + two fetch)`)
   assert.ok(modeSelect(page.tree) !== undefined, 'the defaults card has no mode select')
   assert.equal(codeCheckboxes(page.tree).length, 5, `the defaults card rendered ${codeCheckboxes(page.tree).length} code checkboxes`)
-  assert.deepEqual(numericInputs(page.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'the defaults controls are not seeded from the effective defaults')
+  assert.deepEqual(numericInputs(page.tree).map(input => input.props.value), ['5', '500', '10000', '0.1', '', ''], 'the retry controls are not seeded from the defaults, or the fetch controls are not empty (unset)')
   assert.equal(modeSelect(page.tree).props.value, 'normal', 'the defaults mode is not normal')
   assert.deepEqual(codeCheckboxes(page.tree).map(box => box.props.checked), [true, true, true, true, true], 'not every default code is checked')
-  for (const key of ['defaults.save', 'defaults.applyAll']) {
+  for (const key of ['defaults.save', 'defaults.applyAll', 'fetch.save', 'fetch.reset']) {
     assert.ok(buttonWithText(page.tree, [EN[key]]) !== undefined, `the "${key}" action is missing`)
   }
   assert.deepEqual(ctx.state.formRequests, ['llm-api-call-tuning', 'llm-deepseek-account', 'llm-deepseek', 'llm-pi-ai'], `apply/mount requested forms ${JSON.stringify(ctx.state.formRequests)}`)
+})
+
+await check('the fetch card is the third card, after the defaults and the provider cards, with two empty inputs and labels', async () => {
+  const { page } = mountPage()
+  await flush()
+  const headings = findAll(page.tree, node => node.type === 'h3').map(node => directText(node))
+  assert.deepEqual(headings, [EN['defaults.heading'], EN['providers.heading'], EN['fetch.heading']], `the card order drifted: ${JSON.stringify(headings)}`)
+  const inputs = fetchInputs(page.tree)
+  assert.equal(inputs.length, host.FETCH_KEYS.length, `the fetch card rendered ${inputs.length} inputs, expected one per fetch key`)
+  assert.deepEqual(inputs.map(input => input.props.value), ['', ''], 'the shipped fetch draft must be empty (unset), never a seeded 1800000')
+  assert.deepEqual(inputs.map(input => input.props.placeholder), [EN['fetch.placeholder'], EN['fetch.placeholder']], 'the fetch inputs lost the system-default placeholder')
+  const text = renderedText(page.tree)
+  for (const key of ['field.headersTimeoutMs.label', 'field.headersTimeoutMs.description', 'field.bodyTimeoutMs.label', 'field.bodyTimeoutMs.description', 'fetch.hint']) {
+    assert.ok(text.includes(EN[key]), `the fetch card is missing the "${key}" copy`)
+  }
 })
 
 await check('an unserved own namespace degrades to status.unavailable and disables the card', async () => {
@@ -1273,7 +1761,7 @@ await check('a bare root render shows only provider placeholders, not provider c
   }
   assert.equal(buttonWithText(page.tree, [EN['provider.save']]), undefined, 'the root render rendered a provider Save control')
   assert.equal(buttonWithText(page.tree, [EN['provider.reset']]), undefined, 'the root render rendered a provider Reset control')
-  assert.equal(numericInputs(page.tree).length, 4, 'provider controls leaked into the root render; only the defaults card should render')
+  assert.equal(numericInputs(page.tree).length, 6, 'provider controls leaked into the root render; only the defaults card (four) and fetch card (two) should render')
 })
 
 await check('the page joins the directory in rank order and each row paints its effective value and badge', async () => {
@@ -1416,6 +1904,140 @@ await check('the defaults card saves six flat leaf sets on its own namespace', a
     { op: 'set', path: ['retryableCodes'], value: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'] },
   ], 'the defaults save ops drifted')
   assert.ok(renderedText(page.tree).includes(EN['status.saved']), 'the defaults save confirmation is missing')
+})
+
+await check('the fetch card Save on an empty draft emits the two flat unsets and touches no provider', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const form = ctx.configForms.get('llm-api-call-tuning')
+  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
+  await flush()
+  assert.equal(form.calls.length, 1, `expected one fetch write, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 7, `the fetch write was fenced at ${form.calls[0].revision}`)
+  assertOps(form.calls[0].ops, [
+    { op: 'unset', path: ['headersTimeoutMs'] },
+    { op: 'unset', path: ['bodyTimeoutMs'] },
+  ], 'an empty fetch save must unset both leaves (unset leaves the system default in place)')
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `the fetch save wrote the provider namespace ${ns}`)
+  }
+  assert.ok(renderedText(page.tree).includes(EN['status.saved']), 'the fetch save confirmation is missing')
+})
+
+await check('0 is a real fetch write (disabled), not the unset state', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const form = ctx.configForms.get('llm-api-call-tuning')
+  setFetchNumeric(page.tree, 0, '0')
+  setFetchNumeric(page.tree, 1, '1800000')
+  assert.deepEqual(fetchInputs(page.tree).map(input => input.props.value), ['0', '1800000'], 'the fetch inputs did not stage the typed values')
+  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
+  await flush()
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['headersTimeoutMs'], value: 0 },
+    { op: 'set', path: ['bodyTimeoutMs'], value: 1_800_000 },
+  ], 'a 0 fetch timeout must be written as a set (disabled), never as an unset')
+})
+
+await check('clearing one seeded fetch field emits one unset and keeps the other set', async () => {
+  const forms = makeForms({
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })),
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const form = ctx.configForms.get('llm-api-call-tuning')
+  assert.deepEqual(fetchInputs(page.tree).map(input => input.props.value), ['0', '1800000'], 'a stored timer was not seeded into the fetch draft')
+  setFetchNumeric(page.tree, 0, '')
+  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
+  await flush()
+  assertOps(form.calls[0].ops, [
+    { op: 'unset', path: ['headersTimeoutMs'] },
+    { op: 'set', path: ['bodyTimeoutMs'], value: 1_800_000 },
+  ], 'a mixed unset/set fetch save is wrong')
+})
+
+await check('the fetch card Reset emits exactly the two unsets and reports its own confirmation', async () => {
+  const forms = makeForms({
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 250, bodyTimeoutMs: 500 })),
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const form = ctx.configForms.get('llm-api-call-tuning')
+  buttonWithText(page.tree, [EN['fetch.reset']]).props.onClick()
+  await flush()
+  assertOps(form.calls[0].ops, [
+    { op: 'unset', path: ['headersTimeoutMs'] },
+    { op: 'unset', path: ['bodyTimeoutMs'] },
+  ], 'the fetch Reset op drifted')
+  assert.ok(renderedText(page.tree).includes(EN['status.fetchReset']), 'the fetch Reset confirmation is missing')
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `the fetch Reset wrote the provider namespace ${ns}`)
+  }
+})
+
+await check('the fetch draft validates the tri-state: negative, fractional, overflow, and string values are refused; 0 and the cap pass', async () => {
+  const { page } = mountPage()
+  await flush()
+  const save = () => buttonWithText(page.tree, [EN['fetch.save']])
+  for (const [label, value, copy] of [
+    ['a negative timeout', '-1', 'error.headersTimeoutMs'],
+    ['a fractional timeout', '1.5', 'error.headersTimeoutMs'],
+    ['an overflow timeout', '2147483648', 'error.headersTimeoutMs'],
+    ['a negative body timeout', '-5', 'error.bodyTimeoutMs'],
+  ]) {
+    setFetchNumeric(page.tree, copy === 'error.bodyTimeoutMs' ? 1 : 0, value)
+    assert.equal(save().props.disabled, true, `Save stayed enabled on ${label}`)
+    assert.ok(renderedText(page.tree).includes(EN[copy]), `the ${copy} error copy is missing for ${label}`)
+    setFetchNumeric(page.tree, copy === 'error.bodyTimeoutMs' ? 1 : 0, '')
+  }
+  for (const [label, index, value] of [['0 (disabled)', 0, '0'], ['the timer cap', 0, '2147483647'], ['empty (unset)', 0, '']]) {
+    setFetchNumeric(page.tree, index, value)
+    assert.equal(save().props.disabled, false, `Save stayed disabled on ${label}`)
+  }
+})
+
+await check('the retry defaults Save never projects a seeded fetch leaf', async () => {
+  const forms = makeForms({
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })),
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const form = ctx.configForms.get('llm-api-call-tuning')
+  buttonWithText(page.tree, [EN['defaults.save']]).props.onClick()
+  await flush()
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['mode'], value: 'normal' },
+    { op: 'set', path: ['maxRetries'], value: 5 },
+    { op: 'set', path: ['initialDelayMs'], value: 500 },
+    { op: 'set', path: ['maxDelayMs'], value: 10000 },
+    { op: 'set', path: ['jitterRatio'], value: 0.1 },
+    { op: 'set', path: ['retryableCodes'], value: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'] },
+  ], 'the retry defaults save drifted or projected a fetch leaf')
+})
+
+await check('Apply defaults never projects a seeded fetch leaf onto a provider route', async () => {
+  const forms = makeForms({
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })),
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  buttonWithText(page.tree, [EN['defaults.applyAll']]).props.onClick()
+  await flush()
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
+    for (const call of ctx.configForms.get(ns).calls) {
+      for (const op of plain(call.ops)) {
+        assert.equal(op.path.join('.').includes('TimeoutMs'), false, `${ns} received the fetch leaf ${op.path.join('.')}`)
+      }
+    }
+  }
+  assert.deepEqual(plain(ctx.configForms.get('llm-pi-ai').calls[0].ops).map(op => op.path.join('.')), [
+    'providers.openrouter.retryPolicy.mode',
+    'providers.openrouter.retryPolicy.maxRetries',
+    'providers.openrouter.retryPolicy.retryableCodes',
+    'providers.openrouter.retryPolicy.backoff.initialDelayMs',
+    'providers.openrouter.retryPolicy.backoff.maxDelayMs',
+    'providers.openrouter.retryPolicy.backoff.jitterRatio',
+  ], 'the apply-all provider ops drifted')
 })
 
 await check('Apply defaults writes every editable provider once, at its own revision, with a per-row outcome', async () => {
