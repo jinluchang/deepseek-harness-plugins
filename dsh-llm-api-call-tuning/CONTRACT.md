@@ -43,17 +43,17 @@ authoritative, and `verify.mjs` pins behaviour and the upstream constants rather
 | Item | Value |
 | --- | --- |
 | Package | `dsh-llm-api-call-tuning` |
-| Client module id | `dsh-llm-api-call-tuning` — the exact package name (`window.__ModuleLoader__.load` `client.js:44`) |
-| Client plugin `name` | `dsh-llm-api-call-tuning` (`client.js:1334`) |
+| Client module id | `dsh-llm-api-call-tuning` — the exact package name (`window.__ModuleLoader__.load` `client.js:60`) |
+| Client plugin `name` | `dsh-llm-api-call-tuning` (`client.js:1678`) |
 | Loader entry id / row id | `llm-api-call-tuning` (`cordis.patch.yml`) |
 | Settings namespace | `llm-api-call-tuning` — this plugin's own `Config`, read/written with `ctx.configForms.get('llm-api-call-tuning')` |
 | Locale namespace | `llm-api-call-tuning` |
-| Host `name` export | `llm-api-call-tuning` (`index.js:260`) |
+| Host `name` export | `llm-api-call-tuning` (`index.js:447`) |
 | Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `DEFAULT_FETCH`, `FETCH_KEYS`, `FETCH_OPTIONS`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
 | Host `inject` | none exported — `apply()` calls `ctx.inject(['settings'], …)` for the page policy and mounts its fetch-timeout effect itself (see *Fetch timeout dispatcher*) |
 | Host side effect | A process-wide undici dispatcher wrapper, installed only while at least one fetch value is a number; the previous dispatcher is restored on clear/dispose only while the wrapper is still the current dispatcher. With both values `unset` — the shipped default — nothing is installed. |
-| Client `inject` | `['slots', 'locale', 'configForms', 'remote']` (`client.js:1335`) |
-| Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:1357-1365`) |
+| Client `inject` | `['slots', 'locale', 'configForms', 'remote']` (`client.js:1679`) |
+| Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:1701-1709`) |
 | Host ↔ Client wire | **No RPC channel of its own.** Reads and writes ride the shared settings form mirror (`configForms`), whose `mutate()` calls the Host `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:129-151`). The provider directory is read from the Client Remote namespace `llm` (`llm.listProviders()` + `llm.listConfigurableProviders()`). |
 | Mount patch seed | **nothing**: the row carries no `config`, so the global defaults start on the upstream code defaults, both fetch timers start `unset`, and a fresh install changes no provider behavior |
 
@@ -419,7 +419,7 @@ exercises it as a unit test of the classification path, explicitly marked defens
   active" note and never registers a form for them. Likewise, a route without a settings namespace
   (or one whose namespace the deployment does not serve) is read-only here.
 - **The provider directory is read once, when the section mounts.** `readProviders()` runs in one
-  mount effect (`client.js:1140-1151`) and the page does **not** subscribe to
+  mount effect (`client.js:1394-1403`) and the page does **not** subscribe to
   `llm/adapters-updated`, `settings/document-updated`, or `connection/reset` the way the Models page
   does (`packages/client/ui-settings-models/src/client/index.ts:122-128`). Navigating away and back
   re-reads; a provider added or removed while the page stays open needs a page reload.
@@ -466,7 +466,7 @@ exercises it as a unit test of the classification path, explicitly marked defens
 no deferred registration. `configForms` is a **declared** client inject, so a composition without the
 settings service parks this fiber before `apply` runs: neither the dictionaries nor the section are
 registered and the page simply does not activate. The `forms === undefined` guard in
-`client.js:1345-1352` is belt-and-braces for a direct harness/composition that calls `apply` regardless;
+`client.js:1690-1696` is belt-and-braces for a direct harness/composition that calls `apply` regardless;
 in a real composition it is never reached.
 
 The section registration is:
@@ -521,14 +521,20 @@ runs **once per mount** with no refresh subscription (see *Known limitations*). 
   read-only, and its actions stay disabled.
 - `ConfigForms.get()` never throws for an unserved namespace; it returns a controller whose snapshot
   reports `unavailable`, which the row renders as its own note (`ui-settings/src/client/config-form.ts:270-282`).
-- The page's own card renders `status.loading`, `status.unavailable` (the deployment does not serve
-  `llm-api-call-tuning`), or `status.readOnly` instead of pretending to write.
+- The page's own cards render `status.loading`, `status.unavailable` (the deployment does not serve
+  `llm-api-call-tuning`), or `status.readOnly` instead of pretending to write. The fetch card uses its
+  own nouns for the first two states (`fetch.status.loading`, `fetch.status.unavailable`), because the
+  shared `status.*` strings name the retry defaults.
 
 ### Page copy
 
-The en and zh dictionaries are inline in `client.js` and carry the **same 95 keys** (77 retry/card keys
-plus 18 fetch-timeout keys). English copy never contains CJK text; every key has a non-empty Chinese
-value. The nav label is the `nav` key, and the page header/title is the `title` key.
+The en and zh dictionaries are inline in `client.js` and carry the **same 97 keys** (77 retry/card keys
+plus 20 fetch-timeout keys). English copy never contains CJK text; every key has a non-empty Chinese
+value. The nav label is the `nav` key, the page header/title is the `title` key, and the page intro
+covers both the retry policy and the process-wide fetch timeouts. `status.loading` /
+`status.unavailable` belong to the retry defaults card; `fetch.status.loading` /
+`fetch.status.unavailable` are the fetch card's own versions of the same states, and `status.readOnly`
+is shared.
 
 ### Fetch-timeout card
 
@@ -557,7 +563,7 @@ the fetch tri-state: unset/absent/null, `0` disabled, boundaries, and the refuse
 (no install when unset; install and nullish-fill when numeric; `0` pass-through; live re-read on
 `loader/volatile-update`/`app-boot/config-reload`; restore-on-clear; restore-on-dispose only while still
 current; `NODE_USE_ENV_PROXY`; missing-`undici` warn-once no-op in a child process), the en/zh copy
-parity (95 keys), the client registration and every op shape (defaults/normal/always/reset plus fetch
+parity (97 keys), the client registration and every op shape (defaults/normal/always/reset plus fetch
 Save/unset/Reset), the validation, refusal, per-write gate/skip, and revision-retry paths, the
 provider-directory join and its degradation, and the docs' field tables in both languages. The "managed
 elsewhere" classification is exercised as a **defensive unit test** of `submitOps`/`refusalKind` with a

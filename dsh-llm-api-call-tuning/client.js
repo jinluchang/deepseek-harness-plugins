@@ -184,7 +184,7 @@ window.__ModuleLoader__.load({
     const en = {
       'nav': 'LLM API call tuning',
       'title': 'LLM API call tuning',
-      'intro': 'Set one global default retry policy for this deployment, then inspect or override the retry policy of each active model provider. Provider rows write straight to the provider\u2019s own settings namespace.',
+      'intro': 'Set one global default retry policy for this deployment, then inspect or override the retry policy of each active model provider; also set the process-wide HTTP fetch timeouts shared by every provider. Provider rows write straight to the provider\u2019s own settings namespace.',
       'defaults.heading': 'Global defaults',
       'defaults.description': 'A preset for the provider controls below and for "Apply defaults to all". The values are stored in this plugin\u2019s own settings namespace; a provider keeps using its own policy until one is written to it.',
       'defaults.note': 'Saving these defaults changes no provider. Use "Apply defaults to all active providers" or a row\u2019s "Use defaults" button to copy them.',
@@ -220,6 +220,8 @@ window.__ModuleLoader__.load({
       'fetch.resetting': 'Resetting\u2026',
       'fetch.placeholder': 'system default (leave empty)',
       'fetch.hint': 'empty = system default (leave empty); 0 = disabled; 1800000 ms = 30 min',
+      'fetch.status.loading': 'Loading the fetch timeouts\u2026',
+      'fetch.status.unavailable': 'This deployment does not serve the llm-api-call-tuning settings namespace, so the fetch timeouts cannot be edited here.',
       'field.mode.label': 'Retry mode',
       'field.mode.description': 'Normal retries only the selected transient failure codes, up to the retry limit. Always retries every model-request failure until success, cancellation, or shutdown.',
       'field.mode.unit': 'normal or always',
@@ -282,7 +284,7 @@ window.__ModuleLoader__.load({
     const zh = {
       'nav': 'LLM \u8c03\u7528\u8c03\u4f18',
       'title': 'LLM \u8c03\u7528\u8c03\u4f18',
-      'intro': '\u5728\u6b64\u5904\u8bbe\u7f6e\u4e00\u5957\u5168\u5c40\u9ed8\u8ba4\u91cd\u8bd5\u7b56\u7565\uff0c\u5e76\u53ef\u67e5\u770b\u6216\u8986\u76d6\u6bcf\u4e2a\u542f\u7528\u4e2d\u7684\u6a21\u578b\u63d0\u4f9b\u65b9\u91cd\u8bd5\u7b56\u7565\u3002\u63d0\u4f9b\u65b9\u884c\u4f1a\u76f4\u63a5\u5199\u5165\u8be5\u63d0\u4f9b\u65b9\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u3002',
+      'intro': '\u5728\u6b64\u5904\u8bbe\u7f6e\u4e00\u5957\u5168\u5c40\u9ed8\u8ba4\u91cd\u8bd5\u7b56\u7565\uff0c\u5e76\u53ef\u67e5\u770b\u6216\u8986\u76d6\u6bcf\u4e2a\u542f\u7528\u4e2d\u7684\u6a21\u578b\u63d0\u4f9b\u65b9\u91cd\u8bd5\u7b56\u7565\uff0c\u8fd8\u53ef\u8bbe\u7f6e\u6240\u6709\u63d0\u4f9b\u65b9\u5171\u7528\u7684\u8fdb\u7a0b\u7ea7 HTTP \u6293\u53d6\u8d85\u65f6\u3002\u63d0\u4f9b\u65b9\u884c\u4f1a\u76f4\u63a5\u5199\u5165\u8be5\u63d0\u4f9b\u65b9\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u3002',
       'defaults.heading': '\u5168\u5c40\u9ed8\u8ba4\u503c',
       'defaults.description': '\u4f5c\u4e3a\u4e0b\u65b9\u5404\u63d0\u4f9b\u65b9\u63a7\u4ef6\u4ee5\u53ca\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u63d0\u4f9b\u65b9\u201d\u7684\u9884\u8bbe\u3002\u8fd9\u4e9b\u503c\u4fdd\u5b58\u5728\u672c\u63d2\u4ef6\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u4e2d\uff1b\u5728\u5411\u67d0\u4e2a\u63d0\u4f9b\u65b9\u5199\u5165\u4e4b\u524d\uff0c\u5b83\u4ecd\u4f7f\u7528\u81ea\u5df1\u7684\u7b56\u7565\u3002',
       'defaults.note': '\u4fdd\u5b58\u8fd9\u4e9b\u9ed8\u8ba4\u503c\u4e0d\u4f1a\u6539\u53d8\u4efb\u4f55\u63d0\u4f9b\u65b9\u3002\u8bf7\u4f7f\u7528\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u542f\u7528\u4e2d\u7684\u63d0\u4f9b\u65b9\u201d\u6216\u67d0\u4e00\u884c\u7684\u201c\u4f7f\u7528\u9ed8\u8ba4\u503c\u201d\u6309\u94ae\u6765\u62f7\u8d1d\u5b83\u4eec\u3002',
@@ -318,6 +320,8 @@ window.__ModuleLoader__.load({
       'fetch.resetting': '\u6b63\u5728\u6062\u590d\u2026',
       'fetch.placeholder': '\u7cfb\u7edf\u9ed8\u8ba4\uff08\u7559\u7a7a\uff09',
       'fetch.hint': '\u7559\u7a7a = \u7cfb\u7edf\u9ed8\u8ba4\uff08\u4fdd\u6301\u7559\u7a7a\uff09\uff1b0 = \u7981\u7528\uff1b1800000 \u6beb\u79d2 = 30 \u5206\u949f',
+      'fetch.status.loading': '\u6b63\u5728\u52a0\u8f7d\u6293\u53d6\u8d85\u65f6\u8bbe\u7f6e\u2026',
+      'fetch.status.unavailable': '\u5f53\u524d\u90e8\u7f72\u672a\u63d0\u4f9b llm-api-call-tuning \u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\uff0c\u65e0\u6cd5\u5728\u6b64\u7f16\u8f91\u6293\u53d6\u8d85\u65f6\u3002',
       'field.mode.label': '\u91cd\u8bd5\u6a21\u5f0f',
       'field.mode.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4ec5\u5728\u91cd\u8bd5\u4e0a\u9650\u5185\u91cd\u8bd5\u6240\u9009\u7684\u4e34\u65f6\u9519\u8bef\u7801\u3002\u201c\u603b\u662f\u201d\u6a21\u5f0f\u5bf9\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\u90fd\u91cd\u8bd5\uff0c\u76f4\u5230\u6210\u529f\u3001\u53d6\u6d88\u6216\u5173\u95ed\u3002',
       'field.mode.unit': 'normal \u6216 always',
@@ -1547,13 +1551,18 @@ window.__ModuleLoader__.load({
         void run().catch(() => { setApplying(false); });
       };
 
-      const statusNote = status === 'loading'
-        ? h('p', { className: 'dlct-note' }, t('status.loading'))
+      /* One shared "this card cannot be edited" note. The `status.*` copy names
+       * the retry defaults, so the fetch card passes its own noun keys
+       * (`fetch.status.*`) instead of reusing that text. */
+      const statusNote = (loadingKey, unavailableKey) => status === 'loading'
+        ? h('p', { className: 'dlct-note' }, t(loadingKey))
         : status === 'unavailable'
-          ? h('p', { className: 'dlct-note' }, t('status.unavailable'))
+          ? h('p', { className: 'dlct-note' }, t(unavailableKey))
           : !writable
             ? h('p', { className: 'dlct-note' }, t('status.readOnly'))
             : null;
+      const retryStatusNote = statusNote('status.loading', 'status.unavailable');
+      const fetchStatusNote = statusNote('fetch.status.loading', 'fetch.status.unavailable');
 
       const providerNote = providers.status === 'loading'
         ? h('p', { className: 'dlct-note' }, t('providers.loading'))
@@ -1576,7 +1585,7 @@ window.__ModuleLoader__.load({
             h('h3', { className: 'dlct-card-title' }, t('defaults.heading')),
             h('p', { className: 'dlct-card-description' }, t('defaults.description')),
           ),
-          statusNote,
+          retryStatusNote,
           h('div', { className: 'dlct-fields' },
             renderRetryFields({
               t,
@@ -1630,7 +1639,7 @@ window.__ModuleLoader__.load({
             h('h3', { className: 'dlct-card-title' }, t('fetch.heading')),
             h('p', { className: 'dlct-card-description' }, t('fetch.description')),
           ),
-          statusNote,
+          fetchStatusNote,
           h('div', { className: 'dlct-fields' },
             renderFetchFields({
               t,

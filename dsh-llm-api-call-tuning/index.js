@@ -584,7 +584,7 @@ function fetchValue(source, key) {
   const value = volatileValue(source?.[key])
   if (value === undefined || value === null) return DEFAULT_FETCH[key]
   if (!Number.isInteger(value) || value < 0 || value > MAX_TIMER_DELAY_MS) return DEFAULT_FETCH[key]
-  return value === 0 ? 0 : value
+  return value
 }
 
 /**

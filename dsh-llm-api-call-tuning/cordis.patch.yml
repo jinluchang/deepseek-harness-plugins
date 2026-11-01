@@ -4,8 +4,12 @@
 # preset. The provider rows stay authoritative: the page edits their
 # `retryPolicy` directly, through the settings form API, so nothing is projected
 # from this row and a fresh install changes no provider by itself. `apply()`
-# only suppresses the auto-generated settings page for this namespace, so the
-# hand-written page is the only page for the row.
+# does two things for the row: it suppresses the auto-generated settings page
+# for this namespace (the hand-written page is the only page for the row), and
+# it owns the opt-in process-wide fetch-timeout dispatcher. `headersTimeoutMs`
+# and `bodyTimeoutMs` are flat leaves of THIS namespace, both unset by default,
+# so no dispatcher is installed until the user saves a number (0 disables a
+# timer; a positive value is the limit in milliseconds).
 #
 # This patch seeds NOTHING: the inserted row carries no `config`, so the page
 # starts from the upstream retry-policy code defaults (normal / 5 / 500 /

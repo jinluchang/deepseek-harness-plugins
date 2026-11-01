@@ -110,7 +110,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/verify.mjs
 ```
 
-在本仓库根目录运行（或在插件目录内导出同一变量后运行）。套件是封闭的——纯 Node、`node:assert/strict`、`node:vm` 中的 Context/表单/React 替身，无网络、无服务器、无文件写入——并通过 `$DSH_HARNESS_CHECKOUT` 解析**真实的** `@deepseek-ai/schemastery` 与上游 `retry-policy.ts`，因此 schema 或常量漂移会显式失败。它覆盖 manifest 与 bundle patch、Host `Config` 的接受/拒绝矩阵、`validateTune()` 规则、`apply()`、客户端注册、en/zh 文案一致性（95 个键）、默认值/普通/always/重置/抓取保存/抓取重置的精确操作形状、校验、拒绝、逐写门控/跳过与 revision 重试路径、提供方目录合并与所有降级路径、抓取超时调度器对记录型假调度器与宿主真实 `undici` 全局对象的安装/填充/恢复/dispose/`NODE_USE_ENV_PROXY` 行为（含 `undici` 不可解析时的子进程场景），以及本 README 与 CONTRACT.md 中的字段表。“由其他位置管理”分类只作为防御性单元路径用会 reject 的假表单测试；真实设置表单的拒绝会解析为 `false`。
+在本仓库根目录运行（或在插件目录内导出同一变量后运行）。套件是封闭的——纯 Node、`node:assert/strict`、`node:vm` 中的 Context/表单/React 替身，无网络、无服务器、无文件写入——并通过 `$DSH_HARNESS_CHECKOUT` 解析**真实的** `@deepseek-ai/schemastery` 与上游 `retry-policy.ts`，因此 schema 或常量漂移会显式失败。它覆盖 manifest 与 bundle patch、Host `Config` 的接受/拒绝矩阵、`validateTune()` 规则、`apply()`、客户端注册、en/zh 文案一致性（97 个键）、默认值/普通/always/重置/抓取保存/抓取重置的精确操作形状、校验、拒绝、逐写门控/跳过与 revision 重试路径、提供方目录合并与所有降级路径、抓取超时调度器对记录型假调度器与宿主真实 `undici` 全局对象的安装/填充/恢复/dispose/`NODE_USE_ENV_PROXY` 行为（含 `undici` 不可解析时的子进程场景），以及本 README 与 CONTRACT.md 中的字段表。“由其他位置管理”分类只作为防御性单元路径用会 reject 的假表单测试；真实设置表单的拒绝会解析为 `false`。
 
 绿色运行会打印 `104 passed, 0 failed, 0 skipped (104 checks)` 并以 `0` 退出。这是离线契约检查，不是真实 GUI 测试：它不启动 Host 或浏览器，也不会执行真实设置保存、真实导航行、下一请求延迟，或一次真实 HTTP 请求在已安装调度器下真正超时的验证。这些仍属于部署检查；套件证明的是线格式契约与调度器形状，而不是真实计时。
 

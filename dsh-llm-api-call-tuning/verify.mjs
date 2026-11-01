@@ -1622,11 +1622,11 @@ await check('apply registers one settings.section immediately, with the frozen i
   assert.equal(ctx.state.dictionaries[0].ns, 'llm-api-call-tuning', 'the dictionary NS drifted')
 })
 
-await check('the en and zh dictionaries carry the same 95 non-empty keys, and English has no CJK text', () => {
+await check('the en and zh dictionaries carry the same 97 non-empty keys, and English has no CJK text', () => {
   const en = COPY.en
   const zh = COPY.zh
   assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key sets')
-  assert.equal(Object.keys(en).length, 95, `the dictionary key count drifted to ${Object.keys(en).length}`)
+  assert.equal(Object.keys(en).length, 97, `the dictionary key count drifted to ${Object.keys(en).length}`)
   const cjk = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
   for (const [key, copy] of Object.entries(en)) {
     assert.equal(typeof copy, 'string', `en.${key} is not a string`)
@@ -1654,6 +1654,7 @@ await check('the en and zh dictionaries carry the same 95 non-empty keys, and En
     'error.maxDelayMs', 'error.initialDelayOrder', 'error.jitterRatio', 'error.retryableCodes',
     'fetch.heading', 'fetch.description', 'fetch.note', 'fetch.save', 'fetch.saving',
     'fetch.reset', 'fetch.resetting', 'fetch.placeholder', 'fetch.hint',
+    'fetch.status.loading', 'fetch.status.unavailable',
     'field.headersTimeoutMs.label', 'field.headersTimeoutMs.description', 'field.headersTimeoutMs.unit',
     'field.bodyTimeoutMs.label', 'field.bodyTimeoutMs.description', 'field.bodyTimeoutMs.unit',
     'error.headersTimeoutMs', 'error.bodyTimeoutMs', 'status.fetchReset',
@@ -1731,6 +1732,7 @@ await check('an unserved own namespace degrades to status.unavailable and disabl
   await flush()
   const text = renderedText(page.tree)
   assert.ok(text.includes(EN['status.unavailable']), 'the own-namespace unavailable note is missing')
+  assert.ok(text.includes(EN['fetch.status.unavailable']), 'the fetch card does not name the fetch timeouts in its unavailable note')
   assert.equal(numericInputs(page.tree).every(input => input.props.disabled === true), true, 'the controls stayed editable on an unserved namespace')
   assert.equal(buttonWithText(page.tree, [EN['defaults.save']]).props.disabled, true, 'Save defaults stayed enabled on an unserved namespace')
   assert.equal(rowElements(page).length, 3, 'the provider card disappeared with the defaults card degraded')
@@ -1740,6 +1742,7 @@ await check('a loading or read-only own namespace renders its note and keeps the
   const loading = mountPage({ forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', loadingSnapshot) }) })
   await flush()
   assert.ok(renderedText(loading.page.tree).includes(EN['status.loading']), 'the own-namespace loading note is missing')
+  assert.ok(renderedText(loading.page.tree).includes(EN['fetch.status.loading']), 'the fetch card does not name the fetch timeouts in its loading note')
   loading.page.unmount()
 
   const readOnly = mountPage({ forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', { ...readySnapshot(TUNE_VALUE, 7), writable: false }) }) })

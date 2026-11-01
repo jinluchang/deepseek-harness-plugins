@@ -223,7 +223,7 @@ suite is hermetic — plain Node, `node:assert/strict`, fake Context/form/React 
 network, no server, no file writes — and resolves the **real** `@deepseek-ai/schemastery` and the
 upstream `retry-policy.ts` through `$DSH_HARNESS_CHECKOUT`, so a schema or constant drift fails loudly.
 It checks the manifest and bundle patch, the Host `Config` accept/reject matrix, the `validateTune()`
-rules, `apply()`, the client registration, the en/zh copy parity (95 keys), the exact operation shapes
+rules, `apply()`, the client registration, the en/zh copy parity (97 keys), the exact operation shapes
 for defaults/normal/always/reset/fetch Save/fetch Reset, the validation, refusal, per-write
 gate/skip, and revision-retry paths, the provider directory join and every degradation path, the
 fetch-timeout dispatcher against a recording fake dispatcher and the Host's real `undici` globals
