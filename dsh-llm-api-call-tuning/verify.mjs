@@ -207,6 +207,13 @@ function findAll(tree, predicate) {
   return found
 }
 
+/** The first index of a matching node in depth-first order (-1 when absent). */
+function firstIndex(tree, predicate) {
+  const order = []
+  walk(tree, node => order.push(node))
+  return order.findIndex(predicate)
+}
+
 /** The direct string children of a node, joined. */
 function directText(node) {
   return (node.children ?? []).filter(child => typeof child === 'string').join('')
@@ -225,30 +232,34 @@ const buttonWithText = (tree, keys) => findAll(
   node => node.type === 'button' && keys.some(key => directText(node) === key),
 )[0]
 
-/** The rendered text inputs of one surface, in field order. */
-const numericInputs = tree => findAll(tree, node => node.type === 'input' && node.props.inputMode !== undefined)
+/** Every rendered text input (retry, fetch, and provider-timeout controls). */
+const textInputs = tree => findAll(tree, node => node.type === 'input' && node.props.inputMode !== undefined)
 
 /**
- * The two fetch-timer inputs of the fourth card, in FETCH_KEYS order. They are
- * the only text inputs on the page root carrying the fetch placeholder (the
- * retry controls have none; the timeout card's inputs live in child rows).
+ * The retry numeric inputs of one surface (the four NUMERIC_FIELDS), in field
+ * order. Retry controls carry no placeholder; the fetch and provider-timeout
+ * controls both do, so they never collide with this set.
  */
-const fetchInputs = tree => findAll(
+const retryInputs = tree => findAll(
   tree,
-  node => node.type === 'input' && node.props.inputMode !== undefined && node.props.placeholder === EN['fetch.placeholder'],
+  node => node.type === 'input' && node.props.inputMode !== undefined && node.props.placeholder === undefined,
 )
 
-/**
- * The timeout-card inputs of one timeout row, in `timeoutFieldsFor(family)`
- * order. A timeout input is distinguishable by its numeric placeholder
- * (`300000` / `600000` / `60000`), which no other input carries.
- */
+/** The package/SDK default placeholders of the provider-timeout controls. */
+const TIMEOUT_PLACEHOLDERS = Object.freeze(['300000', '600000', '60000'])
+
+/** The provider-timeout inputs of one merged route card, in family field order. */
 const timeoutInputs = tree => findAll(
   tree,
   node => node.type === 'input'
     && node.props.inputMode !== undefined
-    && node.props.placeholder !== undefined
-    && node.props.placeholder !== EN['fetch.placeholder'],
+    && TIMEOUT_PLACEHOLDERS.includes(node.props.placeholder),
+)
+
+/** The two process-wide fetch-timer inputs of the global card, in FETCH_KEYS order. */
+const fetchInputs = tree => findAll(
+  tree,
+  node => node.type === 'input' && node.props.inputMode !== undefined && node.props.placeholder === EN['fetch.placeholder'],
 )
 
 /** The mode select of one surface. */
@@ -257,28 +268,28 @@ const modeSelect = tree => findAll(tree, node => node.type === 'select')[0]
 /** The rendered code checkboxes of one surface, in RETRYABLE_CODES order. */
 const codeCheckboxes = tree => findAll(tree, node => node.type === 'input' && node.props.type === 'checkbox')
 
-/** Type text into one numeric field by index (maxRetries, initial, max, jitter). */
-function setNumeric(tree, index, text) {
-  const input = numericInputs(tree)[index]
-  if (input === undefined) throw new Error(`no rendered numeric input at index ${String(index)}`)
+/** Type text into one retry numeric field by index (maxRetries, initial, max, jitter). */
+function setRetryInput(tree, index, text) {
+  const input = retryInputs(tree)[index]
+  if (input === undefined) throw new Error(`no rendered retry input at index ${String(index)}`)
   input.props.onChange({ target: { value: text } })
 }
 
 /** Type text into one fetch-timer input by index (headers, body). */
-function setFetchNumeric(tree, index, text) {
+function setFetchInput(tree, index, text) {
   const input = fetchInputs(tree)[index]
   if (input === undefined) throw new Error(`no rendered fetch input at index ${String(index)}`)
   input.props.onChange({ target: { value: text } })
 }
 
-/** Type text into one timeout-row input by index (field order of its family). */
-function setTimeoutNumeric(tree, index, text) {
+/** Type text into one provider-timeout input by index (family field order). */
+function setTimeoutInput(tree, index, text) {
   const input = timeoutInputs(tree)[index]
-  if (input === undefined) throw new Error(`no rendered timeout input at index ${String(index)}`)
+  if (input === undefined) throw new Error(`no rendered provider-timeout input at index ${String(index)}`)
   input.props.onChange({ target: { value: text } })
 }
 
-/** The "Unlimited" preset buttons of one timeout row, one per visible field. */
+/** The "Unlimited" preset buttons of one merged route card, one per visible field. */
 const timeoutPresetButtons = tree => findAll(
   tree,
   node => node.type === 'button' && directText(node) === EN['timeouts.unlimited'],
@@ -303,6 +314,48 @@ const flush = async () => {
   for (let index = 0; index < 10; index += 1) {
     await new Promise(resolve => { setImmediate(resolve) })
   }
+}
+
+/** The two `<section class="dlct-card">` tiers of the merged page. */
+const sectionCards = tree => findAll(tree, node => node.type === 'section' && node.props.className === 'dlct-card')
+
+/** The ONE per-route add-selector of the merged page (its first option is the placeholder). */
+const pickerSelect = tree => findAll(
+  tree,
+  node => node.type === 'select'
+    && node.props.className === 'dlct-select'
+    && (node.children ?? []).some(child => child !== null && child !== undefined && child.type === 'option' && child.props.value === ''),
+)[0]
+
+/** The add-selector's option copy, in render order (placeholder first). */
+function pickerOptions(tree) {
+  const select = pickerSelect(tree)
+  if (select === undefined) return []
+  return findAll(select, node => node.type === 'option').map(node => directText(node))
+}
+
+/** Every merged RouteCard placeholder the page root rendered, in rank order. */
+const routeCardElements = page => findAll(
+  page.tree,
+  node => typeof node.type === 'function' && node.props?.row !== undefined,
+)
+
+/** The merged RouteCard placeholder for one provider key. */
+function routeCardElement(page, provider) {
+  const found = routeCardElements(page).find(node => node.props.row.provider === provider)
+  if (found === undefined) throw new Error(`no merged route card rendered for "${provider}"`)
+  return found
+}
+
+/** Mount one merged route card exactly as the page rendered it. */
+function mountRouteCard(page, provider) {
+  const element = routeCardElement(page, provider)
+  return react.mount(element.type, element.props)
+}
+
+/** Assert one recorded op list, detached from the vm realm. */
+function assertOps(actual, expected, label) {
+  assert.deepEqual(plain(actual), expected, `${label}: ${JSON.stringify(plain(actual))}`)
 }
 
 /* ── config-form double ─────────────────────────────────────────────────── */
@@ -372,7 +425,7 @@ const unavailableSnapshot = { status: 'unavailable', value: undefined, base: und
 /** A still-loading namespace. */
 const loadingSnapshot = { status: 'loading', value: undefined, base: undefined, user: undefined, revision: undefined, writable: false }
 
-/** The six values the global defaults card starts from. */
+/** The six global retry values the global card starts from. */
 const TUNE_VALUE = Object.freeze({
   mode: 'normal',
   maxRetries: 5,
@@ -382,14 +435,22 @@ const TUNE_VALUE = Object.freeze({
   retryableCodes: Object.freeze(['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
 })
 
-/**
- * The fresh-install state of the two process-wide fetch timers: both UNSET
- * (`null` in the host metadata), so the fetch card renders two empty inputs.
- */
-const FETCH_VALUE = Object.freeze({ headersTimeoutMs: null, bodyTimeoutMs: null })
+/** A deep copy of {@link TUNE_VALUE}, for fixtures that need a per-route section. */
+const tuneValue = () => plain(TUNE_VALUE)
 
 /** A ready own-namespace snapshot: the retry defaults plus the given fetch leaves. */
 const tuningSnapshot = (fetch = {}, revision = 7) => readySnapshot({ ...TUNE_VALUE, ...fetch }, revision)
+
+/** A retryPolicy that differs from the global values in every leaf (the base pi-ai override). */
+const PI_AI_RETRY_POLICY = Object.freeze({
+  mode: 'normal',
+  maxRetries: 2,
+  retryableCodes: Object.freeze(['RATE_LIMIT']),
+  backoff: Object.freeze({ initialDelayMs: 250, maxDelayMs: 5_000, jitterRatio: 0.2 }),
+})
+
+/** A pi-ai snapshot value carrying one openrouter profile. */
+const piAiValue = profile => ({ providers: { openrouter: profile } })
 
 /** The provider directory the fake Remote `llm` answers with. */
 const REGISTERED = [
@@ -403,34 +464,32 @@ const CONFIGURABLE = [
   { provider: 'openrouter', displayName: 'OpenRouter', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'openrouter'] },
 ]
 
-/** Build the form doubles for one mount; `overrides` replaces individual namespaces. */
+/**
+ * Build the form doubles for one mount. The base fixture makes exactly ONE
+ * route deviate (openrouter's stored retry policy differs from the global
+ * values), which is the merged page's primitive state; `overrides` replaces
+ * individual namespaces.
+ */
 function makeForms(overrides = {}) {
   const forms = {
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', readySnapshot(TUNE_VALUE, 7)),
+    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot()),
     'llm-deepseek': new BoundForm('llm-deepseek', readySnapshot({}, 2)),
     'llm-deepseek-account': new BoundForm('llm-deepseek-account', readySnapshot({}, 3)),
-    'llm-pi-ai': new BoundForm('llm-pi-ai', readySnapshot({
-      providers: {
-        openrouter: {
-          retryPolicy: {
-            mode: 'normal',
-            maxRetries: 2,
-            retryableCodes: ['RATE_LIMIT'],
-            backoff: { initialDelayMs: 250, maxDelayMs: 5000, jitterRatio: 0.2 },
-          },
-        },
-      },
-    }, 4, { providers: { openrouter: { retryPolicy: { mode: 'normal', maxRetries: 2 } } } })),
+    'llm-pi-ai': new BoundForm('llm-pi-ai', readySnapshot(
+      piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }),
+      4,
+      { providers: { openrouter: { retryPolicy: { mode: 'normal', maxRetries: 2 } } } },
+    )),
   }
   return Object.assign(forms, overrides)
 }
 
 /**
  * Build the form doubles with ONE provider namespace replaced by an explicit
- * snapshot, for the provider-timeout seeding/gating fixtures.
+ * snapshot, for the per-route deviation/seeding/gating fixtures.
  * @param ns - the provider namespace.
  * @param value - the resolved section value.
- * @param user - the user layer (timeout/retry overrides).
+ * @param user - the user layer (retry/timeout overrides).
  * @param revision - the snapshot revision.
  * @returns the complete form set.
  */
@@ -438,8 +497,25 @@ function providerForms(ns, value, user, revision) {
   return makeForms({ [ns]: new BoundForm(ns, readySnapshot(value, revision, user)) })
 }
 
-/** A pi-ai section value with one openrouter profile. */
-const piAiValue = profile => ({ providers: { openrouter: profile } })
+/**
+ * A form set whose only deviating routes are the ones named in `deviations`:
+ * a route deviates through a stored retryPolicy (value-based) and/or through a
+ * timeout leaf present in the user layer.
+ * @param deviations - `{deepseek, account, openrouter}` partial overrides.
+ * @returns the complete form set.
+ */
+function deviationForms(deviations = {}) {
+  const forms = makeForms({
+    'llm-deepseek': new BoundForm('llm-deepseek', readySnapshot(deviations.deepseek?.value ?? {}, 2, deviations.deepseek?.user)),
+    'llm-deepseek-account': new BoundForm('llm-deepseek-account', readySnapshot(deviations.account?.value ?? {}, 3, deviations.account?.user)),
+    'llm-pi-ai': new BoundForm('llm-pi-ai', readySnapshot(
+      deviations.openrouter !== undefined ? piAiValue(deviations.openrouter.value) : {},
+      4,
+      deviations.openrouter !== undefined ? { providers: { openrouter: deviations.openrouter.user } } : undefined,
+    )),
+  })
+  return forms
+}
 
 /**
  * Build a fake client root context with the services the client half injects.
@@ -541,45 +617,27 @@ function mountPage(options = {}) {
 }
 
 /**
- * The rendered RETRY-row placeholders of a mounted page, in order. The timeout
- * card renders rows with the same `row` prop, so the retry set is identified by
- * its `defaultsValues` prop (the timeout rows carry `bodyTimeoutMs` instead).
+ * The global card's retry sub-group values, from the page root. The retry
+ * inputs of a route card never appear in the root tree (that card is a child
+ * placeholder), so an unmounted page carries exactly the global four.
  */
-const rowElements = page => findAll(
-  page.tree,
-  node => typeof node.type === 'function' && node.props?.row !== undefined && 'defaultsValues' in node.props,
-)
+const globalRetryValues = page => retryInputs(page.tree).map(input => input.props.value)
 
-/** The rendered PROVIDER-TIMEOUT row placeholders of a mounted page, in order. */
-const timeoutRowElements = page => findAll(
-  page.tree,
-  node => typeof node.type === 'function' && node.props?.row !== undefined && 'bodyTimeoutMs' in node.props,
-)
+/** The single fetch sub-group of the global card. */
+const globalFetchValues = page => fetchInputs(page.tree).map(input => input.props.value)
 
-/** The retry-row placeholder for one provider key. */
-function rowElement(page, provider) {
-  const found = rowElements(page).find(node => node.props.row.provider === provider)
-  if (found === undefined) throw new Error(`no retry row rendered for "${provider}"`)
-  return found
+/** The global card node (the FIRST `section.dlct-card`). */
+function globalCard(page) {
+  const cards = sectionCards(page.tree)
+  if (cards.length === 0) throw new Error('the page rendered no global card')
+  return cards[0]
 }
 
-/** The timeout-row placeholder for one provider key. */
-function timeoutRowElement(page, provider) {
-  const found = timeoutRowElements(page).find(node => node.props.row.provider === provider)
-  if (found === undefined) throw new Error(`no timeout row rendered for "${provider}"`)
-  return found
-}
-
-/** Mount one retry-row child exactly as the page renders it. */
-function mountRow(page, provider) {
-  const element = rowElement(page, provider)
-  return react.mount(element.type, element.props)
-}
-
-/** Mount one timeout-row child exactly as the page renders it. */
-function mountTimeoutRow(page, provider) {
-  const element = timeoutRowElement(page, provider)
-  return react.mount(element.type, element.props)
+/** The per-route card node (the SECOND `section.dlct-card`). */
+function providersCard(page) {
+  const cards = sectionCards(page.tree)
+  if (cards.length < 2) throw new Error(`the page rendered ${cards.length} card tiers, expected two`)
+  return cards[1]
 }
 
 /* ══ 1. manifest ═══════════════════════════════════════════════════════════ */
@@ -1985,11 +2043,57 @@ await check('apply registers one settings.section immediately, with the frozen i
   assert.equal(ctx.state.dictionaries[0].ns, 'llm-api-call-tuning', 'the dictionary NS drifted')
 })
 
-await check('the en and zh dictionaries carry the same 121 non-empty keys, and English has no CJK text', () => {
+await check('the en and zh dictionaries carry the same 120-key set and every statically referenced key resolves', () => {
   const en = COPY.en
   const zh = COPY.zh
-  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key sets')
-  assert.equal(Object.keys(en).length, 121, `the dictionary key count drifted to ${Object.keys(en).length}`)
+  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key SETS')
+  assert.equal(Object.keys(en).length, 120, `the per-language dictionary key count drifted to ${Object.keys(en).length}`)
+  /* Static audit: every key the client can hand to its translate helper must
+   * resolve in BOTH languages. Three sources are unioned so a new call site
+   * cannot slip through:
+   * 1. literal `t('key')` calls;
+   * 2. table-driven template families, expanded from the frozen metadata;
+   * 3. dot-namespaced string literals (keys stored in maps and passed
+   *    indirectly, e.g. `errors.maxRetries = 'error.maxRetries'`), except the
+   *    two slot/service identifiers this module also spells with dots. */
+  const RETRY_NUMERIC_KEYS = ['maxRetries', 'initialDelayMs', 'maxDelayMs', 'jitterRatio']
+  const FETCH_KEY_NAMES = ['headersTimeoutMs', 'bodyTimeoutMs']
+  const TIMEOUT_KEY_NAMES = ['streamIdleTimeoutMs', 'timeoutMs', 'filesApiTimeoutMs']
+  const ALL_FIELD_KEYS = [...RETRY_NUMERIC_KEYS, ...FETCH_KEY_NAMES, ...TIMEOUT_KEY_NAMES]
+  const templateFamilies = [
+    { template: 'mode.${mode}', values: ['normal', 'always'] },
+    { template: 'code.${code}', values: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'] },
+    { template: 'field.${field.key}.label', values: ALL_FIELD_KEYS },
+    { template: 'field.${field.key}.unit', values: [...RETRY_NUMERIC_KEYS, ...FETCH_KEY_NAMES] },
+    { template: 'field.${field.key}.description', values: ALL_FIELD_KEYS },
+    { template: 'field.${field.key}.default', values: RETRY_NUMERIC_KEYS },
+    { template: 'apply.outcome.${applyOutcomes[rowKey(row)]}', values: ['saved', 'refused', 'managed', 'skipped'] },
+  ]
+  const referenced = new Set()
+  for (const match of clientSource.matchAll(/\bt\(\s*(['"])([^'"]+)\1/g)) referenced.add(match[2])
+  const templatesFound = new Set()
+  for (const match of clientSource.matchAll(/\bt\(\s*`([^`]*)`\s*\)/g)) templatesFound.add(match[1])
+  const knownTemplates = new Set(templateFamilies.map(family => family.template))
+  for (const template of templatesFound) {
+    if (template.includes('${')) {
+      assert.ok(knownTemplates.has(template), `the static dictionary audit needs an expansion for t(\`${template}\`)`)
+    }
+  }
+  for (const family of templateFamilies) {
+    assert.ok(templatesFound.has(family.template), `the static dictionary audit lost the template family ${family.template}`)
+    for (const value of family.values) {
+      referenced.add(family.template.replace(/\$\{[^}]+\}/, value))
+    }
+  }
+  const allowed = new Set(['remote.llm', 'settings.section'])
+  for (const match of clientSource.matchAll(/'([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9_]+)+)'/g)) {
+    if (!allowed.has(match[1])) referenced.add(match[1])
+  }
+  assert.equal(referenced.size, 120, `the static reference set drifted to ${referenced.size} keys; update the audit when the page gains a call site`)
+  const missing = [...referenced].filter(key => typeof en[key] !== 'string' || typeof zh[key] !== 'string').sort()
+  assert.deepEqual(missing, [], `the client references dictionary keys missing from en/zh: ${JSON.stringify(missing)}`)
+  /* Copy quality: English carries no CJK; every value in both languages is a
+   * non-empty string. */
   const cjk = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
   for (const [key, copy] of Object.entries(en)) {
     assert.equal(typeof copy, 'string', `en.${key} is not a string`)
@@ -2000,36 +2104,31 @@ await check('the en and zh dictionaries carry the same 121 non-empty keys, and E
     assert.equal(typeof copy, 'string', `zh.${key} is not a string`)
     assert.ok(copy.length > 0, `zh.${key} is blank`)
   }
+  /* The user-facing families the merged page depends on must be named. */
   for (const key of [
-    'nav', 'title', 'intro', 'defaults.heading', 'defaults.description', 'defaults.note',
-    'defaults.save', 'defaults.saving', 'defaults.applyAll', 'defaults.applying', 'defaults.applyAllNote',
-    'providers.heading', 'providers.description', 'providers.loading', 'providers.unavailable',
-    'providers.error', 'providers.empty', 'provider.namespace', 'provider.source.override',
-    'provider.source.default', 'provider.status.dormant', 'provider.status.noSettings',
-    'provider.status.unavailable', 'provider.useDefaults', 'provider.reset', 'provider.save',
-    'provider.saving', 'provider.resetting', 'provider.alwaysNote',
+    'nav', 'title', 'intro', 'global.heading', 'global.retriesHeading', 'global.save',
+    'global.saving', 'global.note', 'defaults.description', 'defaults.applyAll', 'defaults.applying',
+    'defaults.applyAllNote', 'providers.heading', 'providers.description', 'providers.loading',
+    'providers.unavailable', 'providers.error', 'providers.empty', 'routes.pickerLabel',
+    'routes.pickerPlaceholder', 'routes.add', 'routes.allListed', 'routes.empty',
+    'routes.retryHeading', 'routes.timeoutsHeading', 'routes.pickedHint',
+    'provider.namespace', 'provider.source.override', 'provider.source.default',
+    'provider.status.dormant', 'provider.status.noSettings', 'provider.status.unavailable',
+    'provider.useDefaults', 'provider.reset', 'provider.save', 'provider.saving',
+    'provider.resetting', 'provider.alwaysNote',
     'field.mode.label', 'field.maxRetries.label', 'field.initialDelayMs.label',
     'field.maxDelayMs.label', 'field.jitterRatio.label', 'field.retryableCodes.label',
     'mode.normal', 'mode.always',
     'code.EMPTY_RESPONSE', 'code.RATE_LIMIT', 'code.SERVER', 'code.TIMEOUT', 'code.TRANSPORT',
     'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved', 'status.reset',
-    'error.refused', 'error.managed', 'error.mode', 'error.maxRetries', 'error.initialDelayMs',
-    'error.maxDelayMs', 'error.initialDelayOrder', 'error.jitterRatio', 'error.retryableCodes',
-    'fetch.heading', 'fetch.description', 'fetch.note', 'fetch.save', 'fetch.saving',
-    'fetch.reset', 'fetch.resetting', 'fetch.placeholder', 'fetch.hint',
-    'fetch.status.loading', 'fetch.status.unavailable',
-    'field.headersTimeoutMs.label', 'field.headersTimeoutMs.description', 'field.headersTimeoutMs.unit',
-    'field.bodyTimeoutMs.label', 'field.bodyTimeoutMs.description', 'field.bodyTimeoutMs.unit',
-    'error.headersTimeoutMs', 'error.bodyTimeoutMs', 'status.fetchReset',
-    'timeouts.heading', 'timeouts.description', 'timeouts.note', 'timeouts.unit', 'timeouts.hint',
-    'timeouts.unlimited', 'timeouts.save', 'timeouts.saving', 'timeouts.reset', 'timeouts.resetting',
-    'timeouts.resetDone', 'timeouts.protocol', 'timeouts.protocol.catalog',
-    'timeouts.advisory.sdkFirst', 'timeouts.advisory.transportFirst',
-    'field.streamIdleTimeoutMs.label', 'field.streamIdleTimeoutMs.description',
-    'field.timeoutMs.label', 'field.timeoutMs.description',
-    'field.filesApiTimeoutMs.label', 'field.filesApiTimeoutMs.description',
+    'status.routeReset', 'status.fetchReset', 'error.refused', 'error.managed',
+    'fetch.heading', 'fetch.description', 'fetch.reset', 'fetch.resetting', 'fetch.placeholder',
+    'fetch.hint', 'field.headersTimeoutMs.label', 'field.bodyTimeoutMs.label',
+    'timeouts.unit', 'timeouts.hint', 'timeouts.unlimited', 'timeouts.protocol',
+    'timeouts.protocol.catalog', 'timeouts.advisory.sdkFirst', 'timeouts.advisory.transportFirst',
+    'field.streamIdleTimeoutMs.label', 'field.timeoutMs.label', 'field.filesApiTimeoutMs.label',
     'error.streamIdleTimeoutMs', 'error.timeoutMs', 'error.filesApiTimeoutMs',
-    'apply.outcome.saved', 'apply.outcome.refused', 'apply.outcome.managed',
+    'apply.outcome.saved', 'apply.outcome.refused', 'apply.outcome.managed', 'apply.outcome.skipped',
   ]) {
     assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing the key "${key}"`)
     assert.ok(typeof zh[key] === 'string' && zh[key].length > 0, `zh is missing the key "${key}"`)
@@ -2061,275 +2160,233 @@ await check('a direct apply() without ctx.configForms registers no page (belt-an
   assert.equal(ctx.state.dictionaries.length, 1, 'the dictionaries should still be registered')
 })
 
-/* ══ 9. the page render ════════════════════════════════════════════════════ */
+/* ══ 9. the merged page render ═════════════════════════════════════════════ */
 
-await check('the page renders the defaults card with one control per retry field, both actions, and the empty fetch card', async () => {
+await check('the page renders ONE global card (retries + fetch timeouts) and ONE combined per-route section', async () => {
   const { page, ctx } = mountPage()
   await flush()
+  const cards = sectionCards(page.tree)
+  assert.equal(cards.length, 2, `the merged page must render exactly 2 section.dlct-card tiers, got ${cards.length}`)
+  assert.deepEqual(
+    findAll(page.tree, node => node.type === 'h3').map(node => directText(node)),
+    [EN['global.heading'], EN['providers.heading']],
+    'the two card headings drifted',
+  )
+  assert.ok(
+    firstIndex(page.tree, node => node === cards[0]) < firstIndex(page.tree, node => node === cards[1]),
+    'the global card must precede the per-route section',
+  )
+  const global = cards[0]
+  assert.deepEqual(
+    findAll(global, node => node.type === 'h4').map(node => directText(node)),
+    [EN['global.retriesHeading'], EN['fetch.heading']],
+    'the global card must carry the Retries AND Fetch timeouts sub-groups',
+  )
+  assert.equal(modeSelect(global).props.value, 'normal', 'the global mode is not seeded from the snapshot')
+  assert.deepEqual(retryInputs(global).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'the global retry controls are not seeded from the defaults')
+  assert.deepEqual(codeCheckboxes(global).map(box => box.props.checked), [true, true, true, true, true], 'not every default retryable code is checked')
+  assert.deepEqual(fetchInputs(global).map(input => input.props.value), ['', ''], 'the shipped fetch draft must be empty (unset), never a seeded timer')
+  assert.deepEqual(
+    fetchInputs(global).map(input => input.props.placeholder),
+    [EN['fetch.placeholder'], EN['fetch.placeholder']],
+    'the fetch inputs lost the system-default placeholder',
+  )
+  assert.equal(textInputs(page.tree).length, 6, `the page root rendered ${textInputs(page.tree).length} text inputs (expected the global 4 retry + 2 fetch; route cards are child placeholders)`)
   const text = renderedText(page.tree)
-  for (const key of ['title', 'intro', 'defaults.heading', 'defaults.description', 'defaults.note', 'defaults.applyAllNote', 'providers.heading', 'providers.description', 'timeouts.heading', 'timeouts.description', 'timeouts.note', 'fetch.heading', 'fetch.description', 'fetch.note']) {
-    assert.ok(text.includes(EN[key]), `the page is missing the "${key}" copy`)
+  for (const key of ['title', 'intro', 'global.description', 'global.retriesHeading', 'global.note', 'defaults.description', 'defaults.applyAllNote', 'fetch.description', 'providers.description']) {
+    assert.ok(text.includes(EN[key]), `the merged page is missing the "${key}" copy`)
   }
-  assert.equal(numericInputs(page.tree).length, 6, `the page rendered ${numericInputs(page.tree).length} numeric inputs (four retry + two fetch)`)
-  assert.ok(modeSelect(page.tree) !== undefined, 'the defaults card has no mode select')
-  assert.equal(codeCheckboxes(page.tree).length, 5, `the defaults card rendered ${codeCheckboxes(page.tree).length} code checkboxes`)
-  assert.deepEqual(numericInputs(page.tree).map(input => input.props.value), ['5', '500', '10000', '0.1', '', ''], 'the retry controls are not seeded from the defaults, or the fetch controls are not empty (unset)')
-  assert.equal(modeSelect(page.tree).props.value, 'normal', 'the defaults mode is not normal')
-  assert.deepEqual(codeCheckboxes(page.tree).map(box => box.props.checked), [true, true, true, true, true], 'not every default code is checked')
-  for (const key of ['defaults.save', 'defaults.applyAll', 'fetch.save', 'fetch.reset']) {
-    assert.ok(buttonWithText(page.tree, [EN[key]]) !== undefined, `the "${key}" action is missing`)
+  for (const key of ['global.save', 'defaults.applyAll', 'fetch.reset']) {
+    assert.ok(buttonWithText(page.tree, [EN[key]]) !== undefined, `the "${key}" action is missing from the global card`)
   }
-  assert.deepEqual(ctx.state.formRequests, ['llm-api-call-tuning', 'llm-deepseek-account', 'llm-deepseek', 'llm-pi-ai'], `apply/mount requested forms ${JSON.stringify(ctx.state.formRequests)}`)
+  assert.deepEqual(
+    ctx.state.formRequests,
+    ['llm-api-call-tuning', 'llm-deepseek-account', 'llm-deepseek', 'llm-pi-ai'],
+    `apply/mount requested forms ${JSON.stringify(ctx.state.formRequests)}`,
+  )
 })
 
-await check('the cards render in order: defaults, provider retry policies, provider timeouts, fetch timeouts', async () => {
+await check('the old separate "global defaults", "provider retry policies", "provider timeouts", and "fetch timeouts" cards are GONE', async () => {
   const { page } = mountPage()
   await flush()
-  const headings = findAll(page.tree, node => node.type === 'h3').map(node => directText(node))
+  const sections = findAll(page.tree, node => node.type === 'section')
+  assert.equal(sections.length, 2, `the page rendered ${sections.length} section nodes; the two separate per-route tiers must be gone`)
+  for (const node of sections) assert.equal(node.props.className, 'dlct-card', `an unexpected section class survived: ${String(node.props.className)}`)
   assert.deepEqual(
-    headings,
-    [EN['defaults.heading'], EN['providers.heading'], EN['timeouts.heading'], EN['fetch.heading']],
-    `the card order drifted: ${JSON.stringify(headings)}`,
+    findAll(page.tree, node => node.type === 'h3').map(node => directText(node)),
+    [EN['global.heading'], EN['providers.heading']],
+    'a tier-level heading survived the merge',
   )
-  assert.equal(timeoutRowElements(page).length, 3, `the timeout card rendered ${timeoutRowElements(page).length} row placeholders, expected one per active route`)
-  const inputs = fetchInputs(page.tree)
-  assert.equal(inputs.length, host.FETCH_KEYS.length, `the fetch card rendered ${inputs.length} inputs, expected one per fetch key`)
-  assert.deepEqual(inputs.map(input => input.props.value), ['', ''], 'the shipped fetch draft must be empty (unset), never a seeded 1800000')
-  assert.deepEqual(inputs.map(input => input.props.placeholder), [EN['fetch.placeholder'], EN['fetch.placeholder']], 'the fetch inputs lost the system-default placeholder')
+  for (const key of [
+    'defaults.heading', 'defaults.note', 'defaults.save', 'defaults.saving',
+    'timeouts.heading', 'timeouts.description', 'timeouts.note',
+    'timeouts.save', 'timeouts.saving', 'timeouts.reset', 'timeouts.resetting', 'timeouts.resetDone',
+    'fetch.save', 'fetch.saving', 'fetch.note', 'fetch.status.loading', 'fetch.status.unavailable',
+  ]) {
+    assert.equal(EN[key], undefined, `the removed tier-level dictionary key "${key}" is back`)
+  }
   const text = renderedText(page.tree)
-  for (const key of ['field.headersTimeoutMs.label', 'field.headersTimeoutMs.description', 'field.bodyTimeoutMs.label', 'field.bodyTimeoutMs.description', 'fetch.hint']) {
-    assert.ok(text.includes(EN[key]), `the fetch card is missing the "${key}" copy`)
+  for (const oldCopy of ['Global defaults', 'Provider timeouts', 'Save defaults', 'Save timeouts', 'Reset timeouts']) {
+    assert.equal(text.includes(oldCopy), false, `the removed tier copy "${oldCopy}" is still rendered`)
+  }
+  assert.equal(buttonWithText(page.tree, [EN['timeouts.unlimited']]), undefined, 'a detached provider-timeout tier leaked a preset button')
+})
+
+await check('the ONE add-selector sits ABOVE the list, excludes listed routes, and exactly the deviating route renders', async () => {
+  const { page } = mountPage()
+  await flush()
+  const picker = pickerSelect(page.tree)
+  assert.ok(picker !== undefined, 'the per-route add-selector is missing')
+  const cards = routeCardElements(page)
+  assert.equal(cards.length, 1, `the page rendered ${cards.length} merged route cards, expected exactly one (openrouter deviates)`)
+  assert.equal(cards[0].props.row.provider, 'openrouter', 'the listed card is not the deviating route')
+  assert.ok(
+    firstIndex(page.tree, node => node === picker) < firstIndex(page.tree, node => node === cards[0]),
+    'the add-selector must sit ABOVE the route list',
+  )
+  assert.deepEqual(
+    pickerOptions(page.tree),
+    [EN['routes.pickerPlaceholder'], 'DeepSeek Account (deepseek-account)', 'DeepSeek (deepseek-official)'],
+    'the selector options drifted: a listed route must be excluded',
+  )
+  assert.equal(picker.props.disabled, false, 'the selector disabled although non-listed routes are pickable')
+  assert.equal(picker.props.value, '', 'the selector is not on the placeholder')
+  assert.equal(buttonWithText(page.tree, [EN['routes.add']]).props.disabled, true, 'Add stayed enabled before a route is picked')
+
+  const card = mountRouteCard(page, 'openrouter')
+  assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['2', '250', '5000', '0.2'], 'the merged card is not seeded from the effective retry policy')
+  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [false, true, false, false, false], 'the merged card did not select the stored RATE_LIMIT code')
+  assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.value), ['', ''], 'an untouched timeout half must start blank')
+  assert.deepEqual(
+    findAll(card.tree, node => node.type === 'h5').map(node => directText(node)),
+    [EN['routes.retryHeading'], EN['routes.timeoutsHeading']],
+    'the merged card lost one of its two sub-groups',
+  )
+  assert.ok(renderedText(card.tree).includes(EN['provider.source.override']), 'the user-layer override badge is missing')
+  for (const key of ['provider.save', 'provider.reset', 'provider.useDefaults']) {
+    assert.ok(buttonWithText(card.tree, [EN[key]]) !== undefined, `the merged card is missing its "${key}" action`)
+  }
+  assert.equal(
+    findAll(card.tree, node => node.type === 'div' && node.props.className === 'dlct-actions').length,
+    1,
+    'the merged card must have exactly ONE action row',
+  )
+  card.unmount()
+})
+
+await check('a stored retry policy EQUAL to the global values stays hidden but pickable, and a route without an override never renders', async () => {
+  const equalForms = deviationForms({
+    deepseek: { value: { retryPolicy: tuneValue() }, user: { retryPolicy: { mode: 'normal' } } },
+  })
+  const equal = mountPage({ forms: equalForms })
+  await flush()
+  assert.equal(routeCardElements(equal.page).length, 0, 'a stored-retry-equal route rendered a card')
+  assert.deepEqual(
+    pickerOptions(equal.page.tree),
+    [EN['routes.pickerPlaceholder'], 'DeepSeek Account (deepseek-account)', 'DeepSeek (deepseek-official)', 'OpenRouter (openrouter)'],
+    'an equal-to-global route must stay pickable',
+  )
+  assert.equal(pickerSelect(equal.page.tree).props.disabled, false, 'the selector disabled although routes are pickable')
+  assert.ok(renderedText(equal.page.tree).includes(EN['routes.empty']), 'the empty-state line is missing when nothing deviates')
+  equal.page.unmount()
+
+  const base = mountPage()
+  await flush()
+  for (const provider of ['deepseek-official', 'deepseek-account']) {
+    assert.equal(
+      routeCardElements(base.page).some(node => node.props.row.provider === provider),
+      false,
+      `a route with no stored overrides rendered a card: ${provider}`,
+    )
   }
 })
 
-await check('an unserved own namespace degrades to status.unavailable and disables the card', async () => {
-  const forms = makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', unavailableSnapshot) })
+await check('a route deviating ONLY by a stored timeout field is listed, and its merged card shows retry AND timeout controls', async () => {
+  const forms = deviationForms({ deepseek: { value: {}, user: { streamIdleTimeoutMs: 450_000 } } })
   const { page } = mountPage({ forms })
   await flush()
-  const text = renderedText(page.tree)
-  assert.ok(text.includes(EN['status.unavailable']), 'the own-namespace unavailable note is missing')
-  assert.ok(text.includes(EN['fetch.status.unavailable']), 'the fetch card does not name the fetch timeouts in its unavailable note')
-  assert.equal(numericInputs(page.tree).every(input => input.props.disabled === true), true, 'the controls stayed editable on an unserved namespace')
-  assert.equal(buttonWithText(page.tree, [EN['defaults.save']]).props.disabled, true, 'Save defaults stayed enabled on an unserved namespace')
-  assert.equal(rowElements(page).length, 3, 'the provider retry card disappeared with the defaults card degraded')
-  assert.equal(timeoutRowElements(page).length, 3, 'the provider timeout card disappeared with the defaults card degraded')
+  const cards = routeCardElements(page)
+  assert.equal(cards.length, 1, `the timeout-only route did not render exactly one card (got ${cards.length})`)
+  assert.equal(cards[0].props.row.provider, 'deepseek-official', 'the timeout-only deviating route is missing')
+  const card = mountRouteCard(page, 'deepseek-official')
+  assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.value), ['450000', ''], 'the timeout half is not seeded from the USER layer')
+  assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.placeholder), ['300000', '60000'], 'the DeepSeek timeout placeholders drifted')
+  assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'a timeout-only route must still show its effective retry half')
+  assert.deepEqual(
+    findAll(card.tree, node => node.type === 'h5').map(node => directText(node)),
+    [EN['routes.retryHeading'], EN['routes.timeoutsHeading']],
+    'the timeout-only card lost a sub-group',
+  )
+  const text = renderedText(card.tree)
+  assert.ok(text.includes(EN['provider.source.default']), 'the retry half must stay on the default badge')
+  assert.ok(text.includes(EN['provider.source.override']), 'the stored timeout field lost its override badge')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled with no staged edit')
+  card.unmount()
 })
 
-await check('a loading or read-only own namespace renders its note and keeps the card disabled', async () => {
-  const loading = mountPage({ forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', loadingSnapshot) }) })
+await check('the empty state renders when nothing deviates, and the all-listed note replaces the options when every route deviates', async () => {
+  const empty = mountPage({ forms: deviationForms() })
   await flush()
-  assert.ok(renderedText(loading.page.tree).includes(EN['status.loading']), 'the own-namespace loading note is missing')
-  assert.ok(renderedText(loading.page.tree).includes(EN['fetch.status.loading']), 'the fetch card does not name the fetch timeouts in its loading note')
-  loading.page.unmount()
+  assert.equal(routeCardElements(empty.page).length, 0, 'a route rendered although nothing deviates')
+  assert.ok(renderedText(empty.page.tree).includes(EN['routes.empty']), 'the empty-state line is missing')
+  assert.equal(pickerSelect(empty.page.tree).props.disabled, false, 'the selector disabled although every route is pickable')
+  assert.equal(renderedText(empty.page.tree).includes(EN['routes.allListed']), false, 'the all-listed note doubled up with the empty state')
+  empty.page.unmount()
 
-  const readOnly = mountPage({ forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', { ...readySnapshot(TUNE_VALUE, 7), writable: false }) }) })
+  const all = deviationForms({
+    deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 3 } }, user: { retryPolicy: { maxRetries: 3 } } },
+    account: { value: { retryPolicy: { mode: 'normal', maxRetries: 4 } }, user: { retryPolicy: { maxRetries: 4 } } },
+    openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { mode: 'normal', maxRetries: 2 } } },
+  })
+  const full = mountPage({ forms: all })
   await flush()
-  assert.ok(renderedText(readOnly.page.tree).includes(EN['status.readOnly']), 'the read-only note is missing')
-  assert.equal(numericInputs(readOnly.page.tree).every(input => input.props.disabled === true), true, 'a read-only namespace left the controls enabled')
+  assert.deepEqual(
+    routeCardElements(full.page).map(node => node.props.row.provider),
+    ['deepseek-account', 'deepseek-official', 'openrouter'],
+    'the all-listed card order drifted',
+  )
+  assert.equal(pickerSelect(full.page.tree).props.disabled, true, 'the selector stayed enabled although every route is listed')
+  const fullText = renderedText(full.page.tree)
+  assert.ok(fullText.includes(EN['routes.allListed']), 'the all-listed note is missing')
+  assert.equal(fullText.includes(EN['routes.empty']), false, 'the empty state rendered while three routes deviate')
 })
 
-await check('a bare root render shows only provider placeholders, not provider controls', async () => {
-  const { page } = mountPage()
+await check('picking a route materializes exactly ONE card prefilled from effective values and writes nothing; Reset closes it locally', async () => {
+  const { page, ctx } = mountPage()
   await flush()
-  const rows = rowElements(page)
-  assert.equal(rows.length, 3, `the root render showed ${rows.length} provider retry rows`)
-  for (const node of rows) {
-    for (const prop of ['row', 't', 'form', 'defaultsValues', 'applyOutcome']) {
-      assert.ok(prop in node.props, `a provider placeholder is missing the "${prop}" prop`)
-    }
-    assert.equal(typeof node.props.defaultsValues, 'object', 'the placeholder got no validated defaults')
-  }
-  const timeoutRows = timeoutRowElements(page)
-  assert.equal(timeoutRows.length, 3, `the root render showed ${timeoutRows.length} provider timeout rows`)
-  for (const node of timeoutRows) {
-    for (const prop of ['row', 't', 'form', 'bodyTimeoutMs']) {
-      assert.ok(prop in node.props, `a timeout placeholder is missing the "${prop}" prop`)
-    }
-  }
-  for (const key of ['provider.save', 'provider.reset', 'timeouts.reset']) {
-    assert.equal(buttonWithText(page.tree, [EN[key]]), undefined, `the root render rendered a "${key}" control`)
-  }
-  const timeoutSection = findAll(page.tree, node => node.type === 'section')[2]
-  assert.ok(timeoutSection !== undefined, 'the timeout card section is missing from the root render')
-  assert.equal(findAll(timeoutSection, node => node.type === 'button').length, 0, 'the timeout card leaked a Save/Reset control into the root render (its rows are child placeholders)')
-  assert.equal(numericInputs(page.tree).length, 6, 'provider controls leaked into the root render; only the defaults card (four) and fetch card (two) should render')
+  pickerSelect(page.tree).props.onChange({ target: { value: 'llm-deepseek||deepseek-official' } })
+  await flush()
+  assert.equal(buttonWithText(page.tree, [EN['routes.add']]).props.disabled, false, 'Add stayed disabled after picking a route')
+  buttonWithText(page.tree, [EN['routes.add']]).props.onClick()
+  await flush()
+  assert.deepEqual(
+    routeCardElements(page).map(node => node.props.row.provider),
+    ['deepseek-official', 'openrouter'],
+    'picking a route did not add exactly one card',
+  )
+  assert.deepEqual(
+    pickerOptions(page.tree),
+    [EN['routes.pickerPlaceholder'], 'DeepSeek Account (deepseek-account)'],
+    'the picked route stayed in the selector',
+  )
+  const card = mountRouteCard(page, 'deepseek-official')
+  assert.ok(renderedText(card.tree).includes(EN['routes.pickedHint']), 'the picked-card hint is missing')
+  assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'the picked card is not prefilled from the effective values')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled before an edit')
+  assert.equal(ctx.configForms.get('llm-deepseek').calls.length, 0, 'picking a route wrote its namespace')
+  assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 0, 'picking a route wrote a listed route namespace')
+  buttonWithText(card.tree, [EN['provider.reset']]).props.onClick()
+  await flush()
+  assert.deepEqual(
+    routeCardElements(page).map(node => node.props.row.provider),
+    ['openrouter'],
+    'Reset on a picked-but-unstored card did not close it locally',
+  )
+  assert.equal(ctx.configForms.get('llm-deepseek').calls.length, 0, 'closing a picked card wrote an unset')
+  card.unmount()
 })
 
-await check('the page joins the directory in rank order and each row paints its effective value and badge', async () => {
-  const { page } = mountPage()
-  await flush()
-  const order = rowElements(page).map(node => node.props.row.provider)
-  assert.deepEqual(order, ['deepseek-account', 'deepseek-official', 'openrouter'], `the joined retry-row order drifted: ${JSON.stringify(order)}`)
-  const timeoutOrder = timeoutRowElements(page).map(node => node.props.row.provider)
-  assert.deepEqual(timeoutOrder, ['deepseek-account', 'deepseek-official', 'openrouter'], `the joined timeout-row order drifted: ${JSON.stringify(timeoutOrder)}`)
-
-  const piAi = mountRow(page, 'openrouter')
-  const piText = renderedText(piAi.tree)
-  assert.ok(piText.includes(EN['provider.source.override']), 'the user-layer override badge is missing')
-  assert.deepEqual(numericInputs(piAi.tree).map(input => input.props.value), ['2', '250', '5000', '0.2'], 'the row is not seeded from the effective provider policy')
-  assert.deepEqual(codeCheckboxes(piAi.tree).map(box => box.props.checked), [false, true, false, false, false], 'the row did not select the stored RATE_LIMIT code')
-  piAi.unmount()
-
-  const official = mountRow(page, 'deepseek-official')
-  assert.ok(renderedText(official.tree).includes(EN['provider.source.default']), 'the default badge is missing on an un-overridden row')
-  assert.deepEqual(numericInputs(official.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'an empty provider policy did not fall back to the code defaults')
-  official.unmount()
-})
-
-await check('the timeout card renders one row per active route with only that family\'s controls and blank placeholders', async () => {
-  const { page } = mountPage()
-  await flush()
-  const piAi = mountTimeoutRow(page, 'openrouter')
-  assert.equal(timeoutInputs(piAi.tree).length, 2, 'a pi-ai timeout row must render streamIdleTimeoutMs + timeoutMs only')
-  assert.deepEqual(timeoutInputs(piAi.tree).map(input => input.props.placeholder), ['300000', '600000'], 'the pi-ai timeout placeholders drifted')
-  assert.deepEqual(timeoutInputs(piAi.tree).map(input => input.props.value), ['', ''], 'an untouched route must start blank (package/SDK default), never the effective default')
-  const piText = renderedText(piAi.tree)
-  for (const key of ['field.streamIdleTimeoutMs.label', 'field.timeoutMs.label', 'timeouts.unit', 'timeouts.hint', 'timeouts.unlimited']) {
-    assert.ok(piText.includes(EN[key]), `the pi-ai timeout row is missing the "${key}" copy`)
-  }
-  assert.equal(piText.includes(EN['field.filesApiTimeoutMs.label']), false, 'a pi-ai row rendered the DeepSeek-only Files API control')
-  assert.ok(piText.includes(EN['provider.source.default']), 'an untouched timeout field must show the default badge')
-  piAi.unmount()
-
-  const official = mountTimeoutRow(page, 'deepseek-official')
-  assert.equal(timeoutInputs(official.tree).length, 2, 'a DeepSeek timeout row must render streamIdleTimeoutMs + filesApiTimeoutMs only')
-  assert.deepEqual(timeoutInputs(official.tree).map(input => input.props.placeholder), ['300000', '60000'], 'the DeepSeek timeout placeholders drifted')
-  const officialText = renderedText(official.tree)
-  assert.equal(officialText.includes(EN['field.timeoutMs.label']), false, 'a DeepSeek row rendered the pi-ai-only request-timeout control')
-  for (const key of ['field.streamIdleTimeoutMs.label', 'field.filesApiTimeoutMs.label']) {
-    assert.ok(officialText.includes(EN[key]), `the DeepSeek timeout row is missing the "${key}" copy`)
-  }
-  official.unmount()
-
-  const account = mountTimeoutRow(page, 'deepseek-account')
-  assert.deepEqual(timeoutInputs(account.tree).map(input => input.props.placeholder), ['300000', '60000'], 'the DeepSeek Account timeout row drifted')
-  account.unmount()
-})
-
-await check('a timeout row seeds from the USER layer only, paints override badges, and shows each namespace/protocol', async () => {
-  const seededPi = providerForms('llm-pi-ai',
-    piAiValue({ api: 'openai-completions' }),
-    { providers: { openrouter: { streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 } } },
-    4)
-  const seeded = mountPage({ forms: seededPi })
-  await flush()
-  const row = mountTimeoutRow(seeded.page, 'openrouter')
-  assert.deepEqual(timeoutInputs(row.tree).map(input => input.props.value), ['1800000', '900000'], 'the timeout draft is not seeded from the user layer')
-  assert.ok(renderedText(row.tree).includes(EN['provider.source.override']), 'a user-layer timeout override did not paint the override badge')
-  const seededText = renderedText(row.tree)
-  assert.ok(seededText.includes('openai-completions'), 'the pi-ai protocol is not rendered from the route snapshot')
-  assert.ok(seededText.includes('llm-pi-ai'), 'the timeout row does not name its namespace')
-  row.unmount()
-  seeded.page.unmount()
-
-  const effectiveOnly = providerForms('llm-pi-ai', piAiValue({ streamIdleTimeoutMs: 300_000, timeoutMs: 600_000 }), {}, 4)
-  const effective = mountPage({ forms: effectiveOnly })
-  await flush()
-  const effectiveRow = mountTimeoutRow(effective.page, 'openrouter')
-  assert.deepEqual(timeoutInputs(effectiveRow.tree).map(input => input.props.value), ['', ''], 'a package/SDK default in the effective value was painted as an override')
-  effectiveRow.unmount()
-  effective.page.unmount()
-
-  const seededDeepSeek = providerForms('llm-deepseek',
-    { streamIdleTimeoutMs: 300_000, filesApiTimeoutMs: 60_000 },
-    { streamIdleTimeoutMs: 600_000, filesApiTimeoutMs: 120_000 },
-    2)
-  const deepseek = mountPage({ forms: seededDeepSeek })
-  await flush()
-  const deepseekRow = mountTimeoutRow(deepseek.page, 'deepseek-official')
-  assert.deepEqual(timeoutInputs(deepseekRow.tree).map(input => input.props.value), ['600000', '120000'], 'the DeepSeek timeout draft is not seeded from the user layer')
-  assert.ok(renderedText(deepseekRow.tree).includes('anthropic-messages'), 'the DeepSeek protocol must render as anthropic-messages')
-  deepseekRow.unmount()
-  deepseek.page.unmount()
-})
-
-await check('a pi-ai route without a protocol in the snapshot falls back to the catalog-default copy', async () => {
-  const { page } = mountPage({ forms: providerForms('llm-pi-ai', piAiValue({}), {}, 4) })
-  await flush()
-  const row = mountTimeoutRow(page, 'openrouter')
-  assert.ok(renderedText(row.tree).includes(EN['timeouts.protocol.catalog']), 'a route with no api field did not render the catalog-default protocol copy')
-  row.unmount()
-})
-
-await check('the timeout advisories warn about the SDK deadline and a short fetch body timeout without blocking Save', async () => {
-  const sdkForms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000 } } }, 4)
-  const sdkPage = mountPage({ forms: sdkForms })
-  await flush()
-  const sdkRow = mountTimeoutRow(sdkPage.page, 'openrouter')
-  setTimeoutNumeric(sdkRow.tree, 0, '900000')
-  assert.ok(renderedText(sdkRow.tree).includes(EN['timeouts.advisory.sdkFirst']), 'the SDK-timeout advisory is missing when the idle window exceeds 600000 ms')
-  assert.equal(buttonWithText(sdkRow.tree, [EN['timeouts.save']]).props.disabled, false, 'a non-blocking advisory disabled Save')
-  sdkRow.unmount()
-  sdkPage.page.unmount()
-
-  const matchedForms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }, 4)
-  const matchedPage = mountPage({ forms: matchedForms })
-  await flush()
-  const matchedRow = mountTimeoutRow(matchedPage.page, 'openrouter')
-  setTimeoutNumeric(matchedRow.tree, 0, '900000')
-  assert.equal(renderedText(matchedRow.tree).includes(EN['timeouts.advisory.sdkFirst']), false, 'the SDK advisory stayed when timeoutMs matched the idle window')
-  matchedRow.unmount()
-  matchedPage.page.unmount()
-
-  const transportForms = {
-    ...providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }, 4),
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ bodyTimeoutMs: 100_000 })),
-  }
-  const transportPage = mountPage({ forms: transportForms })
-  await flush()
-  const transportRow = mountTimeoutRow(transportPage.page, 'openrouter')
-  setTimeoutNumeric(transportRow.tree, 0, '900000')
-  assert.ok(renderedText(transportRow.tree).includes(EN['timeouts.advisory.transportFirst']), 'the transport advisory is missing when the fetch body timeout is below the idle window')
-  transportRow.unmount()
-  transportPage.page.unmount()
-
-  const wideForms = {
-    ...providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }, 4),
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ bodyTimeoutMs: 1_800_000 })),
-  }
-  const widePage = mountPage({ forms: wideForms })
-  await flush()
-  const wideRow = mountTimeoutRow(widePage.page, 'openrouter')
-  setTimeoutNumeric(wideRow.tree, 0, '900000')
-  assert.equal(renderedText(wideRow.tree).includes(EN['timeouts.advisory.transportFirst']), false, 'the transport advisory stayed when the fetch body timeout covered the idle window')
-  wideRow.unmount()
-  widePage.page.unmount()
-})
-
-await check('dormant, namespace-less, and unserved routes render read-only timeout rows and are never written', async () => {
-  const registered = [...REGISTERED, { id: 'mystery', name: 'Mystery' }, { id: 'unserved', name: 'Unserved' }]
-  const configurable = [
-    ...CONFIGURABLE,
-    { provider: 'dormant-route', displayName: 'Dormant', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'dormant-route'] },
-    { provider: 'unserved', displayName: 'Unserved', settingsNs: 'llm-ghost', settingsPath: ['config'] },
-  ]
-  const forms = makeForms({ 'llm-ghost': new BoundForm('llm-ghost', unavailableSnapshot) })
-  const { page, ctx } = mountPage({ forms, registered, configurable })
-  await flush()
-
-  const dormant = mountTimeoutRow(page, 'dormant-route')
-  assert.ok(renderedText(dormant.tree).includes(EN['provider.status.dormant']), 'the dormant timeout row note is missing')
-  assert.equal(timeoutInputs(dormant.tree).length, 0, 'a dormant timeout row rendered editable controls')
-  assert.equal(buttonWithText(dormant.tree, [EN['timeouts.save']]), undefined, 'a dormant timeout row rendered Save')
-  assert.equal(buttonWithText(dormant.tree, [EN['timeouts.reset']]), undefined, 'a dormant timeout row rendered Reset')
-  dormant.unmount()
-
-  const noSettings = mountTimeoutRow(page, 'mystery')
-  assert.ok(renderedText(noSettings.tree).includes(EN['provider.status.noSettings']), 'the namespace-less timeout row note is missing')
-  assert.equal(buttonWithText(noSettings.tree, [EN['timeouts.save']]), undefined, 'a namespace-less timeout row rendered Save')
-  noSettings.unmount()
-
-  const unserved = mountTimeoutRow(page, 'unserved')
-  assert.ok(renderedText(unserved.tree).includes(EN['provider.status.unavailable']), 'the unserved timeout row note is missing')
-  assert.equal(buttonWithText(unserved.tree, [EN['timeouts.save']]), undefined, 'an unserved timeout row rendered Save')
-  unserved.unmount()
-
-  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai', 'llm-ghost']) {
-    assert.equal(ctx.configForms.get(ns).calls.length, 0, `a read-only timeout row wrote the ${ns} namespace on mount`)
-  }
-})
-
-await check('dormant, namespace-less, and unserved provider rows render their own read-only note', async () => {
+await check('only addressable route candidates are offered: dormant and namespace-less providers never render, an unserved namespace shows its note', async () => {
   const registered = [...REGISTERED, { id: 'mystery', name: 'Mystery' }, { id: 'unserved', name: 'Unserved' }]
   const configurable = [
     ...CONFIGURABLE,
@@ -2339,468 +2396,265 @@ await check('dormant, namespace-less, and unserved provider rows render their ow
   const forms = makeForms({ 'llm-ghost': new BoundForm('llm-ghost', unavailableSnapshot) })
   const { page } = mountPage({ forms, registered, configurable })
   await flush()
+  assert.deepEqual(
+    routeCardElements(page).map(node => node.props.row.provider),
+    ['openrouter'],
+    'a dormant or namespace-less route rendered a card',
+  )
+  const options = pickerOptions(page.tree)
+  assert.equal(options.includes('Unserved (unserved)'), true, 'an addressable but unserved route was not offered')
+  assert.equal(options.some(option => option.includes('Dormant')), false, 'a dormant route was offered in the selector')
+  assert.equal(options.some(option => option.includes('Mystery')), false, 'a namespace-less route was offered in the selector')
+  pickerSelect(page.tree).props.onChange({ target: { value: 'llm-ghost|config|unserved' } })
+  await flush()
+  buttonWithText(page.tree, [EN['routes.add']]).props.onClick()
+  await flush()
+  const card = mountRouteCard(page, 'unserved')
+  assert.ok(renderedText(card.tree).includes(EN['provider.status.unavailable']), 'the unserved picked card lost its note')
+  assert.equal(retryInputs(card.tree).length, 0, 'an unserved card rendered retry controls')
+  assert.equal(timeoutInputs(card.tree).length, 0, 'an unserved card rendered timeout controls')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]), undefined, 'an unserved card rendered Save')
+  card.unmount()
+})
 
-  const dormant = mountRow(page, 'dormant-route')
-  assert.ok(renderedText(dormant.tree).includes(EN['provider.status.dormant']), 'the dormant note is missing')
-  assert.equal(buttonWithText(dormant.tree, [EN['provider.save']]), undefined, 'a dormant row rendered Save')
-  dormant.unmount()
+await check('the merged cards render in the joined rank order, seeded from each route effective value', async () => {
+  const forms = deviationForms({
+    account: { value: { retryPolicy: { mode: 'always' } }, user: { retryPolicy: { mode: 'always' } } },
+    deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 3 } }, user: { retryPolicy: { mode: 'normal', maxRetries: 3 } } },
+    openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { mode: 'normal', maxRetries: 2 } } },
+  })
+  const { page } = mountPage({ forms })
+  await flush()
+  assert.deepEqual(
+    routeCardElements(page).map(node => node.props.row.provider),
+    ['deepseek-account', 'deepseek-official', 'openrouter'],
+    'the merged card order drifted from the joined rank order',
+  )
+  const official = mountRouteCard(page, 'deepseek-official')
+  assert.deepEqual(retryInputs(official.tree).map(input => input.props.value), ['3', '500', '10000', '0.1'], 'the DeepSeek card is not seeded from its policy')
+  assert.deepEqual(codeCheckboxes(official.tree).map(box => box.props.checked), [true, true, true, true, true], 'the absent code list did not fall back to the code defaults')
+  assert.ok(renderedText(official.tree).includes(EN['provider.source.override']), 'a stored retryPolicy did not paint the override badge')
+  official.unmount()
+  const account = mountRouteCard(page, 'deepseek-account')
+  assert.equal(modeSelect(account.tree).props.value, 'always', 'the always-mode card is not seeded')
+  assert.equal(codeCheckboxes(account.tree).length, 0, 'the always-mode card still rendered the normal-only code list')
+  assert.ok(renderedText(account.tree).includes(EN['provider.alwaysNote']), 'the always-mode note is missing')
+  account.unmount()
+  const openrouter = mountRouteCard(page, 'openrouter')
+  assert.deepEqual(retryInputs(openrouter.tree).map(input => input.props.value), ['2', '250', '5000', '0.2'], 'the pi-ai card is not seeded from its effective policy')
+  assert.deepEqual(codeCheckboxes(openrouter.tree).map(box => box.props.checked), [false, true, false, false, false], 'the pi-ai code list drifted')
+  openrouter.unmount()
+})
 
-  const noSettings = mountRow(page, 'mystery')
-  assert.ok(renderedText(noSettings.tree).includes(EN['provider.status.noSettings']), 'the no-settings note is missing')
-  assert.equal(buttonWithText(noSettings.tree, [EN['provider.save']]), undefined, 'a namespace-less row rendered Save')
-  noSettings.unmount()
+await check('each merged card names its namespace, its route, and the effective protocol (catalog default when the snapshot has none)', async () => {
+  const forms = deviationForms({
+    deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 3 } }, user: { retryPolicy: { maxRetries: 3 } } },
+    openrouter: { value: { api: 'openai-completions', retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { maxRetries: 2 } } },
+  })
+  const { page } = mountPage({ forms })
+  await flush()
+  const pi = mountRouteCard(page, 'openrouter')
+  const piText = renderedText(pi.tree)
+  assert.ok(piText.includes('openai-completions'), 'the pi-ai protocol is not rendered from the route snapshot')
+  assert.ok(piText.includes('llm-pi-ai'), 'the pi-ai card does not name its namespace')
+  assert.ok(piText.includes('providers \u203a openrouter'), 'the pi-ai card does not name its profile path')
+  pi.unmount()
+  const ds = mountRouteCard(page, 'deepseek-official')
+  const dsText = renderedText(ds.tree)
+  assert.ok(dsText.includes('anthropic-messages'), 'the DeepSeek protocol must render as anthropic-messages')
+  assert.ok(dsText.includes('llm-deepseek'), 'the DeepSeek card does not name its namespace')
+  ds.unmount()
 
-  const unserved = mountRow(page, 'unserved')
-  assert.ok(renderedText(unserved.tree).includes(EN['provider.status.unavailable']), 'the namespace-unavailable note is missing')
-  assert.equal(buttonWithText(unserved.tree, [EN['provider.save']]), undefined, 'an unserved-namespace row rendered Save')
-  unserved.unmount()
+  const catalog = mountPage({
+    forms: deviationForms({ openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { maxRetries: 2 } } } }),
+  })
+  await flush()
+  const noProtocol = mountRouteCard(catalog.page, 'openrouter')
+  assert.ok(renderedText(noProtocol.tree).includes(EN['timeouts.protocol.catalog']), 'a route with no api field did not render the catalog-default protocol copy')
+  noProtocol.unmount()
+})
+
+await check('the timeout advisories warn about the SDK deadline and a short fetch body timeout without blocking Save', async () => {
+  const sdk = mountPage({ forms: deviationForms({ openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { maxRetries: 2 }, streamIdleTimeoutMs: 600_000 } } }) })
+  await flush()
+  const sdkCard = mountRouteCard(sdk.page, 'openrouter')
+  setTimeoutInput(sdkCard.tree, 0, '900000')
+  assert.ok(renderedText(sdkCard.tree).includes(EN['timeouts.advisory.sdkFirst']), 'the SDK-timeout advisory is missing when the idle window exceeds 600000 ms')
+  assert.equal(buttonWithText(sdkCard.tree, [EN['provider.save']]).props.disabled, false, 'a non-blocking advisory disabled Save')
+  sdkCard.unmount()
+  sdk.page.unmount()
+
+  const matchedForms = deviationForms({ openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { maxRetries: 2 }, streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } })
+  const matched = mountPage({ forms: matchedForms })
+  await flush()
+  const matchedCard = mountRouteCard(matched.page, 'openrouter')
+  setTimeoutInput(matchedCard.tree, 0, '900000')
+  assert.equal(renderedText(matchedCard.tree).includes(EN['timeouts.advisory.sdkFirst']), false, 'the SDK advisory stayed when timeoutMs matched the idle window')
+  matchedCard.unmount()
+  matched.page.unmount()
+
+  const transport = mountPage({
+    forms: {
+      ...deviationForms({ openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { maxRetries: 2 }, streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }),
+      'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ bodyTimeoutMs: 100_000 })),
+    },
+  })
+  await flush()
+  const transportCard = mountRouteCard(transport.page, 'openrouter')
+  setTimeoutInput(transportCard.tree, 0, '900000')
+  assert.ok(renderedText(transportCard.tree).includes(EN['timeouts.advisory.transportFirst']), 'the transport advisory is missing when the fetch body timeout is below the idle window')
+  transportCard.unmount()
+  transport.page.unmount()
+
+  const wide = mountPage({
+    forms: {
+      ...deviationForms({ openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: { retryPolicy: { maxRetries: 2 }, streamIdleTimeoutMs: 600_000, timeoutMs: 900_000 } } }),
+      'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ bodyTimeoutMs: 1_800_000 })),
+    },
+  })
+  await flush()
+  const wideCard = mountRouteCard(wide.page, 'openrouter')
+  setTimeoutInput(wideCard.tree, 0, '900000')
+  assert.equal(renderedText(wideCard.tree).includes(EN['timeouts.advisory.transportFirst']), false, 'the transport advisory stayed when the fetch body timeout covered the idle window')
+  wideCard.unmount()
+  wide.page.unmount()
+})
+
+await check('an unserved own namespace degrades the global card while the ready route cards stay usable', async () => {
+  const forms = makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', unavailableSnapshot) })
+  const { page } = mountPage({ forms })
+  await flush()
+  assert.ok(renderedText(page.tree).includes(EN['status.unavailable']), 'the own-namespace unavailable note is missing')
+  assert.equal(textInputs(globalCard(page)).every(input => input.props.disabled === true), true, 'the global controls stayed editable on an unserved namespace')
+  for (const key of ['global.save', 'defaults.applyAll']) {
+    assert.equal(buttonWithText(page.tree, [EN[key]]).props.disabled, true, `the "${key}" action stayed enabled on an unserved namespace`)
+  }
+  assert.equal(buttonWithText(page.tree, [EN['fetch.reset']]).props.disabled, true, 'the fetch Reset stayed enabled on an unserved namespace')
+  assert.deepEqual(routeCardElements(page).map(node => node.props.row.provider), ['openrouter'], 'the ready route card disappeared with the degraded global card')
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, false, 'a ready route card stopped writing when only the global namespace was unserved')
+  card.unmount()
+})
+
+await check('a loading or read-only own namespace renders its own note and disables the global card', async () => {
+  const loading = mountPage({ forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', loadingSnapshot) }) })
+  await flush()
+  assert.ok(renderedText(loading.page.tree).includes(EN['status.loading']), 'the own-namespace loading note is missing')
+  assert.equal(textInputs(globalCard(loading.page)).every(input => input.props.disabled === true), true, 'the global controls stayed editable while loading')
+  loading.page.unmount()
+
+  const readOnly = mountPage({
+    forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', { ...readySnapshot(tuneValue(), 7), writable: false }) }),
+  })
+  await flush()
+  assert.ok(renderedText(readOnly.page.tree).includes(EN['status.readOnly']), 'the read-only note is missing')
+  assert.equal(buttonWithText(readOnly.page.tree, [EN['global.save']]).props.disabled, true, 'the global Save stayed enabled in a read-only namespace')
+  assert.equal(buttonWithText(readOnly.page.tree, [EN['defaults.applyAll']]).props.disabled, true, 'Apply defaults stayed enabled in a read-only namespace')
+  readOnly.page.unmount()
 })
 
 /* ══ 10. operation shapes ══════════════════════════════════════════════════ */
 
-/** Assert one recorded op list, detached from the vm realm. */
-function assertOps(actual, expected, label) {
-  assert.deepEqual(plain(actual), expected, `${label}: ${JSON.stringify(plain(actual))}`)
-}
-
-await check('a normal-mode provider Save writes the six leaf sets under the joined settings path', async () => {
+await check('the global Save writes the six retry defaults AND the two fetch leaves in ONE fenced write', async () => {
   const { page, ctx } = mountPage()
   await flush()
-  const row = mountRow(page, 'openrouter')
-  const form = ctx.configForms.get('llm-pi-ai')
-  setNumeric(row.tree, 0, '7')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const own = ctx.configForms.get('llm-api-call-tuning')
+  setRetryInput(page.tree, 0, '9')
+  setFetchInput(page.tree, 0, '0')
+  setFetchInput(page.tree, 1, '1800000')
+  buttonWithText(page.tree, [EN['global.save']]).props.onClick()
   await flush()
-  assert.equal(form.calls.length, 1, `expected one mutate call, got ${form.calls.length}`)
-  assert.equal(form.calls[0].revision, 4, `the write was fenced at revision ${form.calls[0].revision}, not the snapshot revision 4`)
-  assertOps(form.calls[0].ops, [
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'mode'], value: 'normal' },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 7 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'], value: ['RATE_LIMIT'] },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'initialDelayMs'], value: 250 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'maxDelayMs'], value: 5000 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'jitterRatio'], value: 0.2 },
-  ], 'the normal-mode save ops drifted')
-  assert.ok(!JSON.stringify(plain(form.calls[0].ops)).includes('"retryPolicy":{"mode"'), 'a whole retryPolicy object was set')
-})
-
-await check('always mode sets the mode and unsets the two normal-mode-only leaves', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const row = mountRow(page, 'deepseek-official')
-  const form = ctx.configForms.get('llm-deepseek')
-  setMode(row.tree, 'always')
-  assert.equal(codeCheckboxes(row.tree).length, 0, 'the code list stayed rendered in always mode')
-  assert.ok(renderedText(row.tree).includes(EN['provider.alwaysNote']), 'the always-mode note is missing')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
-  await flush()
-  assertOps(form.calls[0].ops, [
-    { op: 'set', path: ['retryPolicy', 'mode'], value: 'always' },
-    { op: 'unset', path: ['retryPolicy', 'maxRetries'] },
-    { op: 'unset', path: ['retryPolicy', 'retryableCodes'] },
-    { op: 'set', path: ['retryPolicy', 'backoff', 'initialDelayMs'], value: 500 },
-    { op: 'set', path: ['retryPolicy', 'backoff', 'maxDelayMs'], value: 10000 },
-    { op: 'set', path: ['retryPolicy', 'backoff', 'jitterRatio'], value: 0.1 },
-  ], 'the always-mode save ops drifted')
-})
-
-await check('Reset is the single unset of the whole retryPolicy and nothing else', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const row = mountRow(page, 'openrouter')
-  const form = ctx.configForms.get('llm-pi-ai')
-  buttonWithText(row.tree, [EN['provider.reset']]).props.onClick()
-  await flush()
-  assertOps(form.calls[0].ops, [{ op: 'unset', path: ['providers', 'openrouter', 'retryPolicy'] }], 'the reset op drifted')
-  assert.equal(form.calls[0].revision, 4, 'Reset did not use the snapshot revision')
-  assert.ok(renderedText(row.tree).includes(EN['status.reset']), 'the reset confirmation copy is missing')
-})
-
-await check('Use defaults stages the validated defaults and writes nothing until Save', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const row = mountRow(page, 'openrouter')
-  const form = ctx.configForms.get('llm-pi-ai')
-  buttonWithText(row.tree, [EN['provider.useDefaults']]).props.onClick()
-  assert.equal(form.calls.length, 0, 'Use defaults wrote to the Host')
-  assert.deepEqual(numericInputs(row.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'Use defaults did not stage the defaults values')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
-  await flush()
-  const ops = plain(form.calls[0].ops)
-  assert.equal(ops[0].value, 'normal', 'the staged mode is not the defaults mode')
-  assert.equal(ops[1].value, 5, 'the staged maxRetries is not the defaults value')
-  assert.deepEqual(ops[2].value, ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'], 'the staged code list is not the defaults value')
-})
-
-await check('the defaults card saves six flat leaf sets on its own namespace', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const form = ctx.configForms.get('llm-api-call-tuning')
-  setNumeric(page.tree, 0, '9')
-  buttonWithText(page.tree, [EN['defaults.save']]).props.onClick()
-  await flush()
-  assert.equal(form.calls.length, 1, `expected one defaults write, got ${form.calls.length}`)
-  assert.equal(form.calls[0].revision, 7, `the defaults write was fenced at ${form.calls[0].revision}`)
-  assertOps(form.calls[0].ops, [
+  assert.equal(own.calls.length, 1, `expected one merged global write, got ${own.calls.length}`)
+  assert.equal(own.calls[0].revision, 7, `the global write was fenced at ${own.calls[0].revision}`)
+  assertOps(own.calls[0].ops, [
     { op: 'set', path: ['mode'], value: 'normal' },
     { op: 'set', path: ['maxRetries'], value: 9 },
     { op: 'set', path: ['initialDelayMs'], value: 500 },
     { op: 'set', path: ['maxDelayMs'], value: 10000 },
     { op: 'set', path: ['jitterRatio'], value: 0.1 },
     { op: 'set', path: ['retryableCodes'], value: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'] },
-  ], 'the defaults save ops drifted')
-  assert.ok(renderedText(page.tree).includes(EN['status.saved']), 'the defaults save confirmation is missing')
-})
-
-await check('the fetch card Save on an empty draft emits the two flat unsets and touches no provider', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const form = ctx.configForms.get('llm-api-call-tuning')
-  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
-  await flush()
-  assert.equal(form.calls.length, 1, `expected one fetch write, got ${form.calls.length}`)
-  assert.equal(form.calls[0].revision, 7, `the fetch write was fenced at ${form.calls[0].revision}`)
-  assertOps(form.calls[0].ops, [
-    { op: 'unset', path: ['headersTimeoutMs'] },
-    { op: 'unset', path: ['bodyTimeoutMs'] },
-  ], 'an empty fetch save must unset both leaves (unset leaves the system default in place)')
-  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
-    assert.equal(ctx.configForms.get(ns).calls.length, 0, `the fetch save wrote the provider namespace ${ns}`)
-  }
-  assert.ok(renderedText(page.tree).includes(EN['status.saved']), 'the fetch save confirmation is missing')
-})
-
-await check('0 is a real fetch write (disabled), not the unset state', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const form = ctx.configForms.get('llm-api-call-tuning')
-  setFetchNumeric(page.tree, 0, '0')
-  setFetchNumeric(page.tree, 1, '1800000')
-  assert.deepEqual(fetchInputs(page.tree).map(input => input.props.value), ['0', '1800000'], 'the fetch inputs did not stage the typed values')
-  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
-  await flush()
-  assertOps(form.calls[0].ops, [
     { op: 'set', path: ['headersTimeoutMs'], value: 0 },
-    { op: 'set', path: ['bodyTimeoutMs'], value: 1_800_000 },
-  ], 'a 0 fetch timeout must be written as a set (disabled), never as an unset')
+    { op: 'set', path: ['bodyTimeoutMs'], value: 1800000 },
+  ], 'the merged global save ops drifted')
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `the global Save wrote the provider namespace ${ns}`)
+  }
+  assert.ok(renderedText(page.tree).includes(EN['status.saved']), 'the global save confirmation is missing')
 })
 
-await check('clearing one seeded fetch field emits one unset and keeps the other set', async () => {
-  const forms = makeForms({
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })),
+await check('the fetch half is tri-state: an empty draft unsets both leaves, and clearing one seeded leaf keeps the other', async () => {
+  const fresh = mountPage()
+  await flush()
+  buttonWithText(fresh.page.tree, [EN['global.save']]).props.onClick()
+  await flush()
+  const freshOps = plain(fresh.ctx.configForms.get('llm-api-call-tuning').calls[0].ops)
+  assert.deepEqual(
+    freshOps.slice(6),
+    [{ op: 'unset', path: ['headersTimeoutMs'] }, { op: 'unset', path: ['bodyTimeoutMs'] }],
+    'an empty fetch draft must unset both leaves so the system default applies',
+  )
+  fresh.page.unmount()
+
+  const seeded = mountPage({
+    forms: makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })) }),
   })
-  const { page, ctx } = mountPage({ forms })
   await flush()
-  const form = ctx.configForms.get('llm-api-call-tuning')
-  assert.deepEqual(fetchInputs(page.tree).map(input => input.props.value), ['0', '1800000'], 'a stored timer was not seeded into the fetch draft')
-  setFetchNumeric(page.tree, 0, '')
-  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
+  assert.deepEqual(globalFetchValues(seeded.page), ['0', '1800000'], 'the seeded fetch leaves are not painted')
+  setFetchInput(seeded.page.tree, 0, '')
+  buttonWithText(seeded.page.tree, [EN['global.save']]).props.onClick()
   await flush()
-  assertOps(form.calls[0].ops, [
-    { op: 'unset', path: ['headersTimeoutMs'] },
-    { op: 'set', path: ['bodyTimeoutMs'], value: 1_800_000 },
-  ], 'a mixed unset/set fetch save is wrong')
+  const seededOps = plain(seeded.ctx.configForms.get('llm-api-call-tuning').calls[0].ops)
+  assert.deepEqual(
+    seededOps.slice(6),
+    [{ op: 'unset', path: ['headersTimeoutMs'] }, { op: 'set', path: ['bodyTimeoutMs'], value: 1_800_000 }],
+    'clearing one seeded fetch leaf must unset only it',
+  )
+  seeded.page.unmount()
 })
 
-await check('the fetch card Reset emits exactly the two unsets and reports its own confirmation', async () => {
-  const forms = makeForms({
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 250, bodyTimeoutMs: 500 })),
-  })
+await check('the fetch sub-group Reset emits exactly the two flat unsets, writes no retry leaf, and reports its own confirmation', async () => {
+  const forms = makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 250, bodyTimeoutMs: 500 })) })
   const { page, ctx } = mountPage({ forms })
   await flush()
   const form = ctx.configForms.get('llm-api-call-tuning')
   buttonWithText(page.tree, [EN['fetch.reset']]).props.onClick()
   await flush()
+  assert.equal(form.calls.length, 1, `expected one fetch reset, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 7, 'the fetch Reset did not use the snapshot revision')
   assertOps(form.calls[0].ops, [
     { op: 'unset', path: ['headersTimeoutMs'] },
     { op: 'unset', path: ['bodyTimeoutMs'] },
-  ], 'the fetch Reset op drifted')
+  ], 'the fetch Reset ops drifted')
   assert.ok(renderedText(page.tree).includes(EN['status.fetchReset']), 'the fetch Reset confirmation is missing')
   for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
     assert.equal(ctx.configForms.get(ns).calls.length, 0, `the fetch Reset wrote the provider namespace ${ns}`)
   }
 })
 
-await check('the fetch draft validates the tri-state: negative, fractional, overflow, and string values are refused; 0 and the cap pass', async () => {
+await check('the global Save validates the fetch tri-state: malformed timers are refused, 0 and the cap pass', async () => {
   const { page } = mountPage()
   await flush()
-  const save = () => buttonWithText(page.tree, [EN['fetch.save']])
-  for (const [label, value, copy] of [
-    ['a negative timeout', '-1', 'error.headersTimeoutMs'],
-    ['a fractional timeout', '1.5', 'error.headersTimeoutMs'],
-    ['an overflow timeout', '2147483648', 'error.headersTimeoutMs'],
-    ['a negative body timeout', '-5', 'error.bodyTimeoutMs'],
+  const save = () => buttonWithText(page.tree, [EN['global.save']])
+  for (const [label, index, value, copy] of [
+    ['a negative header timeout', 0, '-1', 'error.headersTimeoutMs'],
+    ['a fractional header timeout', 0, '1.5', 'error.headersTimeoutMs'],
+    ['an overflow header timeout', 0, '2147483648', 'error.headersTimeoutMs'],
+    ['a negative body timeout', 1, '-5', 'error.bodyTimeoutMs'],
+    ['a fractional body timeout', 1, '1.5', 'error.bodyTimeoutMs'],
   ]) {
-    setFetchNumeric(page.tree, copy === 'error.bodyTimeoutMs' ? 1 : 0, value)
+    setFetchInput(page.tree, index, value)
     assert.equal(save().props.disabled, true, `Save stayed enabled on ${label}`)
     assert.ok(renderedText(page.tree).includes(EN[copy]), `the ${copy} error copy is missing for ${label}`)
-    setFetchNumeric(page.tree, copy === 'error.bodyTimeoutMs' ? 1 : 0, '')
+    setFetchInput(page.tree, index, '')
   }
   for (const [label, index, value] of [['0 (disabled)', 0, '0'], ['the timer cap', 0, '2147483647'], ['empty (unset)', 0, '']]) {
-    setFetchNumeric(page.tree, index, value)
+    setFetchInput(page.tree, index, value)
     assert.equal(save().props.disabled, false, `Save stayed disabled on ${label}`)
   }
 })
 
-await check('a pi-ai timeout Save writes exactly the changed leaves under providers.<route>', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const row = mountTimeoutRow(page, 'openrouter')
-  const form = ctx.configForms.get('llm-pi-ai')
-  setTimeoutNumeric(row.tree, 0, '1800000')
-  setTimeoutNumeric(row.tree, 1, '900000')
-  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
-  await flush()
-  assert.equal(form.calls.length, 1, `expected one timeout write, got ${form.calls.length}`)
-  assert.equal(form.calls[0].revision, 4, `the timeout write was fenced at ${form.calls[0].revision}`)
-  assertOps(form.calls[0].ops, [
-    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 1_800_000 },
-    { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 900_000 },
-  ], 'the pi-ai timeout save ops drifted')
-  assert.ok(!JSON.stringify(plain(form.calls[0].ops)).includes('retryPolicy'), 'a timeout Save projected a retry leaf')
-
-  const partial = mountPage()
-  await flush()
-  const partialRow = mountTimeoutRow(partial.page, 'openrouter')
-  const partialForm = partial.ctx.configForms.get('llm-pi-ai')
-  setTimeoutNumeric(partialRow.tree, 0, '450000')
-  buttonWithText(partialRow.tree, [EN['timeouts.save']]).props.onClick()
-  await flush()
-  assertOps(partialForm.calls[0].ops, [
-    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 450_000 },
-  ], 'a partial pi-ai timeout save must write only the changed leaf')
-})
-
-await check('a seeded pi-ai timeout row emits a single unset when cleared and two unsets on Reset', async () => {
-  const forms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 } } }, 4)
-  const { page, ctx } = mountPage({ forms })
-  await flush()
-  const row = mountTimeoutRow(page, 'openrouter')
-  const form = ctx.configForms.get('llm-pi-ai')
-  setTimeoutNumeric(row.tree, 1, '')
-  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
-  await flush()
-  assertOps(form.calls[0].ops, [
-    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
-  ], 'clearing one seeded pi-ai timeout must emit only its unset')
-
-  const resetForms = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 } } }, 4)
-  const resetPage = mountPage({ forms: resetForms })
-  await flush()
-  const resetRow = mountTimeoutRow(resetPage.page, 'openrouter')
-  const resetForm = resetPage.ctx.configForms.get('llm-pi-ai')
-  buttonWithText(resetRow.tree, [EN['timeouts.reset']]).props.onClick()
-  await flush()
-  assertOps(resetForm.calls[0].ops, [
-    { op: 'unset', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'] },
-    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
-  ], 'the pi-ai timeout Reset ops drifted')
-  assert.equal(resetForm.calls[0].revision, 4, 'the pi-ai timeout Reset revision drifted')
-  assert.ok(renderedText(resetRow.tree).includes(EN['timeouts.resetDone']), 'the timeout Reset confirmation copy is missing')
-})
-
-await check('a DeepSeek timeout Save and Reset address the namespace root, never retryPolicy', async () => {
-  const official = mountPage()
-  await flush()
-  const row = mountTimeoutRow(official.page, 'deepseek-official')
-  const form = official.ctx.configForms.get('llm-deepseek')
-  setTimeoutNumeric(row.tree, 0, '600000')
-  setTimeoutNumeric(row.tree, 1, '120000')
-  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
-  await flush()
-  assert.equal(form.calls[0].revision, 2, 'the DeepSeek timeout write did not use the namespace revision')
-  assertOps(form.calls[0].ops, [
-    { op: 'set', path: ['streamIdleTimeoutMs'], value: 600_000 },
-    { op: 'set', path: ['filesApiTimeoutMs'], value: 120_000 },
-  ], 'the DeepSeek timeout save ops drifted')
-
-  const account = mountPage()
-  await flush()
-  const accountRow = mountTimeoutRow(account.page, 'deepseek-account')
-  const accountForm = account.ctx.configForms.get('llm-deepseek-account')
-  buttonWithText(accountRow.tree, [EN['timeouts.reset']]).props.onClick()
-  await flush()
-  assert.equal(accountForm.calls[0].revision, 3, 'the DeepSeek Account Reset did not use the namespace revision')
-  assertOps(accountForm.calls[0].ops, [
-    { op: 'unset', path: ['streamIdleTimeoutMs'] },
-    { op: 'unset', path: ['filesApiTimeoutMs'] },
-  ], 'the DeepSeek Account timeout Reset ops drifted')
-})
-
-await check('the timeout Save is disabled when nothing changed, and 0 plus every malformed shape is refused', async () => {
-  const { page } = mountPage()
-  await flush()
-  const row = mountTimeoutRow(page, 'openrouter')
-  const save = () => buttonWithText(row.tree, [EN['timeouts.save']])
-  const reset = () => buttonWithText(row.tree, [EN['timeouts.reset']])
-  assert.equal(save().props.disabled, true, 'Save stayed enabled on an untouched, blank timeout row')
-  assert.equal(reset().props.disabled, false, 'Reset stayed disabled on a writable timeout row')
-
-  for (const [label, value, copy] of [
-    ['0 on the idle watchdog', '0', 'error.streamIdleTimeoutMs'],
-    ['a negative value', '-1', 'error.streamIdleTimeoutMs'],
-    ['a fractional value', '1.5', 'error.streamIdleTimeoutMs'],
-    ['an overflow value', '2147483648', 'error.streamIdleTimeoutMs'],
-    ['a leading zero', '007', 'error.streamIdleTimeoutMs'],
-    ['exponent notation', '1e6', 'error.streamIdleTimeoutMs'],
-  ]) {
-    setTimeoutNumeric(row.tree, 0, value)
-    assert.equal(save().props.disabled, true, `Save stayed enabled on ${label}`)
-    assert.ok(renderedText(row.tree).includes(EN[copy]), `the ${copy} copy is missing for ${label}`)
-  }
-  setTimeoutNumeric(row.tree, 1, '0')
-  assert.equal(save().props.disabled, true, 'Save stayed enabled on a zero SDK request timeout')
-  assert.ok(renderedText(row.tree).includes(EN['error.timeoutMs']), 'the 0-request-timeout copy is missing')
-
-  setTimeoutNumeric(row.tree, 1, '')
-  setTimeoutNumeric(row.tree, 0, ' 2147483647 ')
-  assert.equal(save().props.disabled, false, 'the 2147483647 cap (whitespace-trimmed) must be accepted')
-  assert.equal(renderedText(row.tree).includes(EN['error.streamIdleTimeoutMs']), false, 'the idle-watchdog error copy stayed after a valid value')
-
-  const deepseek = mountPage()
-  await flush()
-  const deepseekRow = mountTimeoutRow(deepseek.page, 'deepseek-official')
-  setTimeoutNumeric(deepseekRow.tree, 1, '0')
-  assert.equal(buttonWithText(deepseekRow.tree, [EN['timeouts.save']]).props.disabled, true, 'Save stayed enabled on a zero files-API timeout')
-  assert.ok(renderedText(deepseekRow.tree).includes(EN['error.filesApiTimeoutMs']), 'the 0-files-api copy is missing')
-})
-
-await check('the Unlimited preset fills 2147483647 ms on every timeout field, including the Files API cap', async () => {
-  const piAi = mountPage()
-  await flush()
-  const piRow = mountTimeoutRow(piAi.page, 'openrouter')
-  const presets = timeoutPresetButtons(piRow.tree)
-  assert.equal(presets.length, 2, 'the pi-ai timeout row must offer one Unlimited preset per visible field')
-  presets[0].props.onClick()
-  presets[1].props.onClick()
-  assert.deepEqual(timeoutInputs(piRow.tree).map(input => input.props.value), ['2147483647', '2147483647'], 'the pi-ai Unlimited preset must fill the 2147483647 cap, never 0')
-  buttonWithText(piRow.tree, [EN['timeouts.save']]).props.onClick()
-  await flush()
-  assertOps(piAi.ctx.configForms.get('llm-pi-ai').calls[0].ops, [
-    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 2_147_483_647 },
-    { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 2_147_483_647 },
-  ], 'the Unlimited preset did not persist the cap')
-
-  const deepseek = mountPage()
-  await flush()
-  const deepseekRow = mountTimeoutRow(deepseek.page, 'deepseek-official')
-  const deepseekPresets = timeoutPresetButtons(deepseekRow.tree)
-  assert.equal(deepseekPresets.length, 2, 'the DeepSeek timeout row must offer one Unlimited preset per visible field')
-  deepseekPresets[0].props.onClick()
-  deepseekPresets[1].props.onClick()
-  assert.deepEqual(timeoutInputs(deepseekRow.tree).map(input => input.props.value), ['2147483647', '2147483647'], 'the DeepSeek Unlimited preset must cover the Files API field too')
-})
-
-await check('the timeout Save is independent of the retry and fetch saves in both directions', async () => {
-  const { page, ctx } = mountPage()
-  await flush()
-  const own = ctx.configForms.get('llm-api-call-tuning')
-  const piForm = ctx.configForms.get('llm-pi-ai')
-  const timeoutRow = mountTimeoutRow(page, 'openrouter')
-  setTimeoutNumeric(timeoutRow.tree, 0, '600000')
-  buttonWithText(timeoutRow.tree, [EN['timeouts.save']]).props.onClick()
-  await flush()
-  for (const ns of ['llm-api-call-tuning', 'llm-deepseek', 'llm-deepseek-account']) {
-    assert.equal(ctx.configForms.get(ns).calls.length, 0, `a timeout Save wrote the unrelated namespace ${ns}`)
-  }
-  for (const op of plain(piForm.calls[0].ops)) {
-    assert.equal(op.path.join('.').includes('retryPolicy'), false, `a timeout Save emitted the retry leaf ${op.path.join('.')}`)
-    assert.equal(op.path.join('.').includes('TimeoutMs') && op.path.length < 3, false, 'a timeout Save addressed a short (whole-profile) path')
-  }
-
-  const retryRow = mountRow(page, 'openrouter')
-  setNumeric(retryRow.tree, 0, '7')
-  buttonWithText(retryRow.tree, [EN['provider.save']]).props.onClick()
-  await flush()
-  assert.equal(piForm.calls.length, 2, 'the retry Save did not add its own write')
-  for (const op of plain(piForm.calls[1].ops)) {
-    assert.equal(op.path.join('.').includes('retryPolicy'), true, `a retry Save emitted the non-retry path ${op.path.join('.')}`)
-    assert.equal(JSON.stringify(op).includes('TimeoutMs'), false, 'a retry Save projected a provider-timeout leaf')
-  }
-
-  buttonWithText(page.tree, [EN['fetch.save']]).props.onClick()
-  await flush()
-  assert.equal(own.calls.length, 1, 'the fetch Save did not write its own namespace')
-  for (const op of plain(own.calls[0].ops)) {
-    assert.ok(
-      op.path.length === 1 && (op.path[0] === 'headersTimeoutMs' || op.path[0] === 'bodyTimeoutMs'),
-      `the fetch Save emitted a non-fetch path ${JSON.stringify(op.path)}`,
-    )
-  }
-  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
-    assert.equal(ctx.configForms.get(ns).calls.length, ns === 'llm-pi-ai' ? 2 : 0, `the fetch Save wrote the provider namespace ${ns}`)
-  }
-})
-
-await check('a timeout row without a numeric revision, or read-only, disables both actions and never writes', async () => {
-  const noRevision = providerForms('llm-pi-ai', piAiValue({}), { providers: { openrouter: { streamIdleTimeoutMs: 600_000 } } }, undefined)
-  const page = mountPage({ forms: noRevision })
-  await flush()
-  const row = mountTimeoutRow(page.page, 'openrouter')
-  setTimeoutNumeric(row.tree, 0, '900000')
-  assert.equal(buttonWithText(row.tree, [EN['timeouts.save']]).props.disabled, true, 'Save stayed enabled without a numeric revision')
-  assert.equal(buttonWithText(row.tree, [EN['timeouts.reset']]).props.disabled, true, 'Reset stayed enabled without a numeric revision')
-  buttonWithText(row.tree, [EN['timeouts.save']]).props.onClick()
-  buttonWithText(row.tree, [EN['timeouts.reset']]).props.onClick()
-  await flush()
-  assert.equal(page.ctx.configForms.get('llm-pi-ai').calls.length, 0, 'a row without a numeric revision wrote the namespace')
-  row.unmount()
-
-  const readOnlyForms = providerForms('llm-pi-ai', piAiValue({}), {}, 4)
-  readOnlyForms['llm-pi-ai'] = new BoundForm('llm-pi-ai', { ...readySnapshot(piAiValue({}), 4, {}), writable: false })
-  const readOnly = mountPage({ forms: readOnlyForms })
-  await flush()
-  const readOnlyRow = mountTimeoutRow(readOnly.page, 'openrouter')
-  assert.equal(buttonWithText(readOnlyRow.tree, [EN['timeouts.save']]), undefined, 'a read-only timeout row rendered Save')
-  assert.equal(buttonWithText(readOnlyRow.tree, [EN['timeouts.reset']]), undefined, 'a read-only timeout row rendered Reset')
-  assert.ok(renderedText(readOnlyRow.tree).includes(EN['status.readOnly']), 'a read-only timeout row did not render the read-only note')
-})
-
-await check('the retry defaults Save never projects a seeded fetch leaf', async () => {
-  const forms = makeForms({
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })),
-  })
-  const { page, ctx } = mountPage({ forms })
-  await flush()
-  const form = ctx.configForms.get('llm-api-call-tuning')
-  buttonWithText(page.tree, [EN['defaults.save']]).props.onClick()
-  await flush()
-  assertOps(form.calls[0].ops, [
-    { op: 'set', path: ['mode'], value: 'normal' },
-    { op: 'set', path: ['maxRetries'], value: 5 },
-    { op: 'set', path: ['initialDelayMs'], value: 500 },
-    { op: 'set', path: ['maxDelayMs'], value: 10000 },
-    { op: 'set', path: ['jitterRatio'], value: 0.1 },
-    { op: 'set', path: ['retryableCodes'], value: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'] },
-  ], 'the retry defaults save drifted or projected a fetch leaf')
-})
-
-await check('Apply defaults never projects a seeded fetch leaf onto a provider route', async () => {
-  const forms = makeForms({
-    'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })),
-  })
-  const { page, ctx } = mountPage({ forms })
-  await flush()
-  buttonWithText(page.tree, [EN['defaults.applyAll']]).props.onClick()
-  await flush()
-  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
-    for (const call of ctx.configForms.get(ns).calls) {
-      for (const op of plain(call.ops)) {
-        assert.equal(op.path.join('.').includes('TimeoutMs'), false, `${ns} received the fetch leaf ${op.path.join('.')}`)
-      }
-    }
-  }
-  assert.deepEqual(plain(ctx.configForms.get('llm-pi-ai').calls[0].ops).map(op => op.path.join('.')), [
-    'providers.openrouter.retryPolicy.mode',
-    'providers.openrouter.retryPolicy.maxRetries',
-    'providers.openrouter.retryPolicy.retryableCodes',
-    'providers.openrouter.retryPolicy.backoff.initialDelayMs',
-    'providers.openrouter.retryPolicy.backoff.maxDelayMs',
-    'providers.openrouter.retryPolicy.backoff.jitterRatio',
-  ], 'the apply-all provider ops drifted')
-})
-
-await check('Apply defaults writes every editable provider once, at its own revision, with a per-row outcome', async () => {
+await check('Apply defaults writes every editable provider once, at its own revision, with a section-level outcome summary', async () => {
   const { page, ctx } = mountPage()
   await flush()
   buttonWithText(page.tree, [EN['defaults.applyAll']]).props.onClick()
@@ -2809,49 +2663,44 @@ await check('Apply defaults writes every editable provider once, at its own revi
     const calls = ctx.configForms.get(ns).calls
     assert.equal(calls.length, 1, `${ns} received ${calls.length} apply-all writes`)
     assert.equal(calls[0].revision, revision, `${ns} was written at revision ${calls[0].revision}, not ${revision}`)
+    assert.equal(plain(calls[0].ops).length, 6, `${ns} received ${plain(calls[0].ops).length} retry leaves, expected six`)
   }
-  const piAiOps = plain(ctx.configForms.get('llm-pi-ai').calls[0].ops)
-  assert.deepEqual(piAiOps.map(op => op.path.join('.')), [
-    'providers.openrouter.retryPolicy.mode',
-    'providers.openrouter.retryPolicy.maxRetries',
-    'providers.openrouter.retryPolicy.retryableCodes',
-    'providers.openrouter.retryPolicy.backoff.initialDelayMs',
-    'providers.openrouter.retryPolicy.backoff.maxDelayMs',
-    'providers.openrouter.retryPolicy.backoff.jitterRatio',
-  ], 'the apply-all provider ops drifted')
-  assert.deepEqual(rowElements(page).map(node => node.props.applyOutcome), ['saved', 'saved', 'saved'], 'the per-row apply outcomes are missing')
-  const appliedRow = mountRow(page, 'openrouter')
-  assert.ok(renderedText(appliedRow.tree).includes(`${EN['defaults.heading']}: ${EN['apply.outcome.saved']}`), 'the applied outcome copy is missing from a row')
+  const retryLeaves = base => [
+    `${base}retryPolicy.mode`,
+    `${base}retryPolicy.maxRetries`,
+    `${base}retryPolicy.retryableCodes`,
+    `${base}retryPolicy.backoff.initialDelayMs`,
+    `${base}retryPolicy.backoff.maxDelayMs`,
+    `${base}retryPolicy.backoff.jitterRatio`,
+  ]
+  assert.deepEqual(plain(ctx.configForms.get('llm-deepseek').calls[0].ops).map(op => op.path.join('.')), retryLeaves(''), 'the DeepSeek apply ops drifted')
+  assert.deepEqual(plain(ctx.configForms.get('llm-deepseek-account').calls[0].ops).map(op => op.path.join('.')), retryLeaves(''), 'the DeepSeek Account apply ops drifted')
+  assert.deepEqual(plain(ctx.configForms.get('llm-pi-ai').calls[0].ops).map(op => op.path.join('.')), retryLeaves('providers.openrouter.'), 'the pi-ai apply ops drifted')
+  const text = renderedText(page.tree)
+  for (const displayName of ['DeepSeek Account', 'DeepSeek', 'OpenRouter']) {
+    assert.ok(text.includes(`${displayName}: ${EN['apply.outcome.saved']}`), `the section summary is missing "${displayName}: ${EN['apply.outcome.saved']}"`)
+  }
 })
 
-await check('every write is fenced by a freshly read revision and never sets a whole object', async () => {
-  const { page, ctx } = mountPage()
+await check('Apply defaults projects only retryPolicy leaves, never a fetch timer or a provider-timeout leaf', async () => {
+  const forms = makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', tuningSnapshot({ headersTimeoutMs: 0, bodyTimeoutMs: 1_800_000 })) })
+  const { page, ctx } = mountPage({ forms })
   await flush()
-  const form = ctx.configForms.get('llm-deepseek')
-  // The recovery read moves the revision; the next write must fence on it.
-  form.push(readySnapshot({ retryPolicy: { mode: 'normal' } }, 9))
-  const row = mountRow(page, 'deepseek-official')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  buttonWithText(page.tree, [EN['defaults.applyAll']]).props.onClick()
   await flush()
-  assert.equal(form.calls.length, 1, `expected one write, got ${form.calls.length}`)
-  assert.equal(form.calls[0].revision, 9, `the write used revision ${form.calls[0].revision}, not the freshly read 9`)
-  for (const { ops } of form.calls) {
-    for (const op of plain(ops)) {
-      assert.ok(op.op === 'set' || op.op === 'unset', `an unknown op ${String(op.op)} was submitted`)
-      assert.ok(Array.isArray(op.path) && op.path.length > 0, 'an op carried an empty path')
-      if (op.op === 'set') {
-        const whole = op.value !== null && typeof op.value === 'object' && !Array.isArray(op.value)
-        assert.equal(whole, false, `a whole object was set at ${op.path.join('.')}: ${JSON.stringify(op.value)}`)
+  for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
+    for (const call of ctx.configForms.get(ns).calls) {
+      for (const op of plain(call.ops)) {
+        assert.equal(op.path.join('.').includes('retryPolicy'), true, `${ns} received the non-retry path ${op.path.join('.')}`)
       }
     }
   }
-  assert.equal(form.calls[0].ops.some(op => op.path.length === 1 && op.path[0] === 'retryPolicy'), false, 'a whole retryPolicy was addressed as a path')
 })
 
-await check('Apply defaults skips provider rows that are not ready or not writable, and writes the ready ones', async () => {
+await check('Apply defaults skips rows that are not ready or not writable, and the section summary records each skip', async () => {
   const forms = makeForms({
-    'llm-deepseek-account': new BoundForm('llm-deepseek-account', { ...readySnapshot({}, 3), writable: false }),
     'llm-deepseek': new BoundForm('llm-deepseek', loadingSnapshot),
+    'llm-deepseek-account': new BoundForm('llm-deepseek-account', { ...readySnapshot({}, 3), writable: false }),
   })
   const { page, ctx } = mountPage({ forms })
   await flush()
@@ -2860,10 +2709,11 @@ await check('Apply defaults skips provider rows that are not ready or not writab
   assert.equal(ctx.configForms.get('llm-deepseek').calls.length, 0, 'a loading row was written')
   assert.equal(ctx.configForms.get('llm-deepseek-account').calls.length, 0, 'a read-only row was written')
   assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 1, 'the ready provider was not written')
-  assert.deepEqual(rowElements(page).map(node => node.props.applyOutcome), ['skipped', 'skipped', 'saved'], `the per-row gate outcomes drifted: ${JSON.stringify(rowElements(page).map(node => node.props.applyOutcome))}`)
-  const skippedRow = mountRow(page, 'deepseek-official')
-  assert.ok(renderedText(skippedRow.tree).includes(EN['status.loading']), 'the skipped row lost its own status note')
-  assert.equal(renderedText(skippedRow.tree).includes(`${EN['defaults.heading']}:`), false, 'a skipped row rendered an apply-outcome badge')
+  const text = renderedText(page.tree)
+  for (const displayName of ['DeepSeek', 'DeepSeek Account']) {
+    assert.ok(text.includes(`${displayName}: ${EN['apply.outcome.skipped']}`), `the section summary is missing the skipped outcome for ${displayName}`)
+  }
+  assert.ok(text.includes(`OpenRouter: ${EN['apply.outcome.saved']}`), 'the ready row lost its saved outcome')
 })
 
 await check('Apply defaults never sends an unconditional write for a ready row without a numeric revision', async () => {
@@ -2873,21 +2723,8 @@ await check('Apply defaults never sends an unconditional write for a ready row w
   buttonWithText(page.tree, [EN['defaults.applyAll']]).props.onClick()
   await flush()
   assert.equal(ctx.configForms.get('llm-deepseek').calls.length, 0, 'a row without a numeric revision was written unconditionally')
-  assert.equal(rowElement(page, 'deepseek-official').props.applyOutcome, 'skipped', 'the unfenced row was not recorded as skipped')
   assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 1, 'the fenced provider was not written')
-})
-
-await check('a provider row without a numeric revision keeps its controls and all three actions disabled', async () => {
-  const forms = makeForms({ 'llm-deepseek': new BoundForm('llm-deepseek', readySnapshot({}, undefined)) })
-  const { page } = mountPage({ forms })
-  await flush()
-  const row = mountRow(page, 'deepseek-official')
-  for (const key of ['provider.save', 'provider.reset', 'provider.useDefaults']) {
-    const button = buttonWithText(row.tree, [EN[key]])
-    assert.ok(button !== undefined, `the ${key} action is missing`)
-    assert.equal(button.props.disabled, true, `the ${key} action stayed enabled without a numeric revision`)
-  }
-  assert.equal(numericInputs(row.tree).every(input => input.props.disabled === true), true, 'the row controls stayed editable without a numeric revision')
+  assert.ok(renderedText(page.tree).includes(`DeepSeek: ${EN['apply.outcome.skipped']}`), 'the unfenced row was not recorded as skipped')
 })
 
 await check('two rows sharing one namespace each fence on the revision their predecessor advanced', async () => {
@@ -2902,150 +2739,457 @@ await check('two rows sharing one namespace each fence on the revision their pre
   assert.equal(form.calls.length, 2, `expected two writes on the shared namespace, got ${form.calls.length}`)
   assert.deepEqual(form.calls.map(call => call.revision), [4, 5], `the shared-namespace fences drifted: ${JSON.stringify(form.calls.map(call => call.revision))}`)
   assert.deepEqual(
-    form.calls.map(call => call.ops[1].path.join('.')),
+    form.calls.map(call => plain(call.ops)[1].path.join('.')),
     ['providers.openrouter.retryPolicy.maxRetries', 'providers.another.retryPolicy.maxRetries'],
     'the two rows wrote the wrong provider paths',
   )
 })
 
-/* ══ 11. validation ════════════════════════════════════════════════════════ */
+await check('a merged route Save writes the changed retry AND timeout leaves under the joined settings path in ONE fenced write', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  setTimeoutInput(card.tree, 0, '450000')
+  setTimeoutInput(card.tree, 1, '900000')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, `expected one merged route write, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 4, `the merged route write was fenced at ${form.calls[0].revision}`)
+  assertOps(form.calls[0].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy', 'mode'] },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 7 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'], value: ['RATE_LIMIT'] },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'initialDelayMs'], value: 250 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'maxDelayMs'], value: 5000 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'jitterRatio'], value: 0.2 },
+    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 450000 },
+    { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 900000 },
+  ], 'the merged route save ops drifted')
+  assert.ok(!JSON.stringify(plain(form.calls[0].ops)).includes('"retryPolicy":{"mode"'), 'a whole retryPolicy object was set')
+  card.unmount()
+})
 
-await check('an invalid retry limit disables Save and renders the field error', async () => {
+await check('an untouched retry half contributes nothing to a timeout-only Save', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setTimeoutInput(card.tree, 0, '450000')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 450000 },
+  ], 'a timeout-only Save must not project an untouched retry leaf')
+  card.unmount()
+})
+
+await check('clearing one seeded timeout leaf emits only its unset, and the merged Reset unsets the whole retryPolicy plus the family timeout leaves', async () => {
+  const forms = deviationForms({
+    openrouter: {
+      value: { retryPolicy: plain(PI_AI_RETRY_POLICY), streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 },
+      user: { retryPolicy: { mode: 'normal', maxRetries: 2 }, streamIdleTimeoutMs: 1_800_000, timeoutMs: 900_000 },
+    },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setTimeoutInput(card.tree, 1, '')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assertOps(form.calls[0].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
+  ], 'clearing one seeded timeout leaf must emit only its unset')
+  buttonWithText(card.tree, [EN['provider.reset']]).props.onClick()
+  await flush()
+  assertOps(form.calls[1].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy'] },
+    { op: 'unset', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'] },
+    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
+  ], 'the merged Reset ops drifted')
+  assert.equal(form.calls[1].revision, 4, 'the merged Reset did not use the snapshot revision')
+  assert.ok(renderedText(card.tree).includes(EN['status.routeReset']), 'the route Reset confirmation is missing')
+  card.unmount()
+})
+
+await check('reverting every stored retry leaf to the global values emits ONE whole-retryPolicy unset and the card disappears', async () => {
+  const forms = deviationForms({
+    openrouter: { value: { retryPolicy: { mode: 'normal', maxRetries: 7 } }, user: { retryPolicy: { mode: 'normal', maxRetries: 7 } } },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  assert.deepEqual(routeCardElements(page).map(node => node.props.row.provider), ['openrouter'], 'the stored-retry deviation is not listed')
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '5')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, `expected one revert write, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 4, 'the revert was not fenced at the snapshot revision')
+  assertOps(form.calls[0].ops, [{ op: 'unset', path: ['providers', 'openrouter', 'retryPolicy'] }], 'a full revert must collapse to ONE whole-retryPolicy unset')
+  card.unmount()
+  form.push(readySnapshot(piAiValue({}), 5, {}))
+  await flush()
+  assert.equal(routeCardElements(page).length, 0, 'the fully reverted route stayed listed')
+  assert.deepEqual(
+    pickerOptions(page.tree),
+    [EN['routes.pickerPlaceholder'], 'DeepSeek Account (deepseek-account)', 'DeepSeek (deepseek-official)', 'OpenRouter (openrouter)'],
+    'the reverted route did not return to the selector',
+  )
+})
+
+await check('Use defaults stages the validated global values and a Save reverts the route in one whole-retryPolicy unset', async () => {
+  const forms = deviationForms({
+    openrouter: {
+      value: { retryPolicy: plain(PI_AI_RETRY_POLICY) },
+      user: { retryPolicy: { mode: 'normal', maxRetries: 2 } },
+    },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  buttonWithText(card.tree, [EN['provider.useDefaults']]).props.onClick()
+  await flush()
+  assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 0, 'Use defaults wrote to the Host')
+  assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'Use defaults did not stage the global values')
+  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [true, true, true, true, true], 'Use defaults did not stage the global code list')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy'] },
+  ], 'a Save after Use defaults must revert the whole retryPolicy')
+  card.unmount()
+})
+
+await check('a DeepSeek merged card writes namespace-root timeout paths and its Reset never sets a whole object', async () => {
+  const forms = deviationForms({
+    deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 7 } }, user: { retryPolicy: { maxRetries: 7 } } },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'deepseek-official')
+  setTimeoutInput(card.tree, 0, '600000')
+  setTimeoutInput(card.tree, 1, '120000')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-deepseek')
+  assert.equal(form.calls[0].revision, 2, 'the DeepSeek write did not use the namespace revision')
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['streamIdleTimeoutMs'], value: 600000 },
+    { op: 'set', path: ['filesApiTimeoutMs'], value: 120000 },
+  ], 'the DeepSeek timeout save must address the namespace root')
+  buttonWithText(card.tree, [EN['provider.reset']]).props.onClick()
+  await flush()
+  assertOps(form.calls[1].ops, [
+    { op: 'unset', path: ['retryPolicy'] },
+    { op: 'unset', path: ['streamIdleTimeoutMs'] },
+    { op: 'unset', path: ['filesApiTimeoutMs'] },
+  ], 'the DeepSeek Reset ops drifted')
+  for (const { ops } of form.calls) {
+    for (const op of plain(ops)) {
+      assert.ok(op.op === 'set' || op.op === 'unset', `an unknown op ${String(op.op)} was submitted`)
+      assert.ok(Array.isArray(op.path) && op.path.length > 0, 'an op carried an empty path')
+      if (op.op === 'set') {
+        const whole = op.value !== null && typeof op.value === 'object' && !Array.isArray(op.value)
+        assert.equal(whole, false, `a whole object was set at ${op.path.join('.')}`)
+      }
+    }
+  }
+  card.unmount()
+})
+
+await check('the merged Save is disabled when nothing changed, and 0 plus every malformed provider timeout is refused', async () => {
   const { page } = mountPage()
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  setNumeric(row.tree, 0, '2.5')
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on a fractional retry limit')
-  assert.ok(renderedText(row.tree).includes(EN['error.maxRetries']), 'the maxRetries error copy is missing')
+  const card = mountRouteCard(page, 'openrouter')
+  const save = () => buttonWithText(card.tree, [EN['provider.save']])
+  const reset = () => buttonWithText(card.tree, [EN['provider.reset']])
+  assert.equal(save().props.disabled, true, 'Save stayed enabled on an untouched card')
+  assert.equal(reset().props.disabled, false, 'Reset stayed disabled on a writable card')
+  for (const [label, value, copy] of [
+    ['0 on the idle watchdog', '0', 'error.streamIdleTimeoutMs'],
+    ['a negative value', '-1', 'error.streamIdleTimeoutMs'],
+    ['a fractional value', '1.5', 'error.streamIdleTimeoutMs'],
+    ['an overflow value', '2147483648', 'error.streamIdleTimeoutMs'],
+    ['a leading zero', '007', 'error.streamIdleTimeoutMs'],
+    ['exponent notation', '1e6', 'error.streamIdleTimeoutMs'],
+  ]) {
+    setTimeoutInput(card.tree, 0, value)
+    assert.equal(save().props.disabled, true, `Save stayed enabled on ${label}`)
+    assert.ok(renderedText(card.tree).includes(EN[copy]), `the ${copy} copy is missing for ${label}`)
+  }
+  setTimeoutInput(card.tree, 1, '0')
+  assert.equal(save().props.disabled, true, 'Save stayed enabled on a zero SDK request timeout')
+  assert.ok(renderedText(card.tree).includes(EN['error.timeoutMs']), 'the 0-request-timeout copy is missing')
+  setTimeoutInput(card.tree, 1, '')
+  setTimeoutInput(card.tree, 0, ' 2147483647 ')
+  assert.equal(save().props.disabled, false, 'the 2147483647 cap (whitespace-trimmed) must be accepted')
+  card.unmount()
+
+  const dsPage = mountPage({
+    forms: deviationForms({ deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 7 } }, user: { retryPolicy: { maxRetries: 7 } } } }),
+  })
+  await flush()
+  const dsCard = mountRouteCard(dsPage.page, 'deepseek-official')
+  setTimeoutInput(dsCard.tree, 1, '0')
+  assert.equal(buttonWithText(dsCard.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on a zero files-API timeout')
+  assert.ok(renderedText(dsCard.tree).includes(EN['error.filesApiTimeoutMs']), 'the 0-files-api copy is missing')
+  dsCard.unmount()
+})
+
+await check('the Unlimited preset fills the 2147483647 cap on every timeout field of the family', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  const presets = timeoutPresetButtons(card.tree)
+  assert.equal(presets.length, 2, 'the pi-ai card must offer one Unlimited preset per visible field')
+  presets[0].props.onClick()
+  presets[1].props.onClick()
+  assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.value), ['2147483647', '2147483647'], 'the pi-ai Unlimited preset must fill the cap, never 0')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 2_147_483_647 },
+    { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 2_147_483_647 },
+  ], 'the Unlimited preset did not persist the cap')
+  card.unmount()
+
+  const dsPage = mountPage({
+    forms: deviationForms({ deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 7 } }, user: { retryPolicy: { maxRetries: 7 } } } }),
+  })
+  await flush()
+  const dsCard = mountRouteCard(dsPage.page, 'deepseek-official')
+  const dsPresets = timeoutPresetButtons(dsCard.tree)
+  assert.equal(dsPresets.length, 2, 'the DeepSeek card must offer one Unlimited preset per visible field')
+  dsPresets[0].props.onClick()
+  dsPresets[1].props.onClick()
+  assert.deepEqual(timeoutInputs(dsCard.tree).map(input => input.props.value), ['2147483647', '2147483647'], 'the DeepSeek Unlimited preset must cover the Files API field too')
+  dsCard.unmount()
+})
+
+await check('a route Save and the global Save never write each other namespace', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 1, 'the route Save did not write its own namespace')
+  for (const ns of ['llm-api-call-tuning', 'llm-deepseek', 'llm-deepseek-account']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `the route Save wrote the unrelated namespace ${ns}`)
+  }
+  card.unmount()
+  buttonWithText(page.tree, [EN['global.save']]).props.onClick()
+  await flush()
+  assert.equal(ctx.configForms.get('llm-api-call-tuning').calls.length, 1, 'the global Save did not write its own namespace')
+  assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 1, 'the global Save wrote a provider namespace')
+  for (const op of plain(ctx.configForms.get('llm-api-call-tuning').calls[0].ops)) {
+    assert.ok(op.path.length === 1, `the global Save wrote the nested path ${op.path.join('.')}`)
+    assert.ok(['mode', 'maxRetries', 'initialDelayMs', 'maxDelayMs', 'jitterRatio', 'retryableCodes', 'headersTimeoutMs', 'bodyTimeoutMs'].includes(op.path[0]), `the global Save wrote an unexpected leaf ${op.path[0]}`)
+  }
+})
+
+await check('a route card without a numeric revision or in a read-only namespace disables every action and never writes', async () => {
+  const noRevision = makeForms({
+    'llm-deepseek': new BoundForm('llm-deepseek', readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 7 } }, undefined, { retryPolicy: { maxRetries: 7 } })),
+  })
+  const noRev = mountPage({ forms: noRevision })
+  await flush()
+  const card = mountRouteCard(noRev.page, 'deepseek-official')
+  for (const key of ['provider.save', 'provider.reset', 'provider.useDefaults']) {
+    const button = buttonWithText(card.tree, [EN[key]])
+    assert.ok(button !== undefined, `the ${key} action is missing`)
+    assert.equal(button.props.disabled, true, `the ${key} action stayed enabled without a numeric revision`)
+  }
+  assert.equal(textInputs(card.tree).every(input => input.props.disabled === true), true, 'the card controls stayed editable without a numeric revision')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  buttonWithText(card.tree, [EN['provider.reset']]).props.onClick()
+  await flush()
+  assert.equal(noRev.ctx.configForms.get('llm-deepseek').calls.length, 0, 'a row without a numeric revision wrote its namespace')
+  card.unmount()
+
+  const readOnlyForms = makeForms({
+    'llm-deepseek': new BoundForm('llm-deepseek', { ...readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 7 } }, 2, { retryPolicy: { maxRetries: 7 } }), writable: false }),
+  })
+  const readOnly = mountPage({ forms: readOnlyForms })
+  await flush()
+  const roCard = mountRouteCard(readOnly.page, 'deepseek-official')
+  assert.ok(renderedText(roCard.tree).includes(EN['status.readOnly']), 'a read-only route card did not render the read-only note')
+  assert.equal(buttonWithText(roCard.tree, [EN['provider.save']]), undefined, 'a read-only route card rendered Save')
+  assert.equal(retryInputs(roCard.tree).length, 0, 'a read-only route card rendered editable controls')
+  roCard.unmount()
+})
+
+/* ══ 11. validation ════════════════════════════════════════════════════════ */
+
+/** The forms for one deviating DeepSeek route, so its merged card is on the page. */
+const deepseekCardForms = () => deviationForms({
+  deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 7 } }, user: { retryPolicy: { mode: 'normal', maxRetries: 7 } } },
+})
+
+await check('an invalid retry limit disables the merged Save and renders the field error', async () => {
+  const { page } = mountPage({ forms: deepseekCardForms() })
+  await flush()
+  const card = mountRouteCard(page, 'deepseek-official')
+  setRetryInput(card.tree, 0, '2.5')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on a fractional retry limit')
+  assert.ok(renderedText(card.tree).includes(EN['error.maxRetries']), 'the maxRetries error copy is missing')
+  card.unmount()
 })
 
 await check('out-of-range and mis-ordered delays are refused with their own copy', async () => {
-  const { page } = mountPage()
+  const { page } = mountPage({ forms: deepseekCardForms() })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  setNumeric(row.tree, 1, '0')
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on a zero delay')
-  assert.ok(renderedText(row.tree).includes(EN['error.initialDelayMs']), 'the initial-delay error copy is missing')
-  setNumeric(row.tree, 1, '20000')
-  setNumeric(row.tree, 2, '10000')
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled when the initial delay exceeded the maximum')
-  assert.ok(renderedText(row.tree).includes(EN['error.initialDelayOrder']), 'the delay-order error copy is missing')
+  const card = mountRouteCard(page, 'deepseek-official')
+  setRetryInput(card.tree, 1, '0')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on a zero delay')
+  assert.ok(renderedText(card.tree).includes(EN['error.initialDelayMs']), 'the initial-delay error copy is missing')
+  setRetryInput(card.tree, 1, '20000')
+  setRetryInput(card.tree, 2, '10000')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled when the initial delay exceeded the maximum')
+  assert.ok(renderedText(card.tree).includes(EN['error.initialDelayOrder']), 'the delay-order error copy is missing')
+  card.unmount()
 })
 
 await check('an out-of-range jitter and an empty code list are refused', async () => {
-  const { page } = mountPage()
+  const { page } = mountPage({ forms: deepseekCardForms() })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  setNumeric(row.tree, 3, '2')
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on jitter 2')
-  assert.ok(renderedText(row.tree).includes(EN['error.jitterRatio']), 'the jitter error copy is missing')
-  setNumeric(row.tree, 3, '0.1')
-  for (let index = 0; index < 5; index += 1) toggleCode(row.tree, index, false)
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled with no retryable codes')
-  assert.ok(renderedText(row.tree).includes(EN['error.retryableCodes']), 'the retryable-codes error copy is missing')
+  const card = mountRouteCard(page, 'deepseek-official')
+  setRetryInput(card.tree, 3, '2')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled on jitter 2')
+  assert.ok(renderedText(card.tree).includes(EN['error.jitterRatio']), 'the jitter error copy is missing')
+  setRetryInput(card.tree, 3, '0.1')
+  for (let index = 0; index < 5; index += 1) toggleCode(card.tree, index, false)
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'Save stayed enabled with no retryable codes')
+  assert.ok(renderedText(card.tree).includes(EN['error.retryableCodes']), 'the retryable-codes error copy is missing')
+  card.unmount()
 })
 
-await check('an always-mode provider row skips the normal-only validation, while the defaults card keeps it', async () => {
-  const { page } = mountPage()
+await check('an always-mode card skips the normal-only validation and unsets the two inactive leaves on Save, while the global card keeps validating', async () => {
+  const forms = deviationForms({
+    openrouter: {
+      value: { retryPolicy: plain(PI_AI_RETRY_POLICY) },
+      user: { retryPolicy: { mode: 'normal', maxRetries: 2, retryableCodes: ['RATE_LIMIT'], backoff: { initialDelayMs: 250, maxDelayMs: 5000, jitterRatio: 0.2 } } },
+    },
+  })
+  const { page, ctx } = mountPage({ forms })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  setNumeric(row.tree, 0, '2.5')
-  setMode(row.tree, 'always')
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, false, 'always mode still validated the inactive retry limit')
-  row.unmount()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '2.5')
+  setMode(card.tree, 'always')
+  await flush()
+  assert.equal(codeCheckboxes(card.tree).length, 0, 'the code list stayed rendered in always mode')
+  assert.ok(renderedText(card.tree).includes(EN['provider.alwaysNote']), 'the always-mode note is missing')
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, false, 'always mode still validated the inactive retry limit')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'mode'], value: 'always' },
+    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'] },
+    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'] },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'initialDelayMs'], value: 250 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'maxDelayMs'], value: 5000 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'jitterRatio'], value: 0.2 },
+  ], 'the always-mode save ops drifted')
+  card.unmount()
 
-  setNumeric(page.tree, 0, '2.5')
+  setRetryInput(page.tree, 0, '2.5')
   setMode(page.tree, 'always')
-  assert.equal(buttonWithText(page.tree, [EN['defaults.save']]).props.disabled, true, 'the defaults card stopped validating the values it always owns')
-  assert.ok(renderedText(page.tree).includes(EN['error.maxRetries']), 'the defaults card did not render the retry-limit error')
-})
-
-await check('a read-only container disables every control and the actions', async () => {
-  const forms = makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', { ...readySnapshot(TUNE_VALUE, 7), writable: false }) })
-  const { page } = mountPage({ forms })
-  await flush()
-  assert.equal(numericInputs(page.tree).every(input => input.props.disabled === true), true, 'a read-only namespace left the inputs enabled')
-  assert.equal(buttonWithText(page.tree, [EN['defaults.save']]).props.disabled, true, 'Save defaults stayed enabled in a read-only namespace')
-  assert.equal(buttonWithText(page.tree, [EN['defaults.applyAll']]).props.disabled, true, 'Apply defaults stayed enabled in a read-only namespace')
+  assert.equal(buttonWithText(page.tree, [EN['global.save']]).props.disabled, true, 'the global card stopped validating the values it always owns')
+  assert.ok(renderedText(page.tree).includes(EN['error.maxRetries']), 'the global card did not render the retry-limit error')
 })
 
 /* ══ 12. refusals, managed-elsewhere, and the one retry ═══════════════════ */
 
-await check('a resolved-false refusal (the realistic ConfigForm outcome) shows the generic refusal copy, never the managed copy', async () => {
-  const forms = makeForms({ 'llm-pi-ai': new BoundForm('llm-pi-ai', readySnapshot({}, 4), { accept: false }) })
+await check('a resolved-false refusal shows the generic refusal copy, never the managed copy, and is not retried', async () => {
+  const forms = makeForms()
+  forms['llm-pi-ai'].accept = false
   const { page } = mountPage({ forms })
   await flush()
-  const row = mountRow(page, 'openrouter')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
-  const text = renderedText(row.tree)
-  assert.ok(text.includes(EN['error.refused']), `the refusal copy is missing: ${text}`)
+  const text = renderedText(card.tree)
+  assert.ok(text.includes(EN['error.refused']), 'the refusal copy is missing')
   assert.equal(text.includes(EN['error.managed']), false, 'a resolved-false refusal rendered the managed-elsewhere copy')
   assert.equal(forms['llm-pi-ai'].calls.length, 1, 'a resolved-false refusal was retried without a revision move')
+  card.unmount()
 })
 
 await check('DEFENSIVE ONLY: a direct RemoteError settings/rejected rejection is classified managed (fake form; unreachable through ConfigForm)', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({}, 2), {
+  const form = new BoundForm('llm-pi-ai', readySnapshot(piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }), 4, { providers: { openrouter: { retryPolicy: { maxRetries: 2 } } } }), {
     reject: () => Promise.reject(Object.assign(new Error('opaque'), { code: 'settings/rejected' })),
   })
-  const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
+  const { page } = mountPage({ forms: makeForms({ 'llm-pi-ai': form }) })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
-  assert.ok(renderedText(row.tree).includes(EN['error.managed']), 'the managed-elsewhere copy is missing for a settings/rejected rejection')
-  assert.equal(renderedText(row.tree).includes(EN['error.refused']), false, 'the generic refusal copy was rendered for a managed rejection')
+  assert.ok(renderedText(card.tree).includes(EN['error.managed']), 'the managed-elsewhere copy is missing for a settings/rejected rejection')
+  assert.equal(renderedText(card.tree).includes(EN['error.refused']), false, 'the generic refusal copy was rendered for a managed rejection')
+  card.unmount()
 })
 
 await check('DEFENSIVE ONLY: a rejection carrying the override marker is managed even without the settings/rejected code', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({}, 2), {
-    reject: () => Promise.reject(new Error('Configuration for "llm-deepseek" is overridden by a home patch or command-line overlay')),
+  const form = new BoundForm('llm-pi-ai', readySnapshot(piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }), 4, { providers: { openrouter: { retryPolicy: { maxRetries: 2 } } } }), {
+    reject: () => Promise.reject(new Error('Configuration for "llm-pi-ai" is overridden by a home patch or command-line overlay')),
   })
-  const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
+  const { page } = mountPage({ forms: makeForms({ 'llm-pi-ai': form }) })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
-  assert.ok(renderedText(row.tree).includes(EN['error.managed']), 'the override-marker rejection was not classified as managed')
+  assert.ok(renderedText(card.tree).includes(EN['error.managed']), 'the override-marker rejection was not classified as managed')
+  card.unmount()
 })
 
 await check('DEFENSIVE ONLY: any other rejection is a plain refusal and is not retried', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({}, 2), {
+  const form = new BoundForm('llm-pi-ai', readySnapshot(piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }), 4, { providers: { openrouter: { retryPolicy: { maxRetries: 2 } } } }), {
     reject: () => Promise.reject(new Error('transport failed')),
   })
-  const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
+  const { page } = mountPage({ forms: makeForms({ 'llm-pi-ai': form }) })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
-  assert.ok(renderedText(row.tree).includes(EN['error.refused']), 'a generic rejection was not shown as a refusal')
+  assert.ok(renderedText(card.tree).includes(EN['error.refused']), 'a generic rejection was not shown as a refusal')
   assert.equal(form.calls.length, 1, `a generic rejection was retried ${form.calls.length} times`)
+  card.unmount()
 })
 
 await check('a superseded revision is retried once at the freshly read revision', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({}, 2), { reviseOnRefuse: true })
-  const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
+  const form = new BoundForm('llm-pi-ai', readySnapshot(piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }), 4, { providers: { openrouter: { retryPolicy: { maxRetries: 2 } } } }), { reviseOnRefuse: true })
+  const { page } = mountPage({ forms: makeForms({ 'llm-pi-ai': form }) })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
   assert.equal(form.calls.length, 2, `expected one retry, got ${form.calls.length} calls`)
-  assert.equal(form.calls[0].revision, 2, 'the first attempt did not use revision 2')
-  assert.equal(form.calls[1].revision, 3, 'the retry did not use the fresh revision 3')
-  assert.ok(renderedText(row.tree).includes(EN['status.saved']), 'the retried save did not report success')
+  assert.equal(form.calls[0].revision, 4, 'the first attempt did not use revision 4')
+  assert.equal(form.calls[1].revision, 5, 'the retry did not use the fresh revision 5')
+  assert.ok(renderedText(card.tree).includes(EN['status.saved']), 'the retried save did not report success')
+  card.unmount()
 })
 
 await check('a refusal at the fresh revision is not retried a second time', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({}, 2), { refuseRevising: true })
-  const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
+  const form = new BoundForm('llm-pi-ai', readySnapshot(piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }), 4, { providers: { openrouter: { retryPolicy: { maxRetries: 2 } } } }), { refuseRevising: true })
+  const { page } = mountPage({ forms: makeForms({ 'llm-pi-ai': form }) })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
   assert.equal(form.calls.length, 2, `the page retried ${form.calls.length} times; exactly one retry is allowed`)
-  assert.equal(form.calls[0].revision, 2, 'the first attempt did not use revision 2')
-  assert.equal(form.calls[1].revision, 3, 'the retry did not use the fresh revision')
-  assert.ok(renderedText(row.tree).includes(EN['error.refused']), 'the second refusal was not shown')
+  assert.equal(form.calls[0].revision, 4, 'the first attempt did not use revision 4')
+  assert.equal(form.calls[1].revision, 5, 'the retry did not use the fresh revision 5')
+  assert.ok(renderedText(card.tree).includes(EN['error.refused']), 'the second refusal was not shown')
+  card.unmount()
 })
 
 /* ══ 13. provider directory and degradation ═══════════════════════════════ */
@@ -3069,11 +3213,13 @@ await check('both bare-array and {ok,value} envelope directory replies are accep
     },
   })
   await flush()
-  assert.equal(rowElements(bare.page).length, 3, 'a bare-array directory reply was not accepted')
+  assert.equal(routeCardElements(bare.page).length, 1, 'a bare-array directory reply was not accepted')
+  assert.equal(pickerOptions(bare.page.tree).length, 3, 'a bare-array directory reply did not reach the selector')
 
   const envelope = mountPage()
   await flush()
-  assert.equal(rowElements(envelope.page).length, 3, 'the envelope directory reply was not accepted')
+  assert.equal(routeCardElements(envelope.page).length, 1, 'the envelope directory reply was not accepted')
+  assert.equal(pickerOptions(envelope.page.tree).length, 3, 'the envelope directory reply did not reach the selector')
 })
 
 await check('a deployment without the Remote LLM directory degrades to providers.unavailable', async () => {
@@ -3081,7 +3227,8 @@ await check('a deployment without the Remote LLM directory degrades to providers
   await flush()
   const text = renderedText(page.tree)
   assert.ok(text.includes(EN['providers.unavailable']), 'the provider-unavailable note is missing')
-  assert.equal(rowElements(page).length, 0, 'rows were rendered without a provider directory')
+  assert.equal(routeCardElements(page).length, 0, 'cards were rendered without a provider directory')
+  assert.equal(pickerSelect(page.tree), undefined, 'the selector rendered without a provider directory')
   const state = await ctx.state.registered[0].options.inject().readProviders()
   assert.deepEqual(plain(state), { status: 'unavailable', rows: [] }, 'readProviders did not report unavailable')
 })
@@ -3106,6 +3253,7 @@ await check('a refused directory envelope and a throwing read both degrade to pr
   assert.ok(renderedText(throwing.page.tree).includes(EN['providers.error']), 'a throwing read did not render the directory error note')
   const state = await throwing.ctx.state.registered[0].options.inject().readProviders()
   assert.equal(state.status, 'error', 'readProviders did not report the throwing read as an error')
+  throwing.page.unmount()
 })
 
 await check('an empty provider directory renders the empty note and no rows', async () => {
@@ -3113,56 +3261,72 @@ await check('an empty provider directory renders the empty note and no rows', as
   await flush()
   const text = renderedText(page.tree)
   assert.ok(text.includes(EN['providers.empty']), 'the empty-directory note is missing')
-  assert.equal(rowElements(page).length, 0, 'rows were rendered for an empty directory')
+  assert.equal(text.includes(EN['routes.empty']), false, 'the routes-empty note doubled up with the directory-empty note')
+  assert.equal(routeCardElements(page).length, 0, 'cards were rendered for an empty directory')
+  assert.equal(pickerSelect(page.tree), undefined, 'the selector rendered for an empty directory')
 })
 
-/* ══ 14. re-seeding and the reported outcome ══════════════════════════════ */
+/* ══ 14. re-seeding, badges, and the settled outcome ══════════════════════ */
 
-await check('a pushed snapshot re-seeds the row, and a refused write surfaces the recovery values', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 4 } }, 2), { accept: false })
+await check('a pushed snapshot re-seeds the merged card, and a refused write surfaces the recovery values', async () => {
+  const form = new BoundForm('llm-deepseek', readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 4 } }, 2, { retryPolicy: { mode: 'normal', maxRetries: 4 } }), { accept: false })
   const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  setNumeric(row.tree, 0, '8')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'deepseek-official')
+  setRetryInput(card.tree, 0, '8')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
-  assert.equal(buttonWithText(row.tree, [EN['provider.save']]).props.disabled, false, 'the row stayed disabled after a refusal')
-  // The controller's own recovery read publishes the Host's real value.
-  form.push(readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 4 } }, 3))
-  assert.deepEqual(numericInputs(row.tree).map(input => input.props.value), ['4', '500', '10000', '0.1'], 'the row did not re-seed from the recovery read')
-  assert.ok(renderedText(row.tree).includes(EN['error.refused']), 'the refusal copy did not survive the re-seed')
+  // The merged card clears its staged edits on EVERY settled Save (saved or
+  // refused) and disables Save while nothing is staged; a fresh edit must make
+  // the card usable again, which is what this check protects.
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, true, 'the merged card kept a staged edit after a settled refusal')
+  form.push(readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 4 } }, 3, { retryPolicy: { mode: 'normal', maxRetries: 4 } }))
+  await flush()
+  assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['4', '500', '10000', '0.1'], 'the card did not re-seed from the recovery read')
+  assert.ok(renderedText(card.tree).includes(EN['error.refused']), 'the refusal copy did not survive the re-seed')
+  setRetryInput(card.tree, 0, '8')
+  await flush()
+  assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, false, 'the card did not become usable again after a refusal')
+  card.unmount()
 })
 
-await check('the override badge follows the user layer, not a value comparison', async () => {
-  const form = new BoundForm('llm-deepseek', readySnapshot({ retryPolicy: { mode: 'normal' } }, 2, {}))
-  const { page } = mountPage({ forms: makeForms({ 'llm-deepseek': form }) })
+await check('the retry badge follows the user layer, not a value comparison', async () => {
+  const stored = mountPage()
   await flush()
-  let row = mountRow(page, 'deepseek-official')
-  assert.ok(renderedText(row.tree).includes(EN['provider.source.default']), 'an empty user layer did not render the default badge')
-  row.unmount()
-  // A user-layer retryPolicy equal to the effective value still counts.
-  form.push(readySnapshot({ retryPolicy: { mode: 'normal' } }, 3, { retryPolicy: { mode: 'normal' } }))
-  row = mountRow(page, 'deepseek-official')
-  assert.ok(renderedText(row.tree).includes(EN['provider.source.override']), 'a present user-layer retryPolicy did not render the override badge')
+  let card = mountRouteCard(stored.page, 'openrouter')
+  assert.ok(renderedText(card.tree).includes(EN['provider.source.override']), 'a present user-layer retryPolicy did not render the override badge')
+  card.unmount()
+  stored.page.unmount()
+
+  const valueOnly = mountPage({
+    forms: deviationForms({ openrouter: { value: { retryPolicy: plain(PI_AI_RETRY_POLICY) }, user: undefined } }),
+  })
+  await flush()
+  card = mountRouteCard(valueOnly.page, 'openrouter')
+  assert.ok(renderedText(card.tree).includes(EN['provider.source.default']), 'a value-only deviation without user storage must show the default badge')
+  card.unmount()
+  valueOnly.page.unmount()
 })
 
 await check('a save clears the staged edits so the next snapshot is shown', async () => {
   const { page, ctx } = mountPage()
   await flush()
-  const row = mountRow(page, 'deepseek-official')
-  const form = ctx.configForms.get('llm-deepseek')
-  setNumeric(row.tree, 0, '6')
-  buttonWithText(row.tree, [EN['provider.save']]).props.onClick()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
   assert.equal(form.calls.length, 1, 'the save did not cross the wire')
-  form.push(readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 1 } }, 3))
-  assert.deepEqual(numericInputs(row.tree).map(input => input.props.value), ['1', '500', '10000', '0.1'], 'the staged edit shadowed the next snapshot')
+  form.push(readySnapshot(piAiValue({ retryPolicy: { mode: 'normal', maxRetries: 1 } }), 5, { providers: { openrouter: { retryPolicy: { maxRetries: 1 } } } }))
+  await flush()
+  assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['1', '500', '10000', '0.1'], 'the staged edit shadowed the next snapshot')
+  card.unmount()
 })
 
-await check('an apply-all row that refuses (or, defensively, rejects) reports its own outcome without disturbing the others', async () => {
+await check('Apply defaults reports each refused and managed outcome in the section summary without disturbing the others', async () => {
   const forms = makeForms({
     'llm-deepseek': new BoundForm('llm-deepseek', readySnapshot({}, 2), { accept: false }),
-    'llm-pi-ai': new BoundForm('llm-pi-ai', readySnapshot({}, 4), {
+    'llm-pi-ai': new BoundForm('llm-pi-ai', readySnapshot(piAiValue({ retryPolicy: plain(PI_AI_RETRY_POLICY) }), 4, { providers: { openrouter: { retryPolicy: { maxRetries: 2 } } } }), {
       reject: () => Promise.reject(Object.assign(new Error('opaque'), { code: 'settings/rejected' })),
     }),
   })
@@ -3170,12 +3334,10 @@ await check('an apply-all row that refuses (or, defensively, rejects) reports it
   await flush()
   buttonWithText(page.tree, [EN['defaults.applyAll']]).props.onClick()
   await flush()
-  assert.deepEqual(rowElements(page).map(node => node.props.applyOutcome), ['saved', 'refused', 'managed'], `the per-row apply outcomes drifted: ${JSON.stringify(rowElements(page).map(node => node.props.applyOutcome))}`)
-  assert.equal(forms['llm-deepseek-account'].calls.length, 1, 'the successful provider was not written')
-  const refusedRow = mountRow(page, 'deepseek-official')
-  assert.ok(renderedText(refusedRow.tree).includes(`${EN['defaults.heading']}: ${EN['apply.outcome.refused']}`), 'the refused apply outcome copy is missing')
-  const managedRow = mountRow(page, 'openrouter')
-  assert.ok(renderedText(managedRow.tree).includes(`${EN['defaults.heading']}: ${EN['apply.outcome.managed']}`), 'the managed apply outcome copy is missing')
+  const text = renderedText(page.tree)
+  assert.ok(text.includes(`DeepSeek: ${EN['apply.outcome.refused']}`), 'the refused apply outcome is missing from the summary')
+  assert.ok(text.includes(`DeepSeek Account: ${EN['apply.outcome.saved']}`), 'the saved apply outcome is missing from the summary')
+  assert.ok(text.includes(`OpenRouter: ${EN['apply.outcome.managed']}`), 'the managed apply outcome is missing from the summary')
 })
 
 /* ══ summary ═══════════════════════════════════════════════════════════════ */

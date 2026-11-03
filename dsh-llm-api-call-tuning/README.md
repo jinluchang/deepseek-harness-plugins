@@ -10,27 +10,36 @@ but each provider owns its own copy (`llm-deepseek` and `llm-deepseek-account` u
 variable, or GUI-core page for them. Tuning them by hand means editing every provider row and keeping
 five numbers in sync.
 
-The page has four parts:
+The page is organised in **two tiers**:
 
-- **Global defaults** — the six retry values stored once in this plugin's own settings namespace
-  (`llm-api-call-tuning`) as a **preset**. Saving them changes **no provider**.
-- **Provider retry policies** — one row per active provider route, showing that route's **effective**
-  retry policy and writing leaf-path operations **directly into the provider's own settings
-  namespace**. A row is editable only when its namespace is served; declared-but-dormant routes, routes
-  without a settings namespace, and routes whose namespaces are unserved are listed as read-only rows.
-- **Provider timeouts** — one row per active route for the per-route application-layer timeouts:
-  `streamIdleTimeoutMs` on every route, `timeoutMs` on `llm-pi-ai` routes, and `filesApiTimeoutMs` on the
-  two DeepSeek routes. A blank field leaves the package/SDK default in force; `0` is refused and the
-  **Unlimited** preset fills the `2147483647` ms cap (a limit, not an off switch).
-- **Fetch timeouts** — the two process-wide HTTP timers `headersTimeoutMs` and `bodyTimeoutMs`, applied by
-  the Host to the fetch dispatcher that every provider route, web search, and HTTP MCP server shares.
-  Both are `unset` by default, so a fresh install changes no behavior; `0` explicitly disables a timer
-  and a positive integer sets it in milliseconds.
+- **Global settings card (first)** — one card holding every global knob in two labeled sub-groups:
+  - **Retries** — the six retry values stored once in this plugin's own settings namespace
+    (`llm-api-call-tuning`) as a **preset**. Saving them changes **no provider**.
+  - **Fetch timeouts** — the two process-wide HTTP timers `headersTimeoutMs` and `bodyTimeoutMs`, applied
+    by the Host to the fetch dispatcher that every provider route, web search, and HTTP MCP server shares.
+    Both are `unset` by default, so a fresh install changes no behavior; `0` explicitly disables a timer
+    and a positive integer sets it in milliseconds.
+  One **Save global settings** writes the six retry leaves and the two fetch leaves in a single write;
+  **Reset to system defaults** clears only the two fetch timers.
+- **Per-route overrides (below)** — one route section with a native **route picker** above the list, then
+  **one merged card per DEVIATING provider route**, carrying that route's retry policy and its
+  application-layer timeouts as two sub-groups (**Retry policy** / **Timeouts**). Retry and timeout are
+  no longer separate sections. A route appears when its **effective stored retry policy differs in at
+  least one leaf** from the global retry values, or when the route **stores any timeout leaf
+  explicitly**; an entry stored equal to the global values is hidden. A route card writes leaf-path
+  operations **directly into that provider's own settings namespace**, and nothing is written until you
+  edit a field.
 
-The provider rows are authoritative; the global defaults are copied only when you explicitly ask
-(**Use defaults** on a row, or **Apply defaults to all active providers**). The two fetch timers are a
-separate, **process-wide** side effect: they are not part of the retry preset and are never copied onto a
-provider route. The wire format is frozen in [CONTRACT.md](CONTRACT.md).
+The listing rule is deliberately asymmetric: retry deviation is **value-based** (compared with the
+global retry values), while timeout deviation is **presence-based**, because the global fetch timers are
+undici **transport** timers and a route's `streamIdleTimeoutMs` / `timeoutMs` / `filesApiTimeoutMs` are
+application-layer **watchdogs** — different knobs, with no global counterpart to compare against. These
+are **provider routes, never models**: DSH resolves retry and timeout policy once per route.
+
+The provider routes are authoritative; the global retry values are copied only when you explicitly ask
+(**Use defaults** on a route card, or **Apply defaults to all active providers**). The two fetch timers
+are a separate, **process-wide** side effect: they are not part of the retry preset and are never copied
+onto a provider route. The wire format is frozen in [CONTRACT.md](CONTRACT.md).
 
 ## Install
 
@@ -65,26 +74,38 @@ registry: installing from this checkout, an absolute path, or `npm pack` is the 
 ## Use
 
 Open **Settings** (the account menu at the bottom of the sidebar) and choose **LLM API call tuning**,
-the last nav row (section order 45). The page renders:
+the last nav row (section order 45). The page renders exactly two tiers:
 
-1. **Global defaults** — one control for each of the six retry fields below, a **Save defaults**
-   action, and **Apply defaults to all active providers**. These values are stored in
-   `llm-api-call-tuning` and are a preset: saving them does not touch a provider.
-2. **Provider retry policies** — one **editable** row per active provider route (account and official
-   routes first), each showing its namespace, an *override* / *default* badge, the six fields seeded
-   from the route's effective retry policy, and **Save**, **Reset**, and **Use defaults**. A
-   declared-but-dormant route, a route without a settings namespace, and a route whose namespace the
-   deployment does not serve are listed read-only and say why.
-3. **Provider timeouts** — one row per active route, with **Save timeouts** and **Reset timeouts** and
-   an **Unlimited** preset per field. A blank field keeps the package/SDK default, `0` is refused, and
-   the preset fills `2147483647` ms. Only active routes are editable: writing a timeout leaf onto a
-   dormant route would materialize a partial provider profile and could activate it.
-4. **Fetch timeouts** — two text inputs for the process-wide HTTP timers, with **Save timeouts** and
-   **Reset to system defaults**. An empty input is the `unset` (system-default) state, `0` disables the
-   timer, and a positive integer is the limit in milliseconds.
+1. **Global settings** — one card, first, with two labeled sub-groups and one **Save global settings**:
+   - **Retries** — one control for each of the six retry fields in the table below. These values are
+     stored in `llm-api-call-tuning` and are a **preset**: saving them does not touch a provider.
+   - **Fetch timeouts** — the two process-wide HTTP timers, plus **Reset to system defaults**.
+   The card also carries **Apply defaults to all active providers**.
+2. **Per-route overrides** — a native **route picker** and an **Add** button above the list, then **one
+   merged card per deviating route**. A card carries its **Retry policy** and **Timeouts** sub-groups,
+   one **Save**, one **Reset**, and **Use defaults** (retry half). Only routes that deviate are listed;
+   the picker offers the remaining routes and excludes the ones already listed. Picking a route
+   materializes its card locally from the effective values and **writes nothing** until you edit a field
+   and save. Editing a retry leaf back to its global value (or clearing a timeout) removes that override,
+   so the card disappears once the route no longer deviates. An empty list says "No provider route
+   deviates from the global settings.", and "Every editable route is already listed." appears when the
+   picker has nothing left to offer.
 
-The retry field table (same values the Host's `Config` and the upstream retry resolver use), followed
-by the two process-wide fetch fields:
+A route is listed when its **effective stored retry policy differs in at least one leaf** from the
+global retry values, **or** when the route **stores any timeout leaf** it owns. The two halves are
+deliberately asymmetric: the global fetch timers are undici transport timers, while a route's
+`streamIdleTimeoutMs` / `timeoutMs` / `filesApiTimeoutMs` are application-layer watchdogs, so there is no
+global value to compare a route timeout against — presence is the only meaningful test there. A route
+that stores a timeout equal to the package default is therefore still listed.
+
+Routes that are declared but dormant, that declare no settings namespace, or whose namespace this
+deployment does not serve are **not listed and not pickable**: without a live config form their deviation
+cannot be proven, and writing a timeout leaf would materialize a partial provider profile and could
+activate a dormant route.
+
+The retry field table (same values the Host's `Config` and the upstream retry resolver use) applies to
+the global card's **Retries** sub-group and to every route card; the two process-wide fetch fields
+follow:
 
 | Field | Meaning | Accepts | Code default |
 | --- | --- | --- | --- |
@@ -104,24 +125,46 @@ the schema deliberately has no `.default()`, so a fresh install materializes no 
 dispatcher defaults apply. `unset` means no behavior change; `0` is a real value that disables that one
 timer; a positive integer sets it.
 
-### Saving a provider row
+### Saving the global card
 
-**Save** validates the draft locally first — a fractional retry limit, a delay of `0` or above
-`2147483647`, an initial delay above the maximum, a jitter outside `[0, 1]`, or an empty/unknown/
-duplicate code list is refused with a localized message and **no Host call** — then submits **one
-atomic write of leaf operations** at the revision the page last read. A `normal`-mode save sets
-`retryPolicy.mode`, `retryPolicy.maxRetries`, `retryPolicy.retryableCodes` and the three
-`retryPolicy.backoff.*` leaves. An `always`-mode save sets `retryPolicy.mode` and **unsets**
-`retryPolicy.maxRetries` and `retryPolicy.retryableCodes`, because those are inactive upstream. A whole
-`retryPolicy` object is never set, so sibling configuration (base URL, credentials reference, models)
-is left alone.
+**Save global settings** validates the six retry fields and the two fetch timers locally first (the retry
+rules are in *Saving a route card* below), then writes **one atomic op list at one revision fence**: the
+six retry `set` leaves followed by the two fetch leaves, where an empty fetch field emits an `unset` and
+a typed value — including `0` — emits a `set`. Nothing is projected onto a provider: the retry values are
+a preset, and the fetch leaves are a process-wide side effect. **Reset to system defaults** clears only
+the two fetch leaves, so the Host's system defaults apply again; the six retry defaults keep their stored
+values.
 
-**Reset** clears the provider's `retryPolicy` with the single `unset` of
-`[...settingsPath, 'retryPolicy']`, so the provider falls back to its own defaults. **Use defaults**
-copies the validated global defaults into the row's draft; nothing is written until **Save**.
+### Saving a route card
 
-A write is attempted only when the row's form reports `ready`, is not read-only, and carries a numeric
-revision; that same read is the revision fence, so the page never sends an unconditional write. A row
+**Save** validates both drafts locally first — a fractional retry limit, a delay of `0` or above
+`2147483647`, an initial delay above the maximum, a jitter outside `[0, 1]`, an empty/unknown/duplicate
+code list, or a timeout outside blank/`1..2147483647` is refused with a localized message and **no Host
+call** — then submits **one atomic write of leaf operations at one revision fence**, carrying that
+route's retry leaves and its changed timeout leaves together.
+
+The retry half is written **relative to the global retry values**: a leaf whose draft differs from the
+global value is `set`; a leaf turned back to the global value is `unset` (only when the user layer
+actually stores it); and a stored leaf that already equals the global value is cleaned up with an
+`unset` as well. When the retry half's list is non-empty and every op in it is an `unset`, the page
+collapses it into the single `unset [...settingsPath, 'retryPolicy']`. In `normal` mode the leaves are `retryPolicy.mode`,
+`retryPolicy.maxRetries`, `retryPolicy.retryableCodes` and the three `retryPolicy.backoff.*` leaves; an
+`always`-mode save sets `retryPolicy.mode` and **unsets** `retryPolicy.maxRetries` and
+`retryPolicy.retryableCodes`, because those are inactive upstream. A whole `retryPolicy` object is never
+*set*, so sibling configuration (base URL, credentials reference, models) is left alone.
+
+The timeout half writes only the leaves whose draft changed: a blank field that was seeded from a stored
+value emits its `unset`, a typed value emits its `set`, and an untouched field emits nothing. A picked
+card that stores nothing yet has nothing to save (its **Save** stays disabled), and **Save** is also
+disabled while either draft is invalid or nothing changed.
+
+**Reset** removes everything the card stores for the route in one write: the whole `retryPolicy` plus
+this family's timeout leaves. On a picked card that stores no override yet, **Reset** closes the card
+locally with **no write at all**. **Use defaults** copies the validated global retry defaults into the
+retry draft; nothing is written until **Save**.
+
+A write is attempted only when the route's form reports `ready`, is not read-only, and carries a numeric
+revision; that same read is the revision fence, so the page never sends an unconditional write. A route
 that fails the gate stays disabled (and is **skipped** by "Apply defaults to all" instead of written).
 
 If the Host refuses the write, `mutate` resolves `false` — that is **every** Host refusal, including
@@ -132,18 +175,20 @@ write is retried **once** at the fresh revision. The page keeps a separate "mana
 a **direct `RemoteError` carrying `settings/rejected`**, but that classification is defensive only and
 is not reachable through the settings form API: a home-patch-owned row shows the generic copy.
 
-**Apply defaults to all active providers** copies the validated defaults into every editable row, one
-provider at a time, each at its own freshly read revision. It re-checks each row immediately before its
-write: a row whose form is still loading, read-only, or missing a numeric revision is **skipped** (its
-body already states why, so no extra badge is rendered). It is **not a transaction**: a provider that
-refuses keeps its policy, the ones already written stay written, and the per-row outcome says which is
-which. It never writes the two fetch timers onto a provider: those are process-wide, not retry settings.
+**Apply defaults to all active providers** copies the validated global retry defaults into every
+editable route (active, with a settings namespace and a live form), one provider at a time, each at its
+own freshly read revision. It re-checks each row immediately before its write: a row whose form is still
+loading, read-only, or missing a numeric revision is **skipped** (the section-level summary still
+reports it as `skipped`). It is **not a transaction**: a provider that refuses keeps its policy, the ones
+already written stay written, and the per-row outcome says which is which. It never writes timeout leaves
+or the two fetch timers onto a provider: those are per-route and process-wide settings, not the retry
+preset.
 
-### Provider timeouts (per route)
+### Timeouts (route card sub-group)
 
-This card edits the application-layer timeouts that live in each **provider's own** namespace, the same
-cross-namespace write the retry card performs. Defaults are the upstream package/SDK values; a blank
-field writes nothing, so the route keeps them.
+The **Timeouts** sub-group of each merged route card edits the application-layer timeouts that live in
+each **provider's own** namespace, the same cross-namespace write the Retry policy sub-group performs.
+Defaults are the upstream package/SDK values; a blank field writes nothing, so the route keeps them.
 
 | Field | Applies to | Namespace / path | Default | Accepts |
 | --- | --- | --- | --- | --- |
@@ -154,7 +199,7 @@ field writes nothing, so the route keeps them.
 Why `0` is refused and there is no off switch: the DeepSeek and stream-idle schemas require a strictly
 positive value (the load-time asserts reject `<= 0`), and a zero SDK request timeout would abort every
 request immediately. The schemas have no "disabled" state, so the **Unlimited** preset writes the
-maximum `2147483647` ms (about 24.8 days) instead — a very large limit, not a disable. A direct
+maximum `2147483647` ms (about 24.8 days) instead — a limit, not an off switch. A direct
 `settings.mutate` (or a hand-edited profile patch) can still persist `0`; for the two watchdogs that
 fails the provider's load-time assert and the route then fails to resolve, which is exactly what the
 page prevents.
@@ -162,13 +207,13 @@ page prevents.
 Interplay with the other two timeout surfaces: for SSE routes the SDK request timeout bounds the wait
 for **response headers**, while `streamIdleTimeoutMs` bounds silence **between** streamed chunks, and the
 process-wide fetch `bodyTimeoutMs` bounds the transport between chunks. When the idle window is raised
-above the default `600000` ms SDK request timeout, the row warns (non-blocking) if `timeoutMs` is
+above the default `600000` ms SDK request timeout, the card warns (non-blocking) if `timeoutMs` is
 shorter, or if the fetch body timeout is set below the idle window. Raising only the idle window is not
 enough if a shorter SDK or transport deadline still fires.
 
 Diagnosis pointer: an `llm-pi-ai` failure reported as a **stream idle timeout after 300000 ms** is the
 default idle watchdog aborting a slow first token (TTFT stall), not a transport failure. Raise
-`streamIdleTimeoutMs` on this card (and match `timeoutMs` and the fetch `bodyTimeoutMs` if they are
+`streamIdleTimeoutMs` on the route card (and match `timeoutMs` and the fetch `bodyTimeoutMs` if they are
 shorter) instead of editing the profile patch by hand.
 
 `connectTimeoutMs` is **out of scope**: undici has no per-request connect timeout in versions 6, 7, or 8,
@@ -177,7 +222,8 @@ and only a fragile agent rebuild could express one. A proper transport connect l
 
 ### Fetch timeouts (process-wide)
 
-The fetch card edits the two top-level leaves of this plugin's own namespace. The tri-state contract is:
+The **Fetch timeouts** sub-group of the global card edits the two top-level leaves of this plugin's own
+namespace. The tri-state contract is:
 
 - **Empty input = `unset`** — the fresh-install state. Saving an empty field emits
   `{ op: 'unset', path: ['<key>'] }`, so no timer of this plugin's is applied and the Host/system default
@@ -208,12 +254,15 @@ future DSH release may supersede it.
   `llm-pi-ai` includes `retryPolicy` in its registration facts and re-registers on
   `loader/volatile-update` (`llm-pi-ai/src/index.ts:108-120,289-319`).
 - A request already in flight keeps the policy it started with.
-- A provider-timeout change is persisted in the provider's namespace and is picked up by the next
+- A route-card timeout change is persisted in the provider's namespace and is picked up by the next
   request/route registration, with no backend restart; a route that is dormant or whose namespace is not
-  served is read-only here.
+  served is not listed here, so it cannot be written.
 - A fetch-timer change is picked up on the **next HTTP dispatch** (the wrapper re-reads the live values on
   every request) with **no backend restart**. The values persist in this plugin's settings namespace like
   any other Host setting; clearing them (or Reset) restores the system-default state.
+- Picking a route writes nothing. The deviating list and the picker recompute whenever any provider form
+  snapshot changes (a write from another page included), while the provider **directory** itself is read
+  once per mount.
 - The page only needs a reload to appear after install/upgrade (and a first install may need a backend
   restart). A value change does not need either.
 
@@ -222,16 +271,17 @@ future DSH release may supersede it.
 `index.js` (Host) owns the global-defaults `Config` — six `.volatile()` retry fields plus the two
 process-wide fetch fields — plus `DEFAULT_TUNE`/`TUNE_OPTIONS`, `DEFAULT_FETCH`/`FETCH_KEYS`/
 `FETCH_OPTIONS`, `PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS` (frozen
-metadata for the provider card; NOT `Config` fields), `validateTune()` (the cross-field guard for the
+metadata for the route cards; NOT `Config` fields), `validateTune()` (the cross-field guard for the
 retry rules the schema cannot express), and `apply(ctx, config)`. `apply()` has two jobs: it registers
 the documented `auto: false` page policy for this namespace (future-proofing: no shipped DSH client
 builds pages from a namespace schema yet) and installs the opt-in fetch-timeout dispatcher wrapper
-described above. It never projects any value onto a provider. `client.js` (browser) is the page: it
-reads the provider directory from the Client Remote `llm` namespace, paints each route's effective policy
-from that route's config form, writes leaf-path operations back through the same form, owns the third
-provider-timeout card, and owns the fourth process-wide fetch-timeout card. The provider rows are the
-source of truth; `DEFAULT_TUNE` is the preset the page offers, not a fallback layer, and the fetch timers
-are a process-wide side effect rather than a fallback for any provider.
+described above. It never projects any value onto a provider. `client.js` (browser) is the page: one
+**Global settings** card followed by one **Per-route overrides** tier. It reads the provider directory
+from the Client Remote `llm` namespace, paints each route's effective policy and stored timeout leaves
+from that route's config form, writes leaf-path operations back through the same form, and never owns a
+copy of a route's state. The provider routes are the source of truth; `DEFAULT_TUNE` is the preset the
+page offers, not a fallback layer, and the fetch timers are a process-wide side effect rather than a
+fallback for any provider.
 
 ## Troubleshooting
 
@@ -239,10 +289,14 @@ are a process-wide side effect rather than a fallback for any provider.
   been reloaded since the install. Check the install command aborted cleanly, do a full page reload,
   and if the row is still absent restart the backend so the profile patch is read again. The row is
   expected at the end of the Settings nav (order 45).
-- **A provider row is missing or read-only.** Only routes that are declared by an installed provider
-  adapter and currently active are editable. A declared-but-dormant `llm-pi-ai` route, a route with no
-  settings namespace, and a route whose namespace this deployment does not serve are shown read-only
-  with the reason.
+- **A route card is missing.** Only routes that **deviate** are listed: a route whose effective retry
+  policy equals the global retry values in every leaf and that stores no timeout leaf is not shown. Use
+  the route picker to add it if you want to override it; picking writes nothing until you edit a field.
+  A stored retry override that happens to equal the global values is hidden too.
+- **A route is not in the picker.** The picker only offers routes that are active in this deployment,
+  declare a settings namespace, and hold a live config form. A declared-but-dormant `llm-pi-ai` route, a
+  route with no settings namespace, and a route whose namespace this deployment does not serve are not
+  listed and cannot be picked: their deviation cannot be proven without a live form.
 - **"The host refused the write" on a home-patch/`--patch` row.** A home patch or a `--patch` overlay
   owns that provider row, so the config editor refuses the write and the page shows the **generic**
   refusal copy (the settings form API does not surface the reason). Edit the overlay (or the profile
@@ -251,23 +305,26 @@ are a process-wide side effect rather than a fallback for any provider.
 - **"The host refused the write" on a normal row.** The value was not accepted as written (for example
   the revision was superseded). The fields re-seed from the Host's current values; review and save
   again.
-- **Saving defaults changed nothing.** That is the design: the defaults card is a preset. Use **Use
-  defaults** on a row or **Apply defaults to all active providers** to write them into providers.
+- **Saving the global card changed nothing.** That is the design: the retry values are a preset. Use
+  **Use defaults** on a route card or **Apply defaults to all active providers** to write them into
+  providers.
 - **The values look different from what I typed.** The page always shows the effective value the Host
-  reports. In `always` mode the retry limit and code list are not editable and are cleared on save.
+  reports. On a route card in `always` mode the retry limit and code list are not editable and are
+  cleared on save; the global card still stores them, because they are its preset for every route.
 - **The provider directory is unavailable.** This deployment does not expose the Remote `llm` directory
-  (`providers.unavailable`), or the read failed (`providers.error`). No provider row can be listed, but
-  the global defaults card still works.
+  (`providers.unavailable`), or the read failed (`providers.error`). No route can be listed or picked,
+  but the global card still works.
 - **A provider I just added is not listed.** The directory is read once when the section mounts and is
   not live-refreshed; navigate away and back (or reload the page) to re-read it.
 - **An `llm-pi-ai` call fails with a stream idle timeout after 300000 ms.** That is the package idle
   watchdog's default (a slow first token / TTFT stall), not a transport error. Raise
-  `streamIdleTimeoutMs` on the provider timeouts card and, if it is shorter, the request `timeoutMs` and
-  the process-wide fetch `bodyTimeoutMs` too. The row shows a non-blocking warning when one of those
+  `streamIdleTimeoutMs` on the route card and, if it is shorter, the request `timeoutMs` and the
+  process-wide fetch `bodyTimeoutMs` too. The card shows a non-blocking warning when one of those
   deadlines would still fire first.
-- **A provider timeouts row is read-only.** Dormant routes, routes without a settings namespace, and
-  routes whose namespace is not served cannot be written: writing a timeout leaf would materialize a
-  partial provider profile and could activate a dormant route.
+- **A route card is read-only.** A card whose form reports loading, read-only, or unavailable is never
+  written: writing a timeout leaf would materialize a partial provider profile and could activate a
+  dormant route. Picking such a route is not possible in the first place, because the candidate filter
+  only offers active, addressed routes with a live form.
 
 ## Verify
 
@@ -280,18 +337,23 @@ suite is hermetic — plain Node, `node:assert/strict`, fake Context/form/React 
 network, no server, no file writes — and resolves the **real** `@deepseek-ai/schemastery` and the
 upstream `retry-policy.ts` through `$DSH_HARNESS_CHECKOUT`, so a schema or constant drift fails loudly.
 It checks the manifest and bundle patch, the Host `Config` accept/reject matrix, the `validateTune()`
-rules, `apply()`, the client registration, the en/zh copy parity (121 keys), the exact operation shapes
-for defaults/normal/always/reset/fetch Save/fetch Reset/provider-timeout Save and Reset, the provider-timeout
-metadata (frozen keys/defaults/bounds/scopes and the upstream schema + defaults they mirror), the
-validation, refusal, per-write gate/skip, and revision-retry paths, the provider directory join and every
-degradation path, the provider-timeout card (family visibility, user-layer seeding, protocol display,
-advisories, active-only gate, Unlimited preset, zero rejection), the fetch-timeout dispatcher against a
-recording fake dispatcher and the Host's real `undici` globals (install/fill/restore/dispose/
-`NODE_USE_ENV_PROXY`, plus a missing-`undici` child-process run), and the field tables in this README and
-CONTRACT.md. The "managed elsewhere" classification is tested only as a defensive unit path with a
-rejecting fake form; real settings-form refusals resolve `false`.
+rules, `apply()`, the client registration (one section, id `llm-api-call-tuning`, order 45), the en/zh
+copy parity (120 keys), the rendered two-tier layout (the single global card precedes the per-route
+section; both sub-groups are present; the old separate retry and timeout sections are gone), the
+deviating-only listing rule (a stored retry override equal to the global values is hidden, a route with
+only a stored timeout is listed, the picker excludes listed routes, picking adds one card, an empty
+state renders), the exact operation shapes (global Save carrying both the retry and fetch leaves,
+merged route Save and Reset, a leaf reverted to its global value emitting `unset`, the all-unset
+collapse), the provider-timeout metadata (frozen keys/defaults/bounds/scopes and the upstream schema +
+defaults they mirror), the validation, refusal, per-write gate/skip, and revision-retry paths, the
+provider directory join and every degradation path, the route-card behavior (family visibility,
+user-layer seeding, protocol display, advisories, active-only gate, Unlimited preset, zero rejection),
+the fetch-timeout dispatcher against a recording fake dispatcher and the Host's real `undici` globals
+(install/fill/restore/dispose/`NODE_USE_ENV_PROXY`, plus a missing-`undici` child-process run), and the
+field tables in this README and CONTRACT.md. The "managed elsewhere" classification is tested only as a
+defensive unit path with a rejecting fake form; real settings-form refusals resolve `false`.
 
-A green run prints `127 passed, 0 failed, 0 skipped (127 checks)` and exits `0`. That is an offline
+A green run reports `0 failed, 0 skipped` for its full check list and exits `0`. That is an offline
 contract check, not a live GUI test: it starts no Host or browser and does not exercise a real
 settings save, the real nav row, next-request latency, a real HTTP request whose headers/body/stream
 actually time out under the installed dispatcher, or a live provider route's timeout aborting a slow
@@ -303,7 +365,7 @@ wire contract and the dispatcher's shape, not the wire's timing.
 | File | Role |
 | --- | --- |
 | `index.js` | Host half: the six retry global-default fields and the two process-wide fetch fields (`Config`), `DEFAULT_TUNE`/`TUNE_OPTIONS`, `DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`, frozen `PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS` metadata, `validateTune()`, and `apply(ctx, config)`, which suppresses the auto page and installs/restores the opt-in fetch-timeout dispatcher wrapper. |
-| `client.js` | Browser half: the **LLM API call tuning** Settings section (defaults card + one editable retry row per active provider + the provider-timeout card + the fetch-timeout card), local validation, and leaf-path writes through the provider forms and its own namespace. |
+| `client.js` | Browser half: the **LLM API call tuning** Settings section, rendered as one **Global settings** card and one **Per-route overrides** tier (route picker above the list, one merged retry + timeout card per deviating route), plus local validation and leaf-path writes through the provider forms and its own namespace. |
 | `cordis.patch.yml` | Bundle patch that inserts the `llm-api-call-tuning` row with **no seed**. |
 | `locale/en.json`, `locale/zh.json` | Plugin display metadata for the Plugin Manager and Settings inventory. |
 | `package.json` | Bundle manifest (`dsh.bundle.patch`, `dsh.client` injects, `exports`, `files`). |
@@ -319,7 +381,18 @@ The full list is in [CONTRACT.md](CONTRACT.md); the ones a user is most likely t
 - **Home-patch/`--patch` rows cannot be edited** and show the generic refusal copy (the managed-elsewhere
   classification is defensive-only, not reachable through the settings form API).
 - **In-flight requests keep the old policy.**
-- **Dormant `llm-pi-ai` routes and routes without a settings namespace are read-only.**
+- **Per route, not per model.** DSH captures one retry policy per **provider route** when the adapter
+  registers it (`packages/llm/llm/src/retry-policy.ts:78,450-455`), and the agent/request-error payload
+  carries the provider but no model (`packages/core/agent/src/runtime-types.ts:389`). A per-model
+  override would be stored and rendered but never applied, so the page does not offer one.
+- **Dormant routes, routes without a settings namespace, and routes whose namespace is not served are
+  not listed and not pickable.** Without a live config form their deviation cannot be proven, and
+  writing a timeout leaf would materialize a partial provider profile and could activate a dormant
+  route.
+- **A stored override equal to the global values is hidden.** The list is a list of deviations, not of
+  stored state: a `retryPolicy` identical to the global retry values (or only timeout leaves equal to
+  the package defaults) does not produce a card. A timeout leaf still deviates by presence, because
+  there is no global counterpart to compare it with.
 - **The provider directory is read once per mount**, with no live refresh: a provider added or removed
   while the page stays open needs a page reload.
 - **No CLI, environment, or GUI-core setting exists** — this page is the only supported UI; hand-editing
@@ -329,8 +402,9 @@ The full list is in [CONTRACT.md](CONTRACT.md); the ones a user is most likely t
   Unlimited preset writes the `2147483647` ms cap (about 24.8 days) instead of an off switch. A direct
   `settings.mutate` can still persist `0`, which fails the provider's load-time assert and makes the
   route fail to resolve.
-- **Dormant routes are read-only on the provider-timeout card.** Writing a timeout leaf would
-  materialize a partial provider profile and could activate the route, so it is blocked by design.
+- **The timeout advisories are heuristics, not enforcement.** They compare the card's draft values with
+  the process-wide fetch body-timeout draft locally; a shorter deadline set through a direct write or a
+  different namespace layer is not detected, and they never block Save.
 - **`connectTimeoutMs` is out of scope.** undici has no per-request connect timeout in versions 6, 7, or
   8; a transport connect limit belongs upstream in `packages/util/http-proxy/src/install.ts`, not in
   this page.

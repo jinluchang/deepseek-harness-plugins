@@ -1,68 +1,79 @@
 /**
- * Client half of dsh-llm-api-call-tuning: one Settings page that (1) stores a
- * set of GLOBAL DEFAULT model-request retry values in this plugin's own
- * settings namespace and (2) lets the user inspect, edit, and reset the
- * `retryPolicy` of every active model provider route, writing DIRECTLY to the
- * provider's own settings namespace through `ctx.configForms.get(ns)`.
+ * Client half of dsh-llm-api-call-tuning: one Settings page in two tiers.
  *
- * The provider namespace map is read from the client Remote service
- * (`llm.listProviders()` joined with `llm.listConfigurableProviders()`), the
- * same join the Models page uses (`ui-settings-models/src/client/store.ts`),
- * so this page owns no copy of a provider's state: it paints the EFFECTIVE
- * value out of the provider form's snapshot and writes leaf-path operations
- * back through the same form. The global defaults row is a preset only —
- * nothing is projected from it onto a provider, and "Apply defaults to all"
- * copies it explicitly, one provider at a time.
- *
- * Every write is a list of LEAF path operations at the shared form's current
- * revision. A whole `retryPolicy` object is never set (that would materialize
- * schema defaults over a hand-written profile) and the whole `providers` dict
- * is never set (that would clobber sibling provider fields); `Reset` is the
- * single `unset` of `[...settingsPath, 'retryPolicy']`. `mode: 'always'`
- * additionally clears the two normal-mode-only leaves, because the upstream
- * union schema ignores them once the mode is `always`
- * (`packages/llm/llm/src/retry-policy.ts:105-112`).
- *
- * A third card owns the PER-ROUTE application-layer timeouts, read and written
- * through each row's own provider namespace: `streamIdleTimeoutMs` on every
- * route, `timeoutMs` (SDK request timeout) on pi-ai routes only, and
- * `filesApiTimeoutMs` on the two DeepSeek routes only. A blank field is the
- * unset state and writes `{op: 'unset', path: [<leaf>]}` (or is skipped when it
- * already was blank), so the package/SDK default stays in force; `Save` writes
- * only the leaves that differ from the seeded user layer, and `Reset` unsets
- * only this card's leaves for that row. `0` is refused on all three fields (the
- * package schemas reject it for the two watchdogs, and a zero SDK request
- * timeout aborts every request immediately); the per-field "Unlimited" preset
- * fills the 2147483647 ms schema cap, never an off switch. Dormant or
- * unaddressed routes render no controls at all: writing a timeout leaf would
- * materialize a partial provider profile and could activate a dormant route.
- * Two advisory notes are computed but never block Save: an SDK request timeout
- * below a raised idle window, and a process-wide fetch `bodyTimeoutMs` below
- * it.
- *
- * The fourth card owns the two PROCESS-WIDE HTTP timers the host settings schema
- * declares at the TOP LEVEL of this plugin's namespace (`headersTimeoutMs`,
- * `bodyTimeoutMs`), mirroring the `dsh-fetch-timeouts` plugin. Their tri-state
- * contract is what makes a fresh install behavior-neutral:
+ * TIER 1 — one "Global settings" card, first, carrying every global knob in
+ * two labeled sub-groups: the six GLOBAL DEFAULT retry values of this plugin's
+ * own settings namespace, then the two PROCESS-WIDE HTTP fetch timers the host
+ * schema declares at the TOP LEVEL of that same namespace (`headersTimeoutMs`,
+ * `bodyTimeoutMs`, mirroring the `dsh-fetch-timeouts` plugin). The retry values
+ * are a preset only — nothing is projected from them onto a provider, and
+ * "Apply defaults to all" copies them explicitly, one provider at a time. The
+ * fetch timers are a different knob and are never projected anywhere; their
+ * tri-state contract is what makes a fresh install behavior-neutral:
  * - an EMPTY field is the fresh-install state and writes the leaf as UNSET
  *   (`{op: 'unset', path: ['<key>']}`), so the host leaves the system default
  *   in place and this plugin installs no timeout of its own;
  * - `0` is an explicit "disable this timer" (undici treats a zero
  *   `headersTimeout`/`bodyTimeout` as disabled), visually distinct from empty;
  * - a positive integer is a custom limit in milliseconds, at most 2147483647.
- * Those leaves are written straight to this plugin's own namespace and are
- * deliberately NOT part of the retry defaults preset: `defaultsOps` and
- * `resetPolicyOps` stay retry-only, and "Apply defaults to all" never projects
- * a fetch timer onto a provider route. The card's own Reset is the same two
- * unsets, so it restores the system-default (fresh-install) state — never a
- * seeded 1800000 ms.
+ * One Save writes the six retry leaves and the two fetch leaves in a single
+ * ordered op list at one revision fence.
+ *
+ * TIER 2 — one per-route section: a native route picker above the list, and one
+ * MERGED card per DEVIATING provider route, each card carrying that route's
+ * retry policy and its application-layer timeouts as two labeled sub-groups.
+ * The merge is sound because both groups write the SAME namespace and the SAME
+ * settings path for a route: `providers.<route>` in `llm-pi-ai` (retryPolicy,
+ * streamIdleTimeoutMs, timeoutMs on pi-ai routes) and the namespace root in
+ * `llm-deepseek` / `llm-deepseek-account` (retryPolicy, streamIdleTimeoutMs,
+ * filesApiTimeoutMs on the two DeepSeek routes); one Save writes both groups.
+ *
+ * The listing rule is value-based for retries and presence-based for timeouts:
+ * a route is listed iff (a) its EFFECTIVE stored retry policy differs in at
+ * least one leaf from the plugin's global effective retry values, OR (b) one of
+ * the route's timeout leaves is explicitly present in the user layer — there is
+ * no global counterpart for the timeouts, because the fetch timers above are
+ * undici transport timers, not the route's application watchdogs. Picking a
+ * route materializes its card in LOCAL state with the effective values and
+ * writes nothing; a leaf set back to its global retry value (or a cleared
+ * timeout) is written as an `unset`, so the override disappears and the card
+ * leaves the list once the route no longer deviates.
+ *
+ * The provider namespace map is read from the client Remote service
+ * (`llm.listProviders()` joined with `llm.listConfigurableProviders()`), the
+ * same join the Models page uses (`ui-settings-models/src/client/store.ts`),
+ * so this page owns no copy of a provider's state: it paints the EFFECTIVE
+ * value out of the provider form's snapshot and writes leaf-path operations
+ * back through the same form. The entity is the PROVIDER ROUTE, never a model:
+ * DSH resolves retry and timeout policy once per route, with no per-model hook
+ * (`packages/llm/llm/src/retry-policy.ts:78,450-455`), so no per-model config
+ * dict is stored or rendered.
+ *
+ * Every write is a list of LEAF path operations at the shared form's current
+ * revision. A whole `retryPolicy` object is never set except through the
+ * documented reset/`Reset` path (that would materialize schema defaults over a
+ * hand-written profile) and the whole `providers` dict is never set (that would
+ * clobber sibling provider fields). `mode: 'always'` additionally clears the
+ * two normal-mode-only leaves, because the upstream union schema ignores them
+ * once the mode is `always` (`packages/llm/llm/src/retry-policy.ts:105-112`).
+ * A blank timeout field is the unset state and writes an `unset` (or is skipped
+ * when it already was blank), so the package/SDK default stays in force; `0` is
+ * refused on all three timeout leaves (the package schemas reject it for the
+ * two watchdogs, and a zero SDK request timeout aborts every request
+ * immediately); the per-field "Unlimited" preset fills the 2147483647 ms
+ * schema cap, never an off switch. Dormant or unaddressed routes render no
+ * controls at all and are not pickable: writing a timeout leaf would
+ * materialize a partial provider profile and could activate a dormant route.
+ * Two advisory notes are computed but never block Save: an SDK request timeout
+ * below a raised idle window, and a process-wide fetch `bodyTimeoutMs` below
+ * it.
  *
  * The upstream schema does NOT enforce the cross-field rules the resolver
  * checks (`initialDelayMs <= maxDelayMs`, non-empty unique retryable codes),
- * so the draft is validated locally first and a row whose draft is invalid
+ * so the draft is validated locally first and a route whose draft is invalid
  * cannot be submitted. `form.mutate(ops, revision)` resolves `false` on a
  * Host refusal (the controller then performs its own recovery read), and
- * rejects on a transport failure; both paths re-seed the row from whatever
+ * rejects on a transport failure; both paths re-seed the cards from whatever
  * the Host reports next. A superseded revision is retried at most once at the
  * freshly read revision.
  *
@@ -228,25 +239,37 @@ window.__ModuleLoader__.load({
       subscribe: () => () => {},
       getSnapshot: () => IDLE_SNAPSHOT,
     });
+    /** The candidate-route placeholder while the provider directory is unread. */
+    const EMPTY_ROWS = Object.freeze([]);
 
     const en = {
       'nav': 'LLM API call tuning',
       'title': 'LLM API call tuning',
-      'intro': 'Set one global default retry policy for this deployment, then inspect or override the retry policy and the per-route timeouts of each active model provider; also set the process-wide HTTP fetch timeouts shared by every provider. Provider rows write straight to the provider\u2019s own settings namespace.',
-      'defaults.heading': 'Global defaults',
-      'defaults.description': 'A preset for the provider controls below and for "Apply defaults to all". The values are stored in this plugin\u2019s own settings namespace; a provider keeps using its own policy until one is written to it.',
-      'defaults.note': 'Saving these defaults changes no provider. Use "Apply defaults to all active providers" or a row\u2019s "Use defaults" button to copy them.',
-      'defaults.save': 'Save defaults',
-      'defaults.saving': 'Saving defaults\u2026',
+      'intro': 'One page in two tiers. The global card sets this deployment\u2019s retry defaults and the process-wide HTTP fetch timeouts shared by every provider; the per-route tier lists only the provider routes that deviate from those settings, and lets you edit their retry policy and application-layer timeouts in one merged card per route. A route card writes straight to that provider\u2019s own settings namespace.',
+      'defaults.description': 'A preset for the per-route cards below and for "Apply defaults to all". The values are stored in this plugin\u2019s own settings namespace; a provider keeps using its own policy until one is written to it.',
       'defaults.applyAll': 'Apply defaults to all active providers',
       'defaults.applying': 'Applying defaults\u2026',
       'defaults.applyAllNote': 'Writes the validated defaults to every active provider, one provider at a time. A provider that refuses the write keeps its current policy.',
-      'providers.heading': 'Provider retry policies',
-      'providers.description': 'Only provider routes active in this deployment are editable. The shown values are the effective values of the provider\u2019s namespace; the badge marks whether the user layer stores a retryPolicy override. Saving writes only the retry-policy fields shown here.',
+      'global.heading': 'Global settings',
+      'global.description': 'The process-wide settings of this deployment, in one card: the retry defaults a per-route card below compares against, and the HTTP fetch timers every provider, web search, and HTTP MCP server shares.',
+      'global.retriesHeading': 'Retries',
+      'global.save': 'Save global settings',
+      'global.saving': 'Saving global settings\u2026',
+      'global.note': 'The retry values are a preset: saving them here changes no provider route, so use "Apply defaults to all active providers" or a route card\u2019s "Use defaults" button to copy them. An empty fetch timeout field writes nothing (the system default stays in force) and 0 disables that timer; the two fetch leaves are never copied onto a provider route.',
+      'providers.heading': 'Per-route overrides',
+      'providers.description': 'Only provider routes that DEVIATE are listed: the route\u2019s effective retry policy differs from the global retry values above, or the route stores an explicit timeout. Set a retry leaf back to the global value (or clear a timeout) and save, and the override is removed, so the card disappears. These are provider routes, not models: DSH resolves retry and timeout policy once per route.',
       'providers.loading': 'Loading the provider directory\u2026',
       'providers.unavailable': 'This deployment does not expose the LLM provider directory, so no provider row can be listed.',
       'providers.error': 'The provider directory could not be loaded.',
       'providers.empty': 'No model provider is declared in this deployment.',
+      'routes.pickerLabel': 'Add a route',
+      'routes.pickerPlaceholder': 'Select a provider route\u2026',
+      'routes.add': 'Add',
+      'routes.allListed': 'Every editable route is already listed.',
+      'routes.empty': 'No provider route deviates from the global settings.',
+      'routes.retryHeading': 'Retry policy',
+      'routes.timeoutsHeading': 'Timeouts',
+      'routes.pickedHint': 'This route stores no override yet: nothing is written until you edit a field and save. Reset closes this card without writing.',
       'provider.namespace': 'Namespace',
       'provider.source.override': 'override',
       'provider.source.default': 'default',
@@ -261,30 +284,17 @@ window.__ModuleLoader__.load({
       'provider.alwaysNote': 'Always mode retries every model-request failure and ignores the retry limit and the retryable codes; saving clears both.',
       'fetch.heading': 'Fetch timeouts',
       'fetch.description': 'Process-wide HTTP timer limits, applied by the host to the fetch dispatcher that every provider, web search, and HTTP MCP server shares. Leave a field empty to keep the system default; 0 disables that timer; a positive value is the limit in milliseconds.',
-      'fetch.note': 'An empty field writes nothing: the host leaves the process-wide system default in place, so a fresh install behaves exactly as if this plugin were absent. Saving writes only these two leaves; they are not provider retry settings, so "Apply defaults to all" never copies them onto a provider route.',
-      'fetch.save': 'Save timeouts',
-      'fetch.saving': 'Saving timeouts\u2026',
       'fetch.reset': 'Reset to system defaults',
       'fetch.resetting': 'Resetting\u2026',
       'fetch.placeholder': 'system default (leave empty)',
       'fetch.hint': 'empty = system default (leave empty); 0 = disabled; 1800000 ms = 30 min',
-      'fetch.status.loading': 'Loading the fetch timeouts\u2026',
-      'fetch.status.unavailable': 'This deployment does not serve the llm-api-call-tuning settings namespace, so the fetch timeouts cannot be edited here.',
-      'timeouts.heading': 'Provider timeouts',
-      'timeouts.description': 'Per-route application-layer limits: how long one stream read may wait for the next chunk, the SDK request timeout, and the DeepSeek files API timeout. Blank leaves the package or SDK default in force; 0 is not allowed; the Unlimited preset fills the 2147483647 ms cap (a limit, not an off switch). Saving writes only the leaves you changed on that route.',
-      'timeouts.note': 'Only active routes are written: a dormant route is read-only here, because writing a timeout leaf would materialize a partial provider profile. These leaves are separate from the retry policy and from the process-wide fetch limits.',
       'timeouts.unit': 'milliseconds, blank or 1 to 2147483647',
       'timeouts.hint': 'blank = package/SDK default; Unlimited fills 2147483647 (a cap, not an off switch)',
       'timeouts.unlimited': 'Unlimited',
-      'timeouts.save': 'Save timeouts',
-      'timeouts.saving': 'Saving timeouts\u2026',
-      'timeouts.reset': 'Reset timeouts',
-      'timeouts.resetting': 'Resetting\u2026',
-      'timeouts.resetDone': 'Reset. This route no longer overrides the timeouts shown here.',
       'timeouts.protocol': 'Protocol',
       'timeouts.protocol.catalog': 'catalog default',
       'timeouts.advisory.sdkFirst': 'The SDK request timeout (600000 ms by default) may fire before this idle window; raise Request timeout to match.',
-      'timeouts.advisory.transportFirst': 'The process-wide fetch body timeout is set below this idle window, so the transport may abort first; raise Response body timeout on the fetch card.',
+      'timeouts.advisory.transportFirst': 'The process-wide fetch body timeout is set below this idle window, so the transport may abort first; raise Response body timeout in the global card.',
       'field.mode.label': 'Retry mode',
       'field.mode.description': 'Normal retries only the selected transient failure codes, up to the retry limit. Always retries every model-request failure until success, cancellation, or shutdown.',
       'field.mode.unit': 'normal or always',
@@ -333,6 +343,7 @@ window.__ModuleLoader__.load({
       'status.readOnly': 'These values are read-only in this deployment.',
       'status.saved': 'Saved.',
       'status.reset': 'Reset. This provider no longer stores a retryPolicy override.',
+      'status.routeReset': 'Reset. This route no longer stores the retry policy or timeout overrides shown here.',
       'status.fetchReset': 'Reset. The fetch timeouts return to the system defaults.',
       'error.refused': 'The host refused the write. The values shown are the ones the host reports now.',
       'error.managed': 'These values are managed elsewhere \u2014 a home patch or command-line overlay overrides them \u2014 so this page cannot change them.',
@@ -351,26 +362,37 @@ window.__ModuleLoader__.load({
       'apply.outcome.saved': 'Applied',
       'apply.outcome.refused': 'Refused',
       'apply.outcome.managed': 'Managed elsewhere',
+      'apply.outcome.skipped': 'Skipped',
     };
 
     const zh = {
       'nav': 'LLM \u8c03\u7528\u8c03\u4f18',
       'title': 'LLM \u8c03\u7528\u8c03\u4f18',
-      'intro': '\u5728\u6b64\u5904\u8bbe\u7f6e\u4e00\u5957\u5168\u5c40\u9ed8\u8ba4\u91cd\u8bd5\u7b56\u7565\uff0c\u5e76\u53ef\u67e5\u770b\u6216\u8986\u76d6\u6bcf\u4e2a\u542f\u7528\u4e2d\u7684\u6a21\u578b\u63d0\u4f9b\u65b9\u7684\u91cd\u8bd5\u7b56\u7565\u4e0e\u5404\u8def\u7531\u8d85\u65f6\uff0c\u8fd8\u53ef\u8bbe\u7f6e\u6240\u6709\u63d0\u4f9b\u65b9\u5171\u7528\u7684\u8fdb\u7a0b\u7ea7 HTTP \u6293\u53d6\u8d85\u65f6\u3002\u63d0\u4f9b\u65b9\u884c\u4f1a\u76f4\u63a5\u5199\u5165\u8be5\u63d0\u4f9b\u65b9\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u3002',
-      'defaults.heading': '\u5168\u5c40\u9ed8\u8ba4\u503c',
-      'defaults.description': '\u4f5c\u4e3a\u4e0b\u65b9\u5404\u63d0\u4f9b\u65b9\u63a7\u4ef6\u4ee5\u53ca\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u63d0\u4f9b\u65b9\u201d\u7684\u9884\u8bbe\u3002\u8fd9\u4e9b\u503c\u4fdd\u5b58\u5728\u672c\u63d2\u4ef6\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u4e2d\uff1b\u5728\u5411\u67d0\u4e2a\u63d0\u4f9b\u65b9\u5199\u5165\u4e4b\u524d\uff0c\u5b83\u4ecd\u4f7f\u7528\u81ea\u5df1\u7684\u7b56\u7565\u3002',
-      'defaults.note': '\u4fdd\u5b58\u8fd9\u4e9b\u9ed8\u8ba4\u503c\u4e0d\u4f1a\u6539\u53d8\u4efb\u4f55\u63d0\u4f9b\u65b9\u3002\u8bf7\u4f7f\u7528\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u542f\u7528\u4e2d\u7684\u63d0\u4f9b\u65b9\u201d\u6216\u67d0\u4e00\u884c\u7684\u201c\u4f7f\u7528\u9ed8\u8ba4\u503c\u201d\u6309\u94ae\u6765\u62f7\u8d1d\u5b83\u4eec\u3002',
-      'defaults.save': '\u4fdd\u5b58\u9ed8\u8ba4\u503c',
-      'defaults.saving': '\u6b63\u5728\u4fdd\u5b58\u9ed8\u8ba4\u503c\u2026',
+      'intro': '单一页面分为两层：全局卡片设置本部署的全局重试默认值与所有提供方共享的进程级 HTTP 抓取超时；各路由层仅列出偏离这些设置的提供方路由，并为每个路由提供一张合并卡片来编辑其重试策略与应用层超时。路由卡片会直接写入该提供方自己的设置命名空间。',
+      'defaults.description': '\u4f5c\u4e3a\u4e0b\u65b9\u5404\u8def\u7531\u5361\u7247\u4ee5\u53ca\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u63d0\u4f9b\u65b9\u201d\u7684\u9884\u8bbe\u3002\u8fd9\u4e9b\u503c\u4fdd\u5b58\u5728\u672c\u63d2\u4ef6\u81ea\u5df1\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\u4e2d\uff1b\u5728\u5411\u67d0\u4e2a\u63d0\u4f9b\u65b9\u5199\u5165\u4e4b\u524d\uff0c\u5b83\u4ecd\u4f7f\u7528\u81ea\u5df1\u7684\u7b56\u7565\u3002',
       'defaults.applyAll': '\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u542f\u7528\u4e2d\u7684\u63d0\u4f9b\u65b9',
       'defaults.applying': '\u6b63\u5728\u5e94\u7528\u9ed8\u8ba4\u503c\u2026',
       'defaults.applyAllNote': '\u6309\u987a\u5e8f\u5c06\u6821\u9a8c\u901a\u8fc7\u7684\u9ed8\u8ba4\u503c\u5199\u5165\u6bcf\u4e2a\u542f\u7528\u4e2d\u7684\u63d0\u4f9b\u65b9\uff0c\u4e00\u6b21\u4e00\u4e2a\u3002\u62d2\u7edd\u5199\u5165\u7684\u63d0\u4f9b\u65b9\u4fdd\u6301\u5f53\u524d\u7b56\u7565\u3002',
-      'providers.heading': '\u5404\u63d0\u4f9b\u65b9\u91cd\u8bd5\u7b56\u7565',
-      'providers.description': '\u4ec5\u5f53\u524d\u90e8\u7f72\u4e2d\u542f\u7528\u7684\u63d0\u4f9b\u65b9\u8def\u7531\u53ef\u7f16\u8f91\u3002\u6240\u663e\u793a\u7684\u662f\u8be5\u63d0\u4f9b\u65b9\u547d\u540d\u7a7a\u95f4\u7684\u751f\u6548\u503c\uff1b\u5fbd\u6807\u6807\u660e\u7528\u6237\u5c42\u662f\u5426\u4fdd\u5b58\u4e86 retryPolicy \u8986\u76d6\u3002\u4fdd\u5b58\u53ea\u5199\u5165\u6b64\u5904\u663e\u793a\u7684\u91cd\u8bd5\u7b56\u7565\u5b57\u6bb5\u3002',
+      'global.heading': '全局设置',
+      'global.description': '本部署的全局设置集中在同一个卡片中：各路由卡片用于比较的重试默认值，以及所有提供方、联网搜索与 HTTP MCP 服务器共享的 HTTP 抓取计时器。',
+      'global.retriesHeading': '重试',
+      'global.save': '保存全局设置',
+      'global.saving': '正在保存全局设置…',
+      'global.note': '重试值是预设：在此保存不会改动任何提供方路由；请使用“应用默认值到全部启用中的提供方”或某个路由卡片上的“使用默认值”来复制它们。抓取超时留空表示不写入任何值（保持系统默认），0 表示禁用该计时器；这两个抓取字段永远不会被复制到提供方路由上。',
+      'providers.heading': '各路由覆盖',
+      'providers.description': '仅列出存在偏差的路由：该路由的生效重试策略与上方全局重试值不同，或该路由显式保存了某项超时。把某个重试字段改回全局值（或清空某项超时）并保存，该覆盖即被移除，卡片随之消失。这些是提供方路由而非模型：DSH 按路由解析重试与超时策略。',
       'providers.loading': '\u6b63\u5728\u52a0\u8f7d\u63d0\u4f9b\u65b9\u76ee\u5f55\u2026',
       'providers.unavailable': '\u5f53\u524d\u90e8\u7f72\u672a\u66b4\u9732 LLM \u63d0\u4f9b\u65b9\u76ee\u5f55\uff0c\u56e0\u6b64\u65e0\u6cd5\u5217\u51fa\u63d0\u4f9b\u65b9\u884c\u3002',
       'providers.error': '\u63d0\u4f9b\u65b9\u76ee\u5f55\u52a0\u8f7d\u5931\u8d25\u3002',
       'providers.empty': '\u5f53\u524d\u90e8\u7f72\u4e2d\u6ca1\u6709\u58f0\u660e\u4efb\u4f55\u6a21\u578b\u63d0\u4f9b\u65b9\u3002',
+      'routes.pickerLabel': '添加路由',
+      'routes.pickerPlaceholder': '选择提供方路由…',
+      'routes.add': '添加',
+      'routes.allListed': '所有可编辑的路由都已列出。',
+      'routes.empty': '没有提供方路由偏离全局设置。',
+      'routes.retryHeading': '重试策略',
+      'routes.timeoutsHeading': '超时',
+      'routes.pickedHint': '该路由尚未保存任何覆盖：在你编辑字段并保存之前不会写入任何值。“重置”会在不写入的情况下关闭此卡片。',
       'provider.namespace': '\u547d\u540d\u7a7a\u95f4',
       'provider.source.override': '\u8986\u76d6',
       'provider.source.default': '\u9ed8\u8ba4',
@@ -385,30 +407,17 @@ window.__ModuleLoader__.load({
       'provider.alwaysNote': '\u201c\u603b\u662f\u201d\u6a21\u5f0f\u4f1a\u91cd\u8bd5\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff0c\u5ffd\u7565\u91cd\u8bd5\u4e0a\u9650\u4e0e\u53ef\u91cd\u8bd5\u9519\u8bef\u7801\uff1b\u4fdd\u5b58\u65f6\u4f1a\u6e05\u9664\u8fd9\u4e24\u9879\u3002',
       'fetch.heading': '\u6293\u53d6\u8d85\u65f6',
       'fetch.description': '\u8fdb\u7a0b\u7ea7\u7684 HTTP \u8ba1\u65f6\u4e0a\u9650\uff0c\u7531\u5bbf\u4e3b\u5e94\u7528\u5230\u6240\u6709\u63d0\u4f9b\u65b9\u3001\u8054\u7f51\u641c\u7d22\u4e0e HTTP MCP \u670d\u52a1\u5668\u5171\u7528\u7684 fetch \u8c03\u5ea6\u5668\u4e0a\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u7cfb\u7edf\u9ed8\u8ba4\uff1b0 \u8868\u793a\u7981\u7528\u8be5\u8ba1\u65f6\u5668\uff1b\u6b63\u6570\u8868\u793a\u4ee5\u6beb\u79d2\u4e3a\u5355\u4f4d\u7684\u65f6\u957f\u3002',
-      'fetch.note': '\u7559\u7a7a\u5b57\u6bb5\u4e0d\u4f1a\u5199\u5165\u4efb\u4f55\u503c\uff1a\u5bbf\u4e3b\u4fdd\u6301\u8fdb\u7a0b\u7ea7\u7684\u7cfb\u7edf\u9ed8\u8ba4\uff0c\u56e0\u6b64\u5168\u65b0\u5b89\u88c5\u7684\u884c\u4e3a\u4e0e\u672a\u5b89\u88c5\u672c\u63d2\u4ef6\u65f6\u5b8c\u5168\u4e00\u81f4\u3002\u4fdd\u5b58\u53ea\u5199\u5165\u8fd9\u4e24\u4e2a\u5b57\u6bb5\uff1b\u5b83\u4eec\u4e0d\u662f\u63d0\u4f9b\u65b9\u7684\u91cd\u8bd5\u8bbe\u7f6e\uff0c\u6240\u4ee5\u201c\u5e94\u7528\u9ed8\u8ba4\u503c\u5230\u5168\u90e8\u63d0\u4f9b\u65b9\u201d\u4e0d\u4f1a\u628a\u5b83\u4eec\u590d\u5236\u5230\u4efb\u4f55\u63d0\u4f9b\u65b9\u8def\u7531\u4e0a\u3002',
-      'fetch.save': '\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e',
-      'fetch.saving': '\u6b63\u5728\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e\u2026',
       'fetch.reset': '\u6062\u590d\u7cfb\u7edf\u9ed8\u8ba4',
       'fetch.resetting': '\u6b63\u5728\u6062\u590d\u2026',
       'fetch.placeholder': '\u7cfb\u7edf\u9ed8\u8ba4\uff08\u7559\u7a7a\uff09',
       'fetch.hint': '\u7559\u7a7a = \u7cfb\u7edf\u9ed8\u8ba4\uff08\u4fdd\u6301\u7559\u7a7a\uff09\uff1b0 = \u7981\u7528\uff1b1800000 \u6beb\u79d2 = 30 \u5206\u949f',
-      'fetch.status.loading': '\u6b63\u5728\u52a0\u8f7d\u6293\u53d6\u8d85\u65f6\u8bbe\u7f6e\u2026',
-      'fetch.status.unavailable': '\u5f53\u524d\u90e8\u7f72\u672a\u63d0\u4f9b llm-api-call-tuning \u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\uff0c\u65e0\u6cd5\u5728\u6b64\u7f16\u8f91\u6293\u53d6\u8d85\u65f6\u3002',
-      'timeouts.heading': '\u63d0\u4f9b\u65b9\u8d85\u65f6',
-      'timeouts.description': '\u6309\u8def\u7531\u751f\u6548\u7684\u5e94\u7528\u5c42\u8d85\u65f6\uff1a\u5355\u6b21\u6d41\u8bfb\u53d6\u7b49\u5f85\u4e0b\u4e00\u6570\u636e\u5757\u7684\u6700\u957f\u65f6\u95f4\u3001SDK \u8bf7\u6c42\u8d85\u65f6\uff0c\u4ee5\u53ca DeepSeek \u6587\u4ef6 API \u8d85\u65f6\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u5305\u6216 SDK \u9ed8\u8ba4\u503c\uff1b\u4e0d\u5141\u8bb8 0\uff1b\u201c\u4e0d\u9650\u201d\u9884\u8bbe\u4f1a\u586b\u5165 2147483647 \u6beb\u79d2\u7684\u4e0a\u9650\uff08\u8fd9\u662f\u4e0a\u9650\uff0c\u4e0d\u662f\u5173\u95ed\u5f00\u5173\uff09\u3002\u4fdd\u5b58\u53ea\u5199\u5165\u8be5\u8def\u7531\u4e0a\u6539\u52a8\u8fc7\u7684\u5b57\u6bb5\u3002',
-      'timeouts.note': '\u53ea\u5199\u5165\u5df2\u542f\u7528\u7684\u8def\u7531\uff1a\u4f11\u7720\u8def\u7531\u5728\u6b64\u4e3a\u53ea\u8bfb\uff0c\u56e0\u4e3a\u5199\u5165\u8d85\u65f6\u5b57\u6bb5\u4f1a\u751f\u6210\u4e0d\u5b8c\u6574\u7684\u63d0\u4f9b\u65b9\u914d\u7f6e\u5e76\u53ef\u80fd\u5c06\u5176\u6fc0\u6d3b\u3002\u8fd9\u4e9b\u5b57\u6bb5\u4e0e\u91cd\u8bd5\u7b56\u7565\u3001\u8fdb\u7a0b\u7ea7\u6293\u53d6\u4e0a\u9650\u5f7c\u6b64\u72ec\u7acb\u3002',
       'timeouts.unit': '\u6beb\u79d2\uff0c\u7559\u7a7a\u6216 1 \u5230 2147483647',
       'timeouts.hint': '\u7559\u7a7a = \u5305/SDK \u9ed8\u8ba4\u503c\uff1b\u201c\u4e0d\u9650\u201d\u586b\u5165 2147483647\uff08\u4e0a\u9650\uff0c\u4e0d\u662f\u5173\u95ed\u5f00\u5173\uff09',
       'timeouts.unlimited': '\u4e0d\u9650',
-      'timeouts.save': '\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e',
-      'timeouts.saving': '\u6b63\u5728\u4fdd\u5b58\u8d85\u65f6\u8bbe\u7f6e\u2026',
-      'timeouts.reset': '\u91cd\u7f6e\u8d85\u65f6\u8bbe\u7f6e',
-      'timeouts.resetting': '\u6b63\u5728\u91cd\u7f6e\u2026',
-      'timeouts.resetDone': '\u5df2\u91cd\u7f6e\u3002\u8be5\u8def\u7531\u4e0d\u518d\u8986\u76d6\u6b64\u5904\u663e\u793a\u7684\u8d85\u65f6\u8bbe\u7f6e\u3002',
       'timeouts.protocol': '\u534f\u8bae',
       'timeouts.protocol.catalog': '\u76ee\u5f55\u9ed8\u8ba4',
       'timeouts.advisory.sdkFirst': 'SDK \u8bf7\u6c42\u8d85\u65f6\uff08\u9ed8\u8ba4 600000 \u6beb\u79d2\uff09\u53ef\u80fd\u5148\u4e8e\u6b64\u7a7a\u95f2\u7a97\u53e3\u89e6\u53d1\uff1b\u8bf7\u540c\u6b65\u63d0\u9ad8\u201c\u8bf7\u6c42\u8d85\u65f6\u201d\u3002',
-      'timeouts.advisory.transportFirst': '\u8fdb\u7a0b\u7ea7\u6293\u53d6\u6b63\u6587\u8d85\u65f6\u4f4e\u4e8e\u6b64\u7a7a\u95f2\u7a97\u53e3\uff0c\u4f20\u8f93\u5c42\u53ef\u80fd\u5148\u4e2d\u65ad\uff1b\u8bf7\u5728\u6293\u53d6\u8d85\u65f6\u5361\u7247\u4e2d\u63d0\u9ad8\u201c\u54cd\u5e94\u6b63\u6587\u8d85\u65f6\u201d\u3002',
+      'timeouts.advisory.transportFirst': '\u8fdb\u7a0b\u7ea7\u6293\u53d6\u6b63\u6587\u8d85\u65f6\u4f4e\u4e8e\u6b64\u7a7a\u95f2\u7a97\u53e3\uff0c\u4f20\u8f93\u5c42\u53ef\u80fd\u5148\u4e2d\u65ad\uff1b\u8bf7\u5728\u5168\u5c40\u5361\u7247\u4e2d\u63d0\u9ad8\u201c\u54cd\u5e94\u6b63\u6587\u8d85\u65f6\u201d\u3002',
       'field.mode.label': '\u91cd\u8bd5\u6a21\u5f0f',
       'field.mode.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4ec5\u5728\u91cd\u8bd5\u4e0a\u9650\u5185\u91cd\u8bd5\u6240\u9009\u7684\u4e34\u65f6\u9519\u8bef\u7801\u3002\u201c\u603b\u662f\u201d\u6a21\u5f0f\u5bf9\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\u90fd\u91cd\u8bd5\uff0c\u76f4\u5230\u6210\u529f\u3001\u53d6\u6d88\u6216\u5173\u95ed\u3002',
       'field.mode.unit': 'normal \u6216 always',
@@ -457,6 +466,7 @@ window.__ModuleLoader__.load({
       'status.readOnly': '\u5f53\u524d\u90e8\u7f72\u4e2d\u8fd9\u4e9b\u503c\u4e3a\u53ea\u8bfb\u3002',
       'status.saved': '\u5df2\u4fdd\u5b58\u3002',
       'status.reset': '\u5df2\u91cd\u7f6e\u3002\u8be5\u63d0\u4f9b\u65b9\u4e0d\u518d\u4fdd\u5b58 retryPolicy \u8986\u76d6\u3002',
+      'status.routeReset': '已重置。该路由不再保存此处显示的重试策略或超时覆盖。',
       'status.fetchReset': '\u5df2\u91cd\u7f6e\u3002\u6293\u53d6\u8d85\u65f6\u6062\u590d\u4e3a\u7cfb\u7edf\u9ed8\u8ba4\u3002',
       'error.refused': '\u5bbf\u4e3b\u62d2\u7edd\u4e86\u672c\u6b21\u5199\u5165\u3002\u5f53\u524d\u663e\u793a\u7684\u662f\u5bbf\u4e3b\u73b0\u5728\u62a5\u544a\u7684\u503c\u3002',
       'error.managed': '\u8fd9\u4e9b\u503c\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406\u2014\u2014\u5bb6\u5ead\u8865\u4e01\u6216\u547d\u4ee4\u884c\u8986\u76d6\u4e86\u5b83\u4eec\u2014\u2014\u56e0\u6b64\u672c\u9875\u9762\u65e0\u6cd5\u4fee\u6539\u3002',
@@ -475,6 +485,7 @@ window.__ModuleLoader__.load({
       'apply.outcome.saved': '\u5df2\u5e94\u7528',
       'apply.outcome.refused': '\u88ab\u62d2\u7edd',
       'apply.outcome.managed': '\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406',
+      'apply.outcome.skipped': '已跳过',
     };
 
     const STYLE_TEXT = [
@@ -505,6 +516,12 @@ window.__ModuleLoader__.load({
       '.dlct-button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent, #2563eb); background: var(--accent, #2563eb); color: #fff; cursor: pointer; }',
       '.dlct-button[disabled] { opacity: 0.55; cursor: default; }',
       '.dlct-outline { background: transparent; color: var(--accent, #2563eb); }',
+      '.dlct-subgroup { display: flex; flex-direction: column; gap: 10px; }',
+      '.dlct-subgroup-title { margin: 0; font-size: 0.95rem; }',
+      '.dlct-picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }',
+      '.dlct-picker-field { display: flex; flex-direction: column; gap: 4px; min-width: 220px; flex: 1 1 220px; }',
+      '.dlct-empty { margin: 0; color: var(--text-secondary, #5b6472); }',
+      '.dlct-hint { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--surface-sunken, #f4f6f9); color: var(--text-secondary, #5b6472); font-size: 0.82rem; line-height: 1.45; }',
       '.dlct-providers { display: flex; flex-direction: column; gap: 14px; }',
       '.dlct-provider { border: 1px solid var(--border, #d8dde4); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }',
       '.dlct-provider-head { display: flex; flex-direction: column; gap: 4px; }',
@@ -931,6 +948,89 @@ window.__ModuleLoader__.load({
       return [{ op: 'unset', path: [...settingsPath, 'retryPolicy'] }];
     }
 
+    /** Whether two normalized retryable-code lists hold the same codes in order. */
+    function sameRetryCodes(left, right) {
+      return Array.isArray(left) && Array.isArray(right)
+        && left.length === right.length
+        && left.every((code, index) => code === right[index]);
+    }
+
+    /**
+     * Which `retryPolicy` leaves the USER layer stores for one route. Only a
+     * stored leaf ever needs an `unset`: a leaf that is already absent cannot
+     * deviate from the global values, so writing over it would be a pointless
+     * (and, through the settings layer's base fallback, potentially noisy) op.
+     * @param user - the form snapshot's user layer.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @returns one boolean per managed leaf key.
+     */
+    function retryLeafPresence(user, settingsPath) {
+      const policy = isPlainObject(user) ? getAt(user, [...settingsPath, 'retryPolicy']) : undefined;
+      const plain = isPlainObject(policy) ? policy : undefined;
+      const backoff = plain !== undefined && isPlainObject(plain.backoff) ? plain.backoff : undefined;
+      const has = (node, key) => node !== undefined
+        && Object.prototype.hasOwnProperty.call(node, key)
+        && node[key] !== undefined;
+      return {
+        mode: has(plain, 'mode'),
+        maxRetries: has(plain, 'maxRetries'),
+        retryableCodes: has(plain, 'retryableCodes'),
+        initialDelayMs: has(backoff, 'initialDelayMs'),
+        maxDelayMs: has(backoff, 'maxDelayMs'),
+        jitterRatio: has(backoff, 'jitterRatio'),
+      };
+    }
+
+    /**
+     * The leaf ops that write one ROUTE's retry policy RELATIVE to the plugin's
+     * global effective retry values, which is what makes a merged per-route
+     * card disappear once it no longer deviates:
+     * - a leaf whose validated value DIFFERS from the global value is `set`;
+     * - a leaf that reverts to the global value is `unset` — but only when the
+     *   user layer actually STORES it (`presence`), so an untouched leaf is
+     *   never written;
+     * - when every emitted op is an `unset`, the single `retryPolicy` unset
+     *   from {@link resetPolicyOps} replaces them, so no empty
+     *   `{ backoff: {} }` shell is left in the user layer.
+     * With no ops at all the builder returns an empty list, so a picked but
+     * untouched route never writes.
+     *
+     * `mode: 'always'` keeps its documented contract: the two normal-mode-only
+     * leaves are inactive, so a STORED one is cleared, because the upstream
+     * union schema ignores them once the mode is `always`.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param values - the validated route values.
+     * @param globalValues - the normalized global retry values (comparison base).
+     * @param presence - `retryLeafPresence` of the current user layer.
+     * @returns ordered leaf-path ops; empty when there is nothing to write.
+     */
+    function retryPolicyDiffOps(settingsPath, values, globalValues, presence) {
+      const base = [...settingsPath, 'retryPolicy'];
+      const ops = [];
+      const leaf = (key, path, value, globalValue, equal) => {
+        const same = equal === undefined ? value === globalValue : equal(value, globalValue);
+        if (!same) ops.push({ op: 'set', path, value });
+        else if (presence !== undefined && presence[key] === true) ops.push({ op: 'unset', path });
+      };
+      leaf('mode', [...base, 'mode'], values.mode, globalValues.mode);
+      if (values.mode === 'always') {
+        if (presence !== undefined && presence.maxRetries === true) {
+          ops.push({ op: 'unset', path: [...base, 'maxRetries'] });
+        }
+        if (presence !== undefined && presence.retryableCodes === true) {
+          ops.push({ op: 'unset', path: [...base, 'retryableCodes'] });
+        }
+      } else {
+        leaf('maxRetries', [...base, 'maxRetries'], values.maxRetries, globalValues.maxRetries);
+        leaf('retryableCodes', [...base, 'retryableCodes'], [...values.retryableCodes], globalValues.retryableCodes, sameRetryCodes);
+      }
+      leaf('initialDelayMs', [...base, 'backoff', 'initialDelayMs'], values.initialDelayMs, globalValues.initialDelayMs);
+      leaf('maxDelayMs', [...base, 'backoff', 'maxDelayMs'], values.maxDelayMs, globalValues.maxDelayMs);
+      leaf('jitterRatio', [...base, 'backoff', 'jitterRatio'], values.jitterRatio, globalValues.jitterRatio);
+      if (ops.length === 0 || !ops.every(op => op.op === 'unset')) return ops;
+      return resetPolicyOps(settingsPath);
+    }
+
     /**
      * The leaf ops that write the two process-wide fetch timers. The host
      * settings schema exposes both at the TOP LEVEL of this plugin's namespace,
@@ -1284,6 +1384,114 @@ window.__ModuleLoader__.load({
       return Object.prototype.hasOwnProperty.call(profile, 'retryPolicy') && profile.retryPolicy !== undefined;
     }
 
+    /* ══ per-route deviation (the merged card's listing rule) ═══════════════ */
+
+    /**
+     * The form snapshot of one candidate row, or the idle snapshot while the
+     * row carries no live form. Never throws: `ConfigFormController.getSnapshot`
+     * is the only method called.
+     * @param form - the row's shared config form, if any.
+     * @returns the current snapshot (stable reference until the next change).
+     */
+    function snapshotOf(form) {
+      if (form === undefined || form === null || typeof form.getSnapshot !== 'function') return IDLE_SNAPSHOT;
+      const snapshot = form.getSnapshot();
+      return snapshot === null || snapshot === undefined ? IDLE_SNAPSHOT : snapshot;
+    }
+
+    /**
+     * Whether one joined row is a route this page can write at all: it must be
+     * active, carry a settings namespace, and hold a live shared form. The
+     * per-route picker offers exactly these rows (a deviating route is always a
+     * subset), because a dormant or unaddressed route has no writable
+     * namespace and no snapshot to read.
+     * @param row - one joined provider row.
+     * @returns true when the row is addressable.
+     */
+    function isRouteCandidate(row) {
+      return row !== null && row !== undefined
+        && row.active === true
+        && row.settingsNs !== ''
+        && row.form !== undefined;
+    }
+
+    /**
+     * Whether two normalized retry value sets differ in at least one leaf.
+     * VALUE-based on purpose: a stored `retryPolicy` identical to the global
+     * values must not keep a card on the page.
+     * @param routeValues - `normalizePolicy` of the route's effective value.
+     * @param globalValues - `normalizePolicy` of the plugin's own section.
+     * @returns true when the route deviates from the global retry values.
+     */
+    function retryValuesDeviate(routeValues, globalValues) {
+      for (const field of RETRY_FIELDS) {
+        if (field.key === 'retryableCodes') {
+          if (!sameRetryCodes(routeValues.retryableCodes, globalValues.retryableCodes)) return true;
+        } else if (routeValues[field.key] !== globalValues[field.key]) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    /**
+     * The retry half of the merged listing rule: the route's EFFECTIVE stored
+     * retry policy differs from the plugin's global effective retry values in at
+     * least one leaf. A row whose snapshot has not answered cannot be judged,
+     * so it is not listed (it is listed once its snapshot arrives).
+     * @param snapshot - the route form snapshot.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param globalValues - the normalized global retry values.
+     * @returns true when the route's retry policy deviates.
+     */
+    function routeRetryDeviates(snapshot, settingsPath, globalValues) {
+      if (snapshot === null || snapshot === undefined || snapshot.status !== 'ready') return false;
+      return retryValuesDeviate(
+        normalizePolicy(getAt(snapshot.value, [...settingsPath, 'retryPolicy'])),
+        globalValues,
+      );
+    }
+
+    /**
+     * The timeout half of the merged listing rule. There is deliberately no
+     * global counterpart to compare against: the global fetch timers are
+     * undici transport timers, while these are the route's application-layer
+     * watchdogs (`streamIdleTimeoutMs`, `timeoutMs`, `filesApiTimeoutMs`), so
+     * "deviates" means PRESENCE in the user layer — a route that explicitly
+     * stores any timeout leaf it owns is listed, whatever the value.
+     * @param snapshot - the route form snapshot.
+     * @param row - the joined provider row (supplies `settingsPath` and family).
+     * @returns true when the user layer names one of the route's timeout leaves.
+     */
+    function routeTimeoutDeviates(snapshot, row) {
+      if (snapshot === null || snapshot === undefined || snapshot.status !== 'ready') return false;
+      for (const field of timeoutFieldsFor(timeoutFamily(row))) {
+        if (timeoutHasOverride(snapshot.user, row.settingsPath, field.key)) return true;
+      }
+      return false;
+    }
+
+    /**
+     * Whether a retry DRAFT differs from the seeded baseline, i.e. the user
+     * staged at least one edit. Text is compared exactly (a half-typed value
+     * still counts as an edit) and the code list by its ordered contents.
+     * @param draft - the current text draft.
+     * @param baseline - the draft reseeded from the current snapshot.
+     * @returns true when at least one control differs from the seed.
+     */
+    function retryDraftChanged(draft, baseline) {
+      for (const field of RETRY_FIELDS) {
+        const left = draft[field.key];
+        const right = baseline[field.key];
+        if (Array.isArray(left) || Array.isArray(right)) {
+          if (!sameRetryCodes(left, right)) return true;
+          continue;
+        }
+        if (left !== right) return true;
+      }
+      return false;
+    }
+
     /* ══ rendered helpers ══════════════════════════════════════════════════ */
 
     /**
@@ -1483,166 +1691,280 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One provider row: its live snapshot, its draft, and its three actions.
-     * The row subscribes to the provider's own shared config form, so a write
-     * from anywhere re-seeds it from the next Host answer.
-     * @param props - slot props plus the joined row, its form, the validated
-     *   defaults, and the last "Apply defaults to all" outcome for this row.
-     * @returns the row tree.
+     * One merged per-route card: the route's retry policy AND its
+     * application-layer timeouts in ONE card, with two labeled sub-groups.
+     *
+     * The merge is sound because both groups write the SAME namespace and the
+     * SAME settings path for a given route: `providers.<route>` in `llm-pi-ai`
+     * (retryPolicy + streamIdleTimeoutMs + timeoutMs) and the namespace root in
+     * `llm-deepseek` / `llm-deepseek-account` (retryPolicy +
+     * streamIdleTimeoutMs + filesApiTimeoutMs). One Save therefore submits ONE
+     * ordered op list at one revision fence, carrying the retry leaves and the
+     * timeout leaves of both sub-groups.
+     *
+     * The retry draft is seeded from the EFFECTIVE value and compared against
+     * the plugin's global retry values on save, so a leaf typed back to a
+     * global value is written as an `unset` and the card disappears once the
+     * route no longer deviates. The timeout draft is seeded from the USER layer
+     * only (blank = the package/SDK default stays in force), so an untouched
+     * control writes nothing and a cleared one becomes an `unset`.
+     *
+     * The card subscribes to the provider's own shared config form, so a write
+     * from anywhere re-seeds both drafts from the next Host answer.
+     * @param props - the joined row, its form, the translated copy, the
+     *   validated global retry values ("Use defaults" and the unset-on-revert
+     *   baseline), the global fetch body-timeout draft text (advisory only), and
+     *   the parent's `onSettled` callback (drops the route from the local picked
+     *   set once a save or reset settled it).
+     * @returns the card tree.
      */
-    function ProviderRow(props) {
-      const { row, t, form, defaultsValues, applyOutcome } = props;
+    function RouteCard(props) {
+      const {
+        row, t, form, defaultsValues, globalRetryValues, bodyTimeoutMs, onSettled,
+      } = props;
       const store = form === undefined ? IDLE_FORM : form;
       const subscribe = useCallback(listener => store.subscribe(listener), [store]);
       const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
       const snapshot = useSyncExternalStore(subscribe, getSnapshot);
 
-      const ids = {};
-      for (const field of RETRY_FIELDS) ids[field.key] = useId();
+      const retryIds = {};
+      for (const field of RETRY_FIELDS) retryIds[field.key] = useId();
+      const timeoutIds = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) timeoutIds[field.key] = useId();
 
-      const [edits, setEdits] = useState({});
-      /* Which action is crossing the wire, so Save and Reset can each show
-       * their own in-flight copy (null while idle). */
+      const [retryEdits, setRetryEdits] = useState({});
+      const [timeoutEdits, setTimeoutEdits] = useState({});
       const [pending, setPending] = useState(null);
       const [outcome, setOutcome] = useState(null);
       const pendingRef = useRef(false);
-      const saving = pending !== null;
+      const busy = pending !== null;
 
+      const family = timeoutFamily(row);
       const editable = row.active && row.settingsNs !== '' && form !== undefined;
       const status = snapshot !== null && snapshot !== undefined && typeof snapshot.status === 'string'
         ? snapshot.status
         : 'loading';
       const ready = editable && status === 'ready';
       const writable = ready && snapshot.writable !== false;
-      // Actions use the SAME gate as "Apply defaults to all": ready, writable,
-      // and a numeric revision, so this page never sends an unconditional
-      // write either (see `writeGate`).
+      // The SAME gate as every other write on this page: ready, writable, and a
+      // numeric revision, so no unconditional write is ever sent.
       const disabled = !writeGate(row, snapshot, form).ok;
       const value = snapshot === null || snapshot === undefined ? undefined : snapshot.value;
+      const user = snapshot === null || snapshot === undefined ? undefined : snapshot.user;
 
       const policyRaw = ready ? getAt(value, [...row.settingsPath, 'retryPolicy']) : undefined;
-      const override = ready ? userHasOverride(snapshot.user, row.settingsPath) : false;
-      const seedKey = ready ? `${String(snapshot.revision)}|${JSON.stringify(policyRaw === undefined ? null : policyRaw)}` : '';
-      const baseline = retryDraft(policyRaw);
-      const draft = {};
+      const storedRetry = ready ? userHasOverride(user, row.settingsPath) : false;
+      const retryPresence = ready ? retryLeafPresence(user, row.settingsPath) : undefined;
+      const retrySeedKey = ready
+        ? `${String(snapshot.revision)}|${JSON.stringify(policyRaw === undefined ? null : policyRaw)}`
+        : '';
+      const retryBaseline = retryDraft(policyRaw);
+      const retryValues = {};
       for (const field of RETRY_FIELDS) {
-        const edit = edits[field.key];
-        draft[field.key] = edit !== undefined && edit.seedKey === seedKey ? edit.value : baseline[field.key];
+        const edit = retryEdits[field.key];
+        retryValues[field.key] = edit !== undefined && edit.seedKey === retrySeedKey
+          ? edit.value
+          : retryBaseline[field.key];
       }
-      const check = validateDraft(draft, false);
-      const errors = check.ok ? {} : check.errors;
+      const retryCheck = validateDraft(retryValues, false);
+      const retryErrors = retryCheck.ok ? {} : retryCheck.errors;
+      const retryChanged = retryDraftChanged(retryValues, retryBaseline);
 
-      /** Stage one control value against the snapshot currently shown. */
-      const stage = (key, next) => {
-        setEdits(current => ({ ...current, [key]: { value: next, seedKey } }));
+      const userProfile = ready && isPlainObject(user) ? getAt(user, row.settingsPath) : undefined;
+      const timeoutSeedKey = ready
+        ? `${String(snapshot.revision)}|${JSON.stringify(userProfile === undefined ? null : userProfile)}`
+        : '';
+      const timeoutBaseline = timeoutSeedDraft(user, row.settingsPath);
+      const timeoutValues = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) {
+        const edit = timeoutEdits[field.key];
+        timeoutValues[field.key] = edit !== undefined && edit.seedKey === timeoutSeedKey
+          ? edit.value
+          : timeoutBaseline[field.key];
+      }
+      const timeoutCheck = validateTimeoutDraft(timeoutValues, family);
+      const timeoutErrors = timeoutCheck.ok ? {} : timeoutCheck.errors;
+      const overrides = {};
+      for (const field of PROVIDER_TIMEOUT_FIELDS) {
+        overrides[field.key] = timeoutHasOverride(user, row.settingsPath, field.key);
+      }
+
+      const retryOps = retryCheck.ok && retryChanged
+        ? retryPolicyDiffOps(row.settingsPath, retryCheck.values, globalRetryValues, retryPresence)
+        : [];
+      const timeoutChangedOps = timeoutCheck.ok
+        ? timeoutOps(row.settingsPath, family, timeoutBaseline, timeoutCheck.values)
+        : [];
+      const ops = [...retryOps, ...timeoutChangedOps];
+      const storedDeviation = storedRetry
+        || timeoutFieldsFor(family).some(field => overrides[field.key] === true);
+      const resetOps = [
+        ...resetPolicyOps(row.settingsPath),
+        ...timeoutResetOps(row.settingsPath, family),
+      ];
+
+      /** Stage one retry value against the snapshot currently shown. */
+      const stageRetry = (key, next) => {
+        setRetryEdits(current => ({ ...current, [key]: { value: next, seedKey: retrySeedKey } }));
         setOutcome(null);
       };
 
-      /** Write this row's retry policy as leaf ops. */
+      /** Stage one timeout value against the snapshot currently shown. */
+      const stageTimeout = (key, next) => {
+        setTimeoutEdits(current => ({ ...current, [key]: { value: next, seedKey: timeoutSeedKey } }));
+        setOutcome(null);
+      };
+
+      /** Fill the schema cap (2147483647 ms) - a cap, not an off switch. */
+      const presetTimeout = key => stageTimeout(key, String(UNLIMITED_TIMEOUT_MS));
+
+      /**
+       * Write every CHANGED leaf of both groups as one ordered op list at one
+       * revision fence. Nothing here is projected onto another route.
+       */
       const save = () => {
-        if (disabled || saving || pendingRef.current || !check.ok) return;
+        if (disabled || busy || pendingRef.current || !retryCheck.ok || !timeoutCheck.ok || ops.length === 0) return;
         pendingRef.current = true;
         setPending('save');
         setOutcome(null);
-        submitOps(form, retryPolicyOps(row.settingsPath, check.values)).then((result) => {
+        submitOps(form, ops).then((result) => {
           pendingRef.current = false;
           setPending(null);
-          setEdits({});
+          setRetryEdits({});
+          setTimeoutEdits({});
           setOutcome(result);
+          if (result.kind === 'saved' && typeof onSettled === 'function') onSettled(row);
         });
       };
 
-      /** Clear this row's retryPolicy so the namespace defaults apply again. */
+      /**
+       * Remove everything this card stores for the route (the whole
+       * `retryPolicy` plus this family's timeout leaves) in one write. A picked
+       * card that stores nothing yet is closed LOCALLY instead: writing unsets
+       * over a route with no override would only add noise to the user layer.
+       */
       const reset = () => {
-        if (disabled || saving || pendingRef.current) return;
+        if (busy || pendingRef.current) return;
+        setOutcome(null);
+        if (!storedDeviation) {
+          setRetryEdits({});
+          setTimeoutEdits({});
+          if (typeof onSettled === 'function') onSettled(row);
+          return;
+        }
+        if (disabled) return;
         pendingRef.current = true;
         setPending('reset');
-        setOutcome(null);
-        submitOps(form, resetPolicyOps(row.settingsPath)).then((result) => {
+        submitOps(form, resetOps).then((result) => {
           pendingRef.current = false;
           setPending(null);
-          setEdits({});
+          setRetryEdits({});
+          setTimeoutEdits({});
           setOutcome(result.kind === 'saved' ? { kind: 'reset' } : result);
+          if (result.kind === 'saved' && typeof onSettled === 'function') onSettled(row);
         });
       };
 
-      /** Copy the validated defaults card into this draft (nothing written yet). */
+      /** Copy the validated global retry defaults into the retry draft. */
       const useDefaults = () => {
-        if (disabled || saving || defaultsValues === undefined) return;
+        if (disabled || busy || defaultsValues === undefined) return;
         const next = {};
         for (const field of RETRY_FIELDS) {
-          next[field.key] = { value: draftValueFromValues(field.key, defaultsValues), seedKey };
+          next[field.key] = { value: draftValueFromValues(field.key, defaultsValues), seedKey: retrySeedKey };
         }
-        setEdits(next);
+        setRetryEdits(next);
         setOutcome(null);
       };
 
+      const advisoryKeys = writable ? timeoutAdvisories(family, timeoutValues, bodyTimeoutMs) : [];
+      const protocol = family === 'deepseek'
+        ? 'anthropic-messages'
+        : ready && typeof getAt(value, [...row.settingsPath, 'api']) === 'string'
+          ? getAt(value, [...row.settingsPath, 'api'])
+          : '';
       const namespaceText = [row.settingsNs, ...row.settingsPath].filter(part => part !== '').join(' \u203a ');
       const badge = editable
         ? h('span', {
-            className: `dlct-badge ${override ? 'dlct-badge-override' : 'dlct-badge-default'}`,
-          }, t(override ? 'provider.source.override' : 'provider.source.default'))
+            className: `dlct-badge ${storedRetry ? 'dlct-badge-override' : 'dlct-badge-default'}`,
+          }, t(storedRetry ? 'provider.source.override' : 'provider.source.default'))
         : null;
 
-      const rowBody = [];
+      const body = [];
       if (!row.active) {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'dormant' }, t('provider.status.dormant')));
+        body.push(h('p', { className: 'dlct-note', key: 'dormant' }, t('provider.status.dormant')));
       } else if (row.settingsNs === '') {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'no-settings' }, t('provider.status.noSettings')));
+        body.push(h('p', { className: 'dlct-note', key: 'no-settings' }, t('provider.status.noSettings')));
       } else if (form === undefined) {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'no-form' }, t('provider.status.unavailable')));
+        body.push(h('p', { className: 'dlct-note', key: 'no-form' }, t('provider.status.unavailable')));
       } else if (status === 'loading') {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'loading' }, t('status.loading')));
+        body.push(h('p', { className: 'dlct-note', key: 'loading' }, t('status.loading')));
       } else if (status === 'unavailable') {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'unavailable' }, t('provider.status.unavailable')));
+        body.push(h('p', { className: 'dlct-note', key: 'unavailable' }, t('provider.status.unavailable')));
       } else if (!writable) {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'read-only' }, t('status.readOnly')));
+        body.push(h('p', { className: 'dlct-note', key: 'read-only' }, t('status.readOnly')));
       } else {
-        rowBody.push(h('div', { className: 'dlct-fields', key: 'fields' },
-          renderRetryFields({
-            t,
-            ids,
-            draft,
-            errors,
-            disabled: disabled || saving,
-            stage,
-            showNormalFields: draft.mode !== 'always',
-          }),
-        ));
-        if (draft.mode === 'always') {
-          rowBody.push(h('p', { className: 'dlct-note', key: 'always' }, t('provider.alwaysNote')));
+        if (!storedDeviation) {
+          body.push(h('p', { className: 'dlct-hint', key: 'picked-hint' }, t('routes.pickedHint')));
         }
-        rowBody.push(h('div', { className: 'dlct-actions', key: 'actions' },
+        body.push(h('div', { className: 'dlct-subgroup', key: 'retry-group' },
+          h('h5', { className: 'dlct-subgroup-title' }, t('routes.retryHeading')),
+          h('div', { className: 'dlct-fields' },
+            renderRetryFields({
+              t,
+              ids: retryIds,
+              draft: retryValues,
+              errors: retryErrors,
+              disabled: disabled || busy,
+              stage: stageRetry,
+              showNormalFields: retryValues.mode !== 'always',
+            }),
+          ),
+        ));
+        if (retryValues.mode === 'always') {
+          body.push(h('p', { className: 'dlct-note', key: 'always' }, t('provider.alwaysNote')));
+        }
+        body.push(h('div', { className: 'dlct-subgroup', key: 'timeout-group' },
+          h('h5', { className: 'dlct-subgroup-title' }, t('routes.timeoutsHeading')),
+          h('div', { className: 'dlct-fields' },
+            renderTimeoutFields({
+              t,
+              ids: timeoutIds,
+              family,
+              draft: timeoutValues,
+              errors: timeoutErrors,
+              overrides,
+              disabled: disabled || busy,
+              stage: stageTimeout,
+              preset: presetTimeout,
+            }),
+          ),
+        ));
+        body.push(h('div', { className: 'dlct-actions', key: 'actions' },
           h('button', {
             type: 'button',
             className: 'dlct-button',
-            disabled: disabled || saving || !check.ok,
+            disabled: disabled || busy || !retryCheck.ok || !timeoutCheck.ok || ops.length === 0,
             'aria-busy': pending === 'save' ? 'true' : undefined,
             onClick: save,
           }, pending === 'save' ? t('provider.saving') : t('provider.save')),
           h('button', {
             type: 'button',
             className: 'dlct-button dlct-outline',
-            disabled: disabled || saving,
+            disabled: disabled || busy,
             'aria-busy': pending === 'reset' ? 'true' : undefined,
             onClick: reset,
           }, pending === 'reset' ? t('provider.resetting') : t('provider.reset')),
           h('button', {
             type: 'button',
             className: 'dlct-button dlct-outline',
-            disabled: disabled || saving || defaultsValues === undefined,
+            disabled: disabled || busy || defaultsValues === undefined,
             onClick: useDefaults,
           }, t('provider.useDefaults')),
         ));
-        rowBody.push(h('div', { key: 'outcome' }, outcomeNode(outcome, t)));
-      }
-
-      /* A skipped row shows no extra badge: its body already states why (the
-       * loading / unavailable / read-only note), and the inline en/zh
-       * dictionaries own one key set only, so no third copy is invented. The
-       * outcome itself is recorded in the page's `applyOutcomes` state. */
-      if (applyOutcome !== undefined && applyOutcome !== 'skipped') {
-        rowBody.push(h('span', { className: 'dlct-outcome', key: 'apply-outcome' }, `${t('defaults.heading')}: ${t(`apply.outcome.${applyOutcome}`)}`));
+        for (const key of advisoryKeys) {
+          body.push(h('p', { className: 'dlct-advisory', role: 'status', key }, t(key)));
+        }
+        body.push(h('div', { key: 'outcome' }, outcomeNode(outcome, t, 'status.routeReset')));
       }
 
       return h('section', { className: 'dlct-provider' },
@@ -1653,182 +1975,32 @@ window.__ModuleLoader__.load({
             namespaceText === ''
               ? null
               : h('span', { className: 'dlct-namespace' }, `${t('provider.namespace')}: ${namespaceText}`),
-          ),
-        ),
-        rowBody,
-      );
-    }
-
-    /**
-     * One provider's timeout row: its live snapshot, its per-family timeout
-     * draft, and its Save/Reset actions. The row subscribes to the provider's
-     * own shared config form, so a write from anywhere re-seeds it. A dormant
-     * or unaddressed route renders the same read-only note as the retry row and
-     * offers no controls: writing a timeout leaf would materialize a partial
-     * `providers.<route>` profile and could activate a dormant route, so the
-     * active-only gate is a correctness requirement here, not just UX.
-     * @param props - slot props plus the joined row, its form, and the fetch
-     *   card's body-timeout draft text (advisory only, never written).
-     * @returns the row tree.
-     */
-    function ProviderTimeoutRow(props) {
-      const { row, t, form, bodyTimeoutMs } = props;
-      const store = form === undefined ? IDLE_FORM : form;
-      const subscribe = useCallback(listener => store.subscribe(listener), [store]);
-      const getSnapshot = useCallback(() => store.getSnapshot(), [store]);
-      const snapshot = useSyncExternalStore(subscribe, getSnapshot);
-
-      const ids = {};
-      for (const field of PROVIDER_TIMEOUT_FIELDS) ids[field.key] = useId();
-
-      const [edits, setEdits] = useState({});
-      const [pending, setPending] = useState(null);
-      const [outcome, setOutcome] = useState(null);
-      const pendingRef = useRef(false);
-      const saving = pending !== null;
-
-      const family = timeoutFamily(row);
-      const editable = row.active && row.settingsNs !== '' && form !== undefined;
-      const status = snapshot !== null && snapshot !== undefined && typeof snapshot.status === 'string'
-        ? snapshot.status
-        : 'loading';
-      const ready = editable && status === 'ready';
-      const writable = ready && snapshot.writable !== false;
-      // The SAME gate as the retry rows: ready, writable, and a numeric
-      // revision, so this card never sends an unconditional write.
-      const disabled = !writeGate(row, snapshot, form).ok;
-      const value = snapshot === null || snapshot === undefined ? undefined : snapshot.value;
-      const user = snapshot === null || snapshot === undefined ? undefined : snapshot.user;
-
-      const userProfile = ready && isPlainObject(user) ? getAt(user, row.settingsPath) : undefined;
-      const seedKey = ready ? `${String(snapshot.revision)}|${JSON.stringify(userProfile === undefined ? null : userProfile)}` : '';
-      const baseline = timeoutSeedDraft(user, row.settingsPath);
-      const overrides = {};
-      for (const field of PROVIDER_TIMEOUT_FIELDS) {
-        overrides[field.key] = timeoutHasOverride(user, row.settingsPath, field.key);
-      }
-      const draft = {};
-      for (const field of PROVIDER_TIMEOUT_FIELDS) {
-        const edit = edits[field.key];
-        draft[field.key] = edit !== undefined && edit.seedKey === seedKey ? edit.value : baseline[field.key];
-      }
-      const check = validateTimeoutDraft(draft, family);
-      const errors = check.ok ? {} : check.errors;
-      const ops = check.ok ? timeoutOps(row.settingsPath, family, baseline, check.values) : [];
-
-      /** Stage one control value against the snapshot currently shown. */
-      const stage = (key, next) => {
-        setEdits(current => ({ ...current, [key]: { value: next, seedKey } }));
-        setOutcome(null);
-      };
-
-      /** Fill the schema cap (2147483647 ms) — a cap, not an off switch. */
-      const preset = key => stage(key, String(UNLIMITED_TIMEOUT_MS));
-
-      /** Write only this row's CHANGED timeout leaves. */
-      const save = () => {
-        if (disabled || saving || pendingRef.current || !check.ok || ops.length === 0) return;
-        pendingRef.current = true;
-        setPending('save');
-        setOutcome(null);
-        submitOps(form, ops).then((result) => {
-          pendingRef.current = false;
-          setPending(null);
-          setEdits({});
-          setOutcome(result);
-        });
-      };
-
-      /** Unset only this card's timeout leaves for this row. */
-      const reset = () => {
-        if (disabled || saving || pendingRef.current) return;
-        pendingRef.current = true;
-        setPending('reset');
-        setOutcome(null);
-        submitOps(form, timeoutResetOps(row.settingsPath, family)).then((result) => {
-          pendingRef.current = false;
-          setPending(null);
-          setEdits({});
-          setOutcome(result.kind === 'saved' ? { kind: 'reset' } : result);
-        });
-      };
-
-      const advisoryKeys = writable ? timeoutAdvisories(family, draft, bodyTimeoutMs) : [];
-      const protocol = family === 'deepseek'
-        ? 'anthropic-messages'
-        : ready && typeof getAt(value, [...row.settingsPath, 'api']) === 'string'
-          ? getAt(value, [...row.settingsPath, 'api'])
-          : '';
-      const namespaceText = [row.settingsNs, ...row.settingsPath].filter(part => part !== '').join(' \u203a ');
-
-      const rowBody = [];
-      if (!row.active) {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'dormant' }, t('provider.status.dormant')));
-      } else if (row.settingsNs === '') {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'no-settings' }, t('provider.status.noSettings')));
-      } else if (form === undefined) {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'no-form' }, t('provider.status.unavailable')));
-      } else if (status === 'loading') {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'loading' }, t('status.loading')));
-      } else if (status === 'unavailable') {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'unavailable' }, t('provider.status.unavailable')));
-      } else if (!writable) {
-        rowBody.push(h('p', { className: 'dlct-note', key: 'read-only' }, t('status.readOnly')));
-      } else {
-        rowBody.push(h('div', { className: 'dlct-fields', key: 'fields' },
-          renderTimeoutFields({
-            t,
-            ids,
-            family,
-            draft,
-            errors,
-            overrides,
-            disabled: disabled || saving,
-            stage,
-            preset,
-          }),
-        ));
-        rowBody.push(h('div', { className: 'dlct-actions', key: 'actions' },
-          h('button', {
-            type: 'button',
-            className: 'dlct-button',
-            disabled: disabled || saving || !check.ok || ops.length === 0,
-            'aria-busy': pending === 'save' ? 'true' : undefined,
-            onClick: save,
-          }, pending === 'save' ? t('timeouts.saving') : t('timeouts.save')),
-          h('button', {
-            type: 'button',
-            className: 'dlct-button dlct-outline',
-            disabled: disabled || saving,
-            'aria-busy': pending === 'reset' ? 'true' : undefined,
-            onClick: reset,
-          }, pending === 'reset' ? t('timeouts.resetting') : t('timeouts.reset')),
-        ));
-        for (const key of advisoryKeys) {
-          rowBody.push(h('p', { className: 'dlct-advisory', role: 'status', key }, t(key)));
-        }
-        rowBody.push(h('div', { key: 'outcome' }, outcomeNode(outcome, t, 'timeouts.resetDone')));
-      }
-
-      return h('section', { className: 'dlct-provider' },
-        h('header', { className: 'dlct-provider-head' },
-          h('h4', { className: 'dlct-provider-name' }, row.displayName),
-          h('p', { className: 'dlct-provider-meta' },
-            h('code', { className: 'dlct-route' }, row.provider),
-            namespaceText === ''
-              ? null
-              : h('span', { className: 'dlct-namespace' }, `${t('provider.namespace')}: ${namespaceText}`),
             h('span', { className: 'dlct-protocol' }, `${t('timeouts.protocol')}: ${protocol === '' ? t('timeouts.protocol.catalog') : protocol}`),
           ),
         ),
-        rowBody,
+        body,
       );
     }
 
     /**
-     * The "LLM API call tuning" settings page, four cards in order: the global
-     * retry defaults, one editable row per active provider route, the per-route
-     * provider timeouts, and the process-wide fetch timers.
+     * The "LLM API call tuning" settings page, in two tiers:
+     * 1. ONE "Global settings" card carrying both global sub-groups, retries
+     *    first and then the process-wide fetch timeouts, so every global knob
+     *    precedes anything per-route;
+     * 2. ONE per-route tier: a native route picker ABOVE the list, and one
+     *    merged card per DEVIATING route (retry policy AND timeouts inside it).
+     *
+     * A route is listed when (a) its effective stored retry policy differs in
+     * at least one leaf from the global retry values, or (b) one of its timeout
+     * leaves is explicitly present in the user layer (the global fetch timers
+     * are a different knob, so presence is the only meaningful test there).
+     *
+     * The page subscribes ONCE to this plugin's own form AND to every candidate
+     * route form, so the picker's "already listed" set and the deviating list
+     * are recomputed on any provider snapshot change (a write from another page
+     * included) while the component keeps a single external-store seat. The
+     * snapshot objects are cached by identity, so the combined value is stable
+     * between notifications.
      * @param props - slot props.
      * @param props.form - shared config form for this plugin's own namespace.
      * @param props.t - localized copy for this plugin's namespace.
@@ -1838,35 +2010,14 @@ window.__ModuleLoader__.load({
      */
     function TuningSection(props) {
       const { form, t, getForm, readProviders } = props;
-      // The controller's methods need their receiver, and uSES resubscribes
-      // whenever `subscribe` identity changes, so both seats are memoized to
-      // one stable pair per form rather than handing uSES the bare methods.
-      const subscribe = useCallback(listener => form.subscribe(listener), [form]);
-      const getSnapshot = useCallback(() => form.getSnapshot(), [form]);
-      const snapshot = useSyncExternalStore(subscribe, getSnapshot);
 
-      const ids = {};
-      for (const field of RETRY_FIELDS) ids[field.key] = useId();
-      /* A second id block for the fetch card. `FETCH_FIELDS` is frozen, so the
-       * hook count of this component stays constant across renders. */
-      const fetchIds = {};
-      for (const field of FETCH_FIELDS) fetchIds[field.key] = useId();
-
-      const [edits, setEdits] = useState({});
-      const [saving, setSaving] = useState(false);
-      const [outcome, setOutcome] = useState(null);
-      const pendingRef = useRef(false);
-      /* The fetch card keeps its own draft/outcome/pending slots: it writes two
-       * flat leaves of the SAME own-namespace form, but it is not part of the
-       * retry defaults draft, so sharing either state would let one card clear
-       * the other's staged edits. */
-      const [fetchEdits, setFetchEdits] = useState({});
-      const [fetchPending, setFetchPending] = useState(null);
-      const [fetchOutcome, setFetchOutcome] = useState(null);
-      const fetchPendingRef = useRef(false);
       const [providers, setProviders] = useState({ status: 'loading', rows: [] });
       const [applying, setApplying] = useState(false);
       const [applyOutcomes, setApplyOutcomes] = useState({});
+      /* Routes materialized by the picker but not stored yet: picking is local
+       * state only, so it writes NOTHING until a field is edited and saved. */
+      const [pickedRoutes, setPickedRoutes] = useState({});
+      const [pickRoute, setPickRoute] = useState('');
 
       // One mount read of the provider directory; `readProviders` and `getForm`
       // are stable closures owned by `apply`, so this cannot re-fire per render.
@@ -1880,6 +2031,50 @@ window.__ModuleLoader__.load({
           );
         return () => { live = false; };
       }, [readProviders, getForm]);
+
+      /* Candidate routes: active, addressed, and holding a live form. A
+       * deviating route is always a subset of this list; the picker offers the
+       * ones that are not listed yet. */
+      const routeRows = providers.status === 'ready' ? providers.rows.filter(isRouteCandidate) : EMPTY_ROWS;
+      /* Identity of the subscribed form set: it changes exactly when the
+       * directory does, so both seats below stay memoized across renders. */
+      const routeSignature = routeRows.map(row => rowKey(row)).join('|');
+
+      const storeCache = useRef({ own: undefined, routes: EMPTY_ROWS, value: null });
+      const subscribePage = useCallback((listener) => {
+        const disposers = [form.subscribe(listener)];
+        for (const row of routeRows) disposers.push(row.form.subscribe(listener));
+        return () => { for (const dispose of disposers) dispose(); };
+      }, [form, routeSignature]);
+      const getPageState = useCallback(() => {
+        const own = form.getSnapshot();
+        const routes = routeRows.map(row => snapshotOf(row.form));
+        const cache = storeCache.current;
+        const unchanged = cache.own === own
+          && cache.routes.length === routes.length
+          && cache.routes.every((snapshot, index) => snapshot === routes[index]);
+        if (unchanged) return cache.value;
+        const value = Object.freeze({ own, routes });
+        storeCache.current = { own, routes, value };
+        return value;
+      }, [form, routeSignature]);
+      const pageState = useSyncExternalStore(subscribePage, getPageState);
+      const snapshot = pageState.own;
+
+      const ids = {};
+      for (const field of RETRY_FIELDS) ids[field.key] = useId();
+      /* A second id block for the fetch controls. `FETCH_FIELDS` is frozen, so
+       * the hook count stays constant across renders. */
+      const fetchIds = {};
+      for (const field of FETCH_FIELDS) fetchIds[field.key] = useId();
+      const pickerId = useId();
+
+      const [edits, setEdits] = useState({});
+      const [fetchEdits, setFetchEdits] = useState({});
+      const [pending, setPending] = useState(null);
+      const [outcome, setOutcome] = useState(null);
+      const pendingRef = useRef(false);
+      const busy = pending !== null;
 
       const status = snapshot !== null && snapshot !== undefined && typeof snapshot.status === 'string'
         ? snapshot.status
@@ -1909,10 +2104,10 @@ window.__ModuleLoader__.load({
         setOutcome(null);
       };
 
-      /* The fetch card reads the SAME own-namespace snapshot, but its baseline
-       * is the two flat top-level leaves rather than the retry defaults, and a
-       * staged edit obeys the same re-seed rule. Keeping the two drafts apart
-       * means one card's Save can never clear the other card's staged edit. */
+      /* The fetch controls read the SAME own-namespace snapshot, but their
+       * baseline is the two flat top-level leaves and a staged edit obeys the
+       * same re-seed rule. Both drafts live in ONE card now, yet stay apart, so
+       * a refused global save can never clear a half-typed fetch timer. */
       const fetchBaseline = fetchDraft(value);
       const fetchValues = {};
       for (const field of FETCH_FIELDS) {
@@ -1921,57 +2116,43 @@ window.__ModuleLoader__.load({
       }
       const fetchCheck = validateFetchDraft(fetchValues);
       const fetchErrors = fetchCheck.ok ? {} : fetchCheck.errors;
-      const fetchBusy = fetchPending !== null;
 
       const stageFetch = (key, next) => {
         setFetchEdits(current => ({ ...current, [key]: { value: next, seedKey } }));
-        setFetchOutcome(null);
+        setOutcome(null);
       };
 
-      /** Persist the six defaults as leaf ops on this plugin's own namespace. */
-      const saveDefaults = () => {
-        if (disabled || saving || pendingRef.current || !check.ok) return;
+      /**
+       * Persist the six global retry defaults AND the two process-wide fetch
+       * leaves in ONE write: every leaf lives in this plugin's own namespace, so
+       * one ordered op list at one revision fence covers both sub-groups. An
+       * empty fetch field emits `unset` (system default), never a seeded value.
+       */
+      const saveGlobal = () => {
+        if (disabled || busy || pendingRef.current || !check.ok || !fetchCheck.ok) return;
         pendingRef.current = true;
-        setSaving(true);
+        setPending('save');
         setOutcome(null);
-        submitOps(form, defaultsOps(check.values)).then((result) => {
+        submitOps(form, [...defaultsOps(check.values), ...fetchOps(fetchCheck.values)]).then((result) => {
           pendingRef.current = false;
-          setSaving(false);
+          setPending(null);
           setEdits({});
+          setFetchEdits({});
           setOutcome(result);
         });
       };
 
-      /**
-       * Persist the two fetch timers as FLAT leaf ops on this plugin's own
-       * namespace. An EMPTY field emits `unset`, so the system default is
-       * restored/kept; a value emits `set`. Not a retry defaults write: no
-       * provider is touched.
-       */
-      const saveFetch = () => {
-        if (disabled || saving || fetchPendingRef.current || !fetchCheck.ok) return;
-        fetchPendingRef.current = true;
-        setFetchPending('save');
-        setFetchOutcome(null);
-        submitOps(form, fetchOps(fetchCheck.values)).then((result) => {
-          fetchPendingRef.current = false;
-          setFetchPending(null);
-          setFetchEdits({});
-          setFetchOutcome(result);
-        });
-      };
-
-      /** Clear both timer leaves so the system (fresh-install) defaults apply again. */
+      /** Clear both fetch leaves so the system (fresh-install) defaults apply again. */
       const resetFetch = () => {
-        if (disabled || saving || fetchPendingRef.current) return;
-        fetchPendingRef.current = true;
-        setFetchPending('reset');
-        setFetchOutcome(null);
+        if (disabled || busy || pendingRef.current) return;
+        pendingRef.current = true;
+        setPending('resetFetch');
+        setOutcome(null);
         submitOps(form, fetchResetOps()).then((result) => {
-          fetchPendingRef.current = false;
-          setFetchPending(null);
+          pendingRef.current = false;
+          setPending(null);
           setFetchEdits({});
-          setFetchOutcome(result.kind === 'saved' ? { kind: 'reset' } : result);
+          setOutcome(result.kind === 'saved' ? { kind: 'reset' } : result);
         });
       };
 
@@ -2001,7 +2182,7 @@ window.__ModuleLoader__.load({
        * A refused row keeps its policy; the write outcome is recorded per row.
        */
       const applyAll = () => {
-        if (disabled || saving || applying || !check.ok || applyTargets.length === 0) return;
+        if (disabled || busy || applying || !check.ok || applyTargets.length === 0) return;
         const values = check.values;
         setApplying(true);
         setApplyOutcomes({});
@@ -2030,18 +2211,14 @@ window.__ModuleLoader__.load({
         void run().catch(() => { setApplying(false); });
       };
 
-      /* One shared "this card cannot be edited" note. The `status.*` copy names
-       * the retry defaults, so the fetch card passes its own noun keys
-       * (`fetch.status.*`) instead of reusing that text. */
-      const statusNote = (loadingKey, unavailableKey) => status === 'loading'
-        ? h('p', { className: 'dlct-note' }, t(loadingKey))
+      /* One shared "this card cannot be edited" note. */
+      const retryStatusNote = status === 'loading'
+        ? h('p', { className: 'dlct-note' }, t('status.loading'))
         : status === 'unavailable'
-          ? h('p', { className: 'dlct-note' }, t(unavailableKey))
+          ? h('p', { className: 'dlct-note' }, t('status.unavailable'))
           : !writable
             ? h('p', { className: 'dlct-note' }, t('status.readOnly'))
             : null;
-      const retryStatusNote = statusNote('status.loading', 'status.unavailable');
-      const fetchStatusNote = statusNote('fetch.status.loading', 'fetch.status.unavailable');
 
       const providerNote = providers.status === 'loading'
         ? h('p', { className: 'dlct-note' }, t('providers.loading'))
@@ -2053,6 +2230,64 @@ window.__ModuleLoader__.load({
               ? h('p', { className: 'dlct-note' }, t('providers.empty'))
               : null;
 
+      /* The global retry values are the comparison base for the listing rule
+       * and for the unset-on-revert write: `normalizePolicy` of the plugin's own
+       * section, so a leaf left unset compares as the value actually in force
+       * (the documented code default). The validated draft is separately passed
+       * to "Use defaults", which copies what the card currently shows. */
+      const globalRetryValues = normalizePolicy(value);
+      const defaultsValues = check.ok ? check.values : undefined;
+      const routeStates = routeRows.map((row, index) => ({
+        row,
+        retryDeviates: routeRetryDeviates(
+          pageState.routes[index] === undefined ? IDLE_SNAPSHOT : pageState.routes[index],
+          row.settingsPath,
+          globalRetryValues,
+        ),
+        timeoutsDeviate: routeTimeoutDeviates(
+          pageState.routes[index] === undefined ? IDLE_SNAPSHOT : pageState.routes[index],
+          row,
+        ),
+      }));
+      const listedKeys = new Set();
+      for (const entry of routeStates) {
+        if (entry.retryDeviates || entry.timeoutsDeviate) listedKeys.add(rowKey(entry.row));
+      }
+      const visibleStates = routeStates.filter(entry => listedKeys.has(rowKey(entry.row))
+        || pickedRoutes[rowKey(entry.row)] === true);
+      const pickableRows = routeRows.filter(row => !listedKeys.has(rowKey(row))
+        && pickedRoutes[rowKey(row)] !== true);
+      const pickValue = pickableRows.some(row => rowKey(row) === pickRoute) ? pickRoute : '';
+
+      /** Materialize one picked route's card in local state; write nothing. */
+      const addRoute = () => {
+        const row = pickableRows.find(candidate => rowKey(candidate) === pickValue);
+        if (row === undefined) return;
+        setPickedRoutes(current => ({ ...current, [rowKey(row)]: true }));
+        setPickRoute('');
+      };
+
+      /* "Apply defaults to all" writes every eligible provider, and a route
+       * that ends up equal to the global values is NOT listed (that is the
+       * listing rule), so its per-card outcome would be invisible. The
+       * section-level summary keeps every write's outcome on the page. */
+      const applyOutcomeEntries = providers.status === 'ready'
+        ? providers.rows
+          .filter(row => applyOutcomes[rowKey(row)] !== undefined)
+          .map(row => `${row.displayName}: ${t(`apply.outcome.${applyOutcomes[rowKey(row)]}`)}`)
+        : [];
+
+      /** Drop one route from the local picked set once its card settled. */
+      const settleRoute = (row) => {
+        const key = rowKey(row);
+        setPickedRoutes((current) => {
+          if (current[key] !== true) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
+
       return h('div', { className: 'dlct-page' },
         h('style', null, STYLE_TEXT),
         h('header', { className: 'dlct-header' },
@@ -2061,39 +2296,66 @@ window.__ModuleLoader__.load({
         ),
         h('section', { className: 'dlct-card' },
           h('header', { className: 'dlct-card-head' },
-            h('h3', { className: 'dlct-card-title' }, t('defaults.heading')),
-            h('p', { className: 'dlct-card-description' }, t('defaults.description')),
+            h('h3', { className: 'dlct-card-title' }, t('global.heading')),
+            h('p', { className: 'dlct-card-description' }, t('global.description')),
           ),
           retryStatusNote,
-          h('div', { className: 'dlct-fields' },
-            renderRetryFields({
-              t,
-              ids,
-              draft,
-              errors,
-              disabled: disabled || saving,
-              stage,
-              showNormalFields: true,
-            }),
+          h('div', { className: 'dlct-subgroup' },
+            h('h4', { className: 'dlct-subgroup-title' }, t('global.retriesHeading')),
+            h('p', { className: 'dlct-description' }, t('defaults.description')),
+            h('div', { className: 'dlct-fields' },
+              renderRetryFields({
+                t,
+                ids,
+                draft,
+                errors,
+                disabled: disabled || busy,
+                stage,
+                showNormalFields: true,
+              }),
+            ),
+          ),
+          h('div', { className: 'dlct-subgroup' },
+            h('h4', { className: 'dlct-subgroup-title' }, t('fetch.heading')),
+            h('p', { className: 'dlct-description' }, t('fetch.description')),
+            h('div', { className: 'dlct-fields' },
+              renderFetchFields({
+                t,
+                ids: fetchIds,
+                draft: fetchValues,
+                errors: fetchErrors,
+                disabled: disabled || busy,
+                stage: stageFetch,
+              }),
+            ),
+            h('div', { className: 'dlct-actions' },
+              h('button', {
+                type: 'button',
+                className: 'dlct-button dlct-outline',
+                disabled: disabled || busy,
+                'aria-busy': pending === 'resetFetch' ? 'true' : undefined,
+                onClick: resetFetch,
+              }, pending === 'resetFetch' ? t('fetch.resetting') : t('fetch.reset')),
+            ),
           ),
           h('div', { className: 'dlct-actions' },
             h('button', {
               type: 'button',
               className: 'dlct-button',
-              disabled: disabled || saving || applying || fetchBusy || !check.ok,
-              'aria-busy': saving ? 'true' : undefined,
-              onClick: saveDefaults,
-            }, saving ? t('defaults.saving') : t('defaults.save')),
+              disabled: disabled || busy || applying || !check.ok || !fetchCheck.ok,
+              'aria-busy': pending === 'save' ? 'true' : undefined,
+              onClick: saveGlobal,
+            }, pending === 'save' ? t('global.saving') : t('global.save')),
             h('button', {
               type: 'button',
               className: 'dlct-button dlct-outline',
-              disabled: disabled || saving || applying || fetchBusy || !check.ok || applyTargets.length === 0,
+              disabled: disabled || busy || applying || !check.ok || applyTargets.length === 0,
               'aria-busy': applying ? 'true' : undefined,
               onClick: applyAll,
             }, applying ? t('defaults.applying') : t('defaults.applyAll')),
           ),
-          h('div', null, outcomeNode(outcome, t)),
-          h('p', { className: 'dlct-note' }, t('defaults.note')),
+          h('div', null, outcomeNode(outcome, t, 'status.fetchReset')),
+          h('p', { className: 'dlct-note' }, t('global.note')),
           h('p', { className: 'dlct-note' }, t('defaults.applyAllNote')),
         ),
         h('section', { className: 'dlct-card' },
@@ -2102,68 +2364,50 @@ window.__ModuleLoader__.load({
             h('p', { className: 'dlct-card-description' }, t('providers.description')),
           ),
           providerNote,
-          providers.status === 'ready'
-            ? h('div', { className: 'dlct-providers' }, providers.rows.map(row => h(ProviderRow, {
-                key: rowKey(row),
-                row,
-                t,
-                form: row.form,
-                defaultsValues: check.ok ? check.values : undefined,
-                applyOutcome: applyOutcomes[rowKey(row)],
-              })))
+          applyOutcomeEntries.length === 0
+            ? null
+            : h('p', { className: 'dlct-outcome', role: 'status' }, applyOutcomeEntries.join(' \u00b7 ')),
+          providers.status === 'ready' && routeRows.length > 0
+            ? h('div', { className: 'dlct-picker' },
+              h('div', { className: 'dlct-picker-field' },
+                h('label', { className: 'dlct-field-label', htmlFor: pickerId }, t('routes.pickerLabel')),
+                h('select', {
+                  id: pickerId,
+                  className: 'dlct-select',
+                  disabled: pickableRows.length === 0,
+                  value: pickValue,
+                  onChange: event => setPickRoute(event.target.value),
+                },
+                  h('option', { value: '' }, t('routes.pickerPlaceholder')),
+                  pickableRows.map(row => h('option', { key: rowKey(row), value: rowKey(row) }, `${row.displayName} (${row.provider})`)),
+                ),
+              ),
+              h('button', {
+                type: 'button',
+                className: 'dlct-button',
+                disabled: pickValue === '',
+                onClick: addRoute,
+              }, t('routes.add')),
+            )
             : null,
-        ),
-        h('section', { className: 'dlct-card' },
-          h('header', { className: 'dlct-card-head' },
-            h('h3', { className: 'dlct-card-title' }, t('timeouts.heading')),
-            h('p', { className: 'dlct-card-description' }, t('timeouts.description')),
-          ),
-          providerNote,
+          providers.status === 'ready' && pickableRows.length === 0 && routeRows.length > 0
+            ? h('p', { className: 'dlct-note' }, t('routes.allListed'))
+            : null,
+          providers.status === 'ready' && routeRows.length > 0 && visibleStates.length === 0
+            ? h('p', { className: 'dlct-empty' }, t('routes.empty'))
+            : null,
           providers.status === 'ready'
-            ? h('div', { className: 'dlct-providers' }, providers.rows.map(row => h(ProviderTimeoutRow, {
-                key: rowKey(row),
-                row,
+            ? h('div', { className: 'dlct-providers' }, visibleStates.map(entry => h(RouteCard, {
+                key: rowKey(entry.row),
+                row: entry.row,
                 t,
-                form: row.form,
+                form: entry.row.form,
+                defaultsValues,
+                globalRetryValues,
                 bodyTimeoutMs: fetchValues.bodyTimeoutMs,
+                onSettled: settleRoute,
               })))
             : null,
-          h('p', { className: 'dlct-note' }, t('timeouts.note')),
-        ),
-        h('section', { className: 'dlct-card' },
-          h('header', { className: 'dlct-card-head' },
-            h('h3', { className: 'dlct-card-title' }, t('fetch.heading')),
-            h('p', { className: 'dlct-card-description' }, t('fetch.description')),
-          ),
-          fetchStatusNote,
-          h('div', { className: 'dlct-fields' },
-            renderFetchFields({
-              t,
-              ids: fetchIds,
-              draft: fetchValues,
-              errors: fetchErrors,
-              disabled: disabled || fetchBusy,
-              stage: stageFetch,
-            }),
-          ),
-          h('div', { className: 'dlct-actions' },
-            h('button', {
-              type: 'button',
-              className: 'dlct-button',
-              disabled: disabled || saving || fetchBusy || !fetchCheck.ok,
-              'aria-busy': fetchPending === 'save' ? 'true' : undefined,
-              onClick: saveFetch,
-            }, fetchPending === 'save' ? t('fetch.saving') : t('fetch.save')),
-            h('button', {
-              type: 'button',
-              className: 'dlct-button dlct-outline',
-              disabled: disabled || saving || fetchBusy,
-              'aria-busy': fetchPending === 'reset' ? 'true' : undefined,
-              onClick: resetFetch,
-            }, fetchPending === 'reset' ? t('fetch.resetting') : t('fetch.reset')),
-          ),
-          h('div', null, outcomeNode(fetchOutcome, t, 'status.fetchReset')),
-          h('p', { className: 'dlct-note' }, t('fetch.note')),
         ),
       );
     }
