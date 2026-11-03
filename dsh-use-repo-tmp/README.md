@@ -168,6 +168,7 @@ Repositories that adopt this convention should ignore the directory:
 | --- | --- |
 | `index.js` | The static policy section, the dynamic scratch-directory context, `apply()`. |
 | `cordis.patch.yml` | Bundle patch: one top-level insert so every Agent receives the guidance. |
+| `locale/*.json` | Plugin-list display metadata: the English and Chinese titles. |
 | `verify.mjs` | Hermetic self-check of the manifest, the patch, and both registrations. |
 | `README.md` | This document. |
 | `CONTRACT.md` | The frozen surface of the bundle. |

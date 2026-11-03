@@ -38,7 +38,7 @@ const { apply, inject, name, scratchText, workspaceRoot } = plugin
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** Files the manifest promises; the check below also proves nothing else is here. */
-const SHIPPED_FILES = ['index.js', 'verify.mjs', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md', 'CONTRACT.md']
+const SHIPPED_FILES = ['index.js', 'verify.mjs', 'cordis.patch.yml', 'locale/*.json', 'LICENSE', 'README.md', 'README.zh.md', 'CONTRACT.md']
 
 let checks = 0
 let failures = 0
@@ -165,15 +165,19 @@ check('the manifest is a published ESM bundle with load-bearing export targets',
   assert.deepEqual(manifest.exports, {
     '.': './index.js',
     './package.json': './package.json',
+    './locale/*.json': './locale/*.json',
   })
   assert.deepEqual(manifest.files, SHIPPED_FILES)
   for (const entry of manifest.files) {
+    // A glob ships a directory; the listing check below proves that directory exists.
+    if (entry.includes('*')) continue
     assert.ok(existsSync(new URL(`./${entry}`, import.meta.url)), `${entry} is listed but missing`)
   }
 })
 
 check('the package directory holds exactly the shipped files plus package.json', () => {
-  const expected = [...manifest.files, 'package.json'].sort()
+  // A glob entry ships the directory it names, which is what a directory listing reports.
+  const expected = [...manifest.files.map(entry => entry.replace(/\/[^/]*\*[^/]*$/u, '')), 'package.json'].sort()
   assert.deepEqual(readdirSync(HERE).sort(), expected, 'an unlisted stray file would fail')
 })
 

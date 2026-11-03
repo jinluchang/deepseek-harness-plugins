@@ -107,6 +107,7 @@ node dsh-use-repo-tmp/verify.mjs
 | --- | --- |
 | `index.js` | 静态策略片段、动态草稿目录上下文、`apply()`。 |
 | `cordis.patch.yml` | 插件包补丁：一次顶层 insert，让每个 Agent 都收到该引导。 |
+| `locale/*.json` | 插件列表展示元信息：英文与中文标题。 |
 | `verify.mjs` | 针对 manifest、补丁和两处注册的封闭式自检。 |
 | `README.md` | 本文件。 |
 | `CONTRACT.md` | 该插件包冻结的接口面。 |

@@ -19,12 +19,14 @@
   "engines": { "dsh": "^0.2.2-alpha.2" },
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
     "verify.mjs",
     "cordis.patch.yml",
+    "locale/*.json",
     "LICENSE",
     "README.md",
     "README.zh.md",
