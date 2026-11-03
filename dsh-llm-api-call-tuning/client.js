@@ -77,6 +77,15 @@
  * the Host reports next. A superseded revision is retried at most once at the
  * freshly read revision.
  *
+ * A second, INDEPENDENT client contribution is the manual same-turn retry dock:
+ * a `conversation.input.dock` row above the composer that appears only while
+ * the Host's `agent/request-error` waterfall holds a turn open for a manual
+ * decision. It polls the plugin-owned authenticated route (`state`) every 2 s
+ * while the session is running, posts `decide` when the user clicks Retry or
+ * Dismiss, hides itself when the Host answers `manual-retry/stale`, and renders
+ * nothing at all when no decision is pending. It is registered BEFORE the
+ * settings-page guard, so a Host that serves no settings form still gets it.
+ *
  * Plain browser bundle (no build step): it self-registers with the page's
  * module loader and requests React, the only module-table entry it needs.
  * Every value shown has a documented fallback, so a deployment that does not
@@ -110,8 +119,12 @@ window.__ModuleLoader__.load({
     const MODES = Object.freeze(['normal', 'always']);
 
     /**
-     * The five stable transient failure codes the upstream schema allows
-     * (`retry-policy.ts:18-24`); the code default retries all five.
+     * The five failure codes the upstream retry policy ships with
+     * (`retry-policy.ts:18-24`), and this page's DEFAULT code list. Upstream
+     * does not restrict the array to them — its schema is
+     * `z.array(z.string())` and the executor matches exact code strings — so
+     * the narrowing is this plugin's own and widening the offered list never
+     * changes the default.
      */
     const RETRYABLE_CODES = Object.freeze([
       'EMPTY_RESPONSE',
@@ -122,10 +135,33 @@ window.__ModuleLoader__.load({
     ]);
 
     /**
+     * The codes the page OFFERS, in checkbox order: the five upstream defaults
+     * followed by five opt-in extras.
+     *
+     * `STREAM_CLOSED` / `MALFORMED_RESPONSE` / `PI_AI_ERROR` are the llm-pi-ai
+     * failure codes; `HTTP_408` / `HTTP_409` are the status-shaped codes the
+     * DeepSeek transport produces. OPT-IN ONLY: no default, fallback or unset
+     * leaf ever resolves to an extra code, so an untouched page and every
+     * existing stored config keep exactly the five-code policy. An extra is
+     * written only when the user ticks its checkbox and saves.
+     */
+    const OFFERED_RETRYABLE_CODES = Object.freeze([
+      ...RETRYABLE_CODES,
+      'STREAM_CLOSED',
+      'MALFORMED_RESPONSE',
+      'PI_AI_ERROR',
+      'HTTP_408',
+      'HTTP_409',
+    ]);
+
+    /**
      * Upstream code defaults (`retry-policy.ts:14-24`), also what an
      * unconfigured provider route resolves to (`:151-158`). They are the
      * fallback the page shows when a namespace has not answered yet, and the
-     * values "Reset" restores through the provider's own schema defaults.
+     * values "Reset" restores through the provider's own schema defaults. The
+     * code list is deliberately the five upstream codes — NEVER the offered
+     * ten — so an absent or unusable stored list cannot activate an opt-in
+     * code.
      */
     const DEFAULT_POLICY = Object.freeze({
       mode: 'normal',
@@ -281,7 +317,7 @@ window.__ModuleLoader__.load({
       'provider.save': 'Save',
       'provider.saving': 'Saving\u2026',
       'provider.resetting': 'Resetting\u2026',
-      'provider.alwaysNote': 'Always mode retries every model-request failure and ignores the retry limit and the retryable codes; saving clears both.',
+      'provider.alwaysNote': 'Always mode retries EVERY model-request failure \u2014 including permanent ones such as AUTH, INVALID_REQUEST, or QUOTA \u2014 with no retry limit. The maximum-retries input stays visible but is ignored and unvalidated in this mode; saving clears the stored retry limit and code list. The offered codes are the checkboxes shown in normal mode.',
       'fetch.heading': 'Fetch timeouts',
       'fetch.description': 'Process-wide HTTP timer limits, applied by the host to the fetch dispatcher that every provider, web search, and HTTP MCP server shares. Leave a field empty to keep the system default; 0 disables that timer; a positive value is the limit in milliseconds.',
       'fetch.reset': 'Reset to system defaults',
@@ -316,7 +352,7 @@ window.__ModuleLoader__.load({
       'field.jitterRatio.unit': 'ratio 0 to 1',
       'field.jitterRatio.default': 'code default 0.1',
       'field.retryableCodes.label': 'Retryable failure codes',
-      'field.retryableCodes.description': 'Stable transient failure codes that normal mode retries. At least one code must stay selected.',
+      'field.retryableCodes.description': 'Failure codes normal mode retries. The five upstream codes are pre-selected; the added provider and HTTP codes are opt-in and stay inactive until ticked. At least one code must stay selected.',
       'field.retryableCodes.unit': 'at least one code',
       'field.retryableCodes.default': 'code default all five codes',
       'field.headersTimeoutMs.label': 'Response headers timeout',
@@ -332,12 +368,17 @@ window.__ModuleLoader__.load({
       'field.filesApiTimeoutMs.label': 'Files API timeout',
       'field.filesApiTimeoutMs.description': 'DeepSeek files-API request timeout (package default 60000 ms).',
       'mode.normal': 'Normal \u2014 selected codes',
-      'mode.always': 'Always \u2014 every failure',
+      'mode.always': 'Always \u2014 every failure, no limit',
       'code.EMPTY_RESPONSE': 'Empty response',
       'code.RATE_LIMIT': 'Rate limit',
       'code.SERVER': 'Server error',
       'code.TIMEOUT': 'Timeout',
       'code.TRANSPORT': 'Transport error',
+      'code.STREAM_CLOSED': 'Stream closed',
+      'code.MALFORMED_RESPONSE': 'Malformed response',
+      'code.PI_AI_ERROR': 'Provider error',
+      'code.HTTP_408': 'HTTP 408',
+      'code.HTTP_409': 'HTTP 409',
       'status.loading': 'Loading the retry defaults\u2026',
       'status.unavailable': 'This deployment does not serve the llm-api-call-tuning settings namespace, so the defaults cannot be edited here.',
       'status.readOnly': 'These values are read-only in this deployment.',
@@ -363,6 +404,12 @@ window.__ModuleLoader__.load({
       'apply.outcome.refused': 'Refused',
       'apply.outcome.managed': 'Managed elsewhere',
       'apply.outcome.skipped': 'Skipped',
+      'manualRetry.aria': 'Manual retry available for the failed model call',
+      'manualRetry.title': 'Model call failed',
+      'manualRetry.retry': 'Retry',
+      'manualRetry.dismiss': 'Dismiss',
+      'manualRetry.attempt': 'Attempt',
+      'manualRetry.expired': 'This retry offer has expired.',
     };
 
     const zh = {
@@ -404,7 +451,7 @@ window.__ModuleLoader__.load({
       'provider.save': '\u4fdd\u5b58',
       'provider.saving': '\u6b63\u5728\u4fdd\u5b58\u2026',
       'provider.resetting': '\u6b63\u5728\u91cd\u7f6e\u2026',
-      'provider.alwaysNote': '\u201c\u603b\u662f\u201d\u6a21\u5f0f\u4f1a\u91cd\u8bd5\u6bcf\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\uff0c\u5ffd\u7565\u91cd\u8bd5\u4e0a\u9650\u4e0e\u53ef\u91cd\u8bd5\u9519\u8bef\u7801\uff1b\u4fdd\u5b58\u65f6\u4f1a\u6e05\u9664\u8fd9\u4e24\u9879\u3002',
+      'provider.alwaysNote': '\u201c\u603b\u662f\u201d\u6a21\u5f0f\u4f1a\u91cd\u8bd5\u6bcf\u4e00\u6b21\u6a21\u578b\u8bf7\u6c42\u5931\u8d25\u2014\u2014\u5305\u62ec AUTH\u3001INVALID_REQUEST\u3001QUOTA \u7b49\u6c38\u4e45\u6027\u5931\u8d25\u2014\u2014\u4e14\u6ca1\u6709\u91cd\u8bd5\u4e0a\u9650\u3002\u6700\u5927\u91cd\u8bd5\u6b21\u6570\u8f93\u5165\u6846\u4ecd\u7136\u53ef\u89c1\uff0c\u4f46\u5728\u6b64\u6a21\u5f0f\u4e0b\u4f1a\u88ab\u5ffd\u7565\u4e14\u4e0d\u53c2\u4e0e\u6821\u9a8c\uff1b\u4ee5\u8be5\u6a21\u5f0f\u4fdd\u5b58\u4f1a\u6e05\u9664\u5df2\u4fdd\u5b58\u7684\u91cd\u8bd5\u4e0a\u9650\u4e0e\u9519\u8bef\u7801\u5217\u8868\u3002\u53ef\u9009\u7684\u9519\u8bef\u7801\u5373\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4e0b\u663e\u793a\u7684\u590d\u9009\u6846\u3002',
       'fetch.heading': '\u6293\u53d6\u8d85\u65f6',
       'fetch.description': '\u8fdb\u7a0b\u7ea7\u7684 HTTP \u8ba1\u65f6\u4e0a\u9650\uff0c\u7531\u5bbf\u4e3b\u5e94\u7528\u5230\u6240\u6709\u63d0\u4f9b\u65b9\u3001\u8054\u7f51\u641c\u7d22\u4e0e HTTP MCP \u670d\u52a1\u5668\u5171\u7528\u7684 fetch \u8c03\u5ea6\u5668\u4e0a\u3002\u7559\u7a7a\u8868\u793a\u4fdd\u6301\u7cfb\u7edf\u9ed8\u8ba4\uff1b0 \u8868\u793a\u7981\u7528\u8be5\u8ba1\u65f6\u5668\uff1b\u6b63\u6570\u8868\u793a\u4ee5\u6beb\u79d2\u4e3a\u5355\u4f4d\u7684\u65f6\u957f\u3002',
       'fetch.reset': '\u6062\u590d\u7cfb\u7edf\u9ed8\u8ba4',
@@ -439,7 +486,7 @@ window.__ModuleLoader__.load({
       'field.jitterRatio.unit': '0 \u5230 1 \u7684\u6bd4\u4f8b',
       'field.jitterRatio.default': '\u4ee3\u7801\u9ed8\u8ba4\u503c 0.1',
       'field.retryableCodes.label': '\u53ef\u91cd\u8bd5\u9519\u8bef\u7801',
-      'field.retryableCodes.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4e0b\u4f1a\u91cd\u8bd5\u7684\u7a33\u5b9a\u4e34\u65f6\u9519\u8bef\u7801\u3002\u81f3\u5c11\u9700\u4fdd\u7559\u4e00\u9879\u3002',
+      'field.retryableCodes.description': '\u201c\u666e\u901a\u201d\u6a21\u5f0f\u4e0b\u4f1a\u91cd\u8bd5\u7684\u5931\u8d25\u9519\u8bef\u7801\u3002\u4e94\u4e2a\u4e0a\u6e38\u9519\u8bef\u7801\u9ed8\u8ba4\u9884\u9009\uff1b\u65b0\u589e\u7684\u63d0\u4f9b\u65b9\u4e0e HTTP \u9519\u8bef\u7801\u4e3a\u6309\u9700\u52fe\u9009\uff0c\u672a\u52fe\u9009\u65f6\u4e0d\u751f\u6548\u3002\u81f3\u5c11\u9700\u4fdd\u7559\u4e00\u9879\u3002',
       'field.retryableCodes.unit': '\u81f3\u5c11\u4e00\u4e2a\u9519\u8bef\u7801',
       'field.retryableCodes.default': '\u4ee3\u7801\u9ed8\u8ba4\u503c\uff1a\u5168\u90e8\u4e94\u4e2a\u9519\u8bef\u7801',
       'field.headersTimeoutMs.label': '\u54cd\u5e94\u5934\u8d85\u65f6',
@@ -455,12 +502,17 @@ window.__ModuleLoader__.load({
       'field.filesApiTimeoutMs.label': '\u6587\u4ef6 API \u8d85\u65f6',
       'field.filesApiTimeoutMs.description': 'DeepSeek \u6587\u4ef6 API \u8bf7\u6c42\u8d85\u65f6\uff08\u5305\u9ed8\u8ba4\u503c 60000 \u6beb\u79d2\uff09\u3002',
       'mode.normal': '\u666e\u901a \u2014 \u6240\u9009\u9519\u8bef\u7801',
-      'mode.always': '\u603b\u662f \u2014 \u6bcf\u6b21\u5931\u8d25',
+      'mode.always': '\u603b\u662f \u2014 \u6bcf\u6b21\u5931\u8d25\uff0c\u65e0\u4e0a\u9650',
       'code.EMPTY_RESPONSE': '\u7a7a\u54cd\u5e94',
       'code.RATE_LIMIT': '\u9650\u6d41',
       'code.SERVER': '\u670d\u52a1\u5668\u9519\u8bef',
       'code.TIMEOUT': '\u8d85\u65f6',
       'code.TRANSPORT': '\u4f20\u8f93\u9519\u8bef',
+      'code.STREAM_CLOSED': '\u6d41\u5df2\u5173\u95ed',
+      'code.MALFORMED_RESPONSE': '\u54cd\u5e94\u683c\u5f0f\u9519\u8bef',
+      'code.PI_AI_ERROR': '\u63d0\u4f9b\u65b9\u9519\u8bef',
+      'code.HTTP_408': 'HTTP 408',
+      'code.HTTP_409': 'HTTP 409',
       'status.loading': '\u6b63\u5728\u52a0\u8f7d\u91cd\u8bd5\u9ed8\u8ba4\u503c\u2026',
       'status.unavailable': '\u5f53\u524d\u90e8\u7f72\u672a\u63d0\u4f9b llm-api-call-tuning \u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\uff0c\u65e0\u6cd5\u5728\u6b64\u7f16\u8f91\u9ed8\u8ba4\u503c\u3002',
       'status.readOnly': '\u5f53\u524d\u90e8\u7f72\u4e2d\u8fd9\u4e9b\u503c\u4e3a\u53ea\u8bfb\u3002',
@@ -486,6 +538,12 @@ window.__ModuleLoader__.load({
       'apply.outcome.refused': '\u88ab\u62d2\u7edd',
       'apply.outcome.managed': '\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406',
       'apply.outcome.skipped': '已跳过',
+      'manualRetry.aria': '失败的模型调用可手动重试',
+      'manualRetry.title': '模型调用失败',
+      'manualRetry.retry': '重试',
+      'manualRetry.dismiss': '忽略',
+      'manualRetry.attempt': '尝试次数',
+      'manualRetry.expired': '该重试选项已过期。',
     };
 
     const STYLE_TEXT = [
@@ -711,17 +769,23 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Normalize an allowlisted retryable-code list: known codes only, no
-     * duplicates, declared order. An absent or unusable stored list falls back
-     * to all five codes, which is the upstream default and the only shape the
-     * page itself ever writes.
+     * Normalize a stored retryable-code list over the OFFERED codes: known
+     * codes only, no duplicates, offered order.
+     *
+     * OPT-IN SAFETY: an absent, empty, or fully-unknown stored list falls back
+     * to the five upstream codes — never to the offered ten — so merely
+     * visiting or saving a page can never light up an extra code. A stored code
+     * this page does not offer is dropped exactly as before; extras appear in
+     * the draft only when the snapshot actually stores them (i.e. a user ticked
+     * them earlier).
      * @param raw - the stored value (schema-resolved or user layer).
-     * @returns a non-empty array of known codes.
+     * @returns a non-empty array of offered codes (the five defaults when
+     *   nothing recognizable remains).
      */
     function normalizeCodes(raw) {
       if (!Array.isArray(raw)) return [...RETRYABLE_CODES];
-      const known = raw.filter(code => typeof code === 'string' && RETRYABLE_CODES.indexOf(code) >= 0);
-      const unique = RETRYABLE_CODES.filter(code => known.indexOf(code) >= 0);
+      const known = raw.filter(code => typeof code === 'string' && OFFERED_RETRYABLE_CODES.indexOf(code) >= 0);
+      const unique = OFFERED_RETRYABLE_CODES.filter(code => known.indexOf(code) >= 0);
       return unique.length === 0 ? [...RETRYABLE_CODES] : unique;
     }
 
@@ -833,7 +897,7 @@ window.__ModuleLoader__.load({
         const unique = codes.filter((code, index) => codes.indexOf(code) === index);
         if (codes.length === 0
           || unique.length !== codes.length
-          || unique.some(code => RETRYABLE_CODES.indexOf(code) < 0)) {
+          || unique.some(code => OFFERED_RETRYABLE_CODES.indexOf(code) < 0)) {
           errors.retryableCodes = 'error.retryableCodes';
         } else {
           values.retryableCodes = [...unique];
@@ -995,6 +1059,10 @@ window.__ModuleLoader__.load({
      * With no ops at all the builder returns an empty list, so a picked but
      * untouched route never writes.
      *
+     * Only a leaf the user actually TOUCHED is written (`dirty`): an untouched
+     * control — including the retryable-code list — produces no op at all, so a
+     * default route can never be given a new (opt-in) code by pressing Save.
+     *
      * `mode: 'always'` keeps its documented contract: the two normal-mode-only
      * leaves are inactive, so a STORED one is cleared, because the upstream
      * union schema ignores them once the mode is `always`.
@@ -1002,12 +1070,14 @@ window.__ModuleLoader__.load({
      * @param values - the validated route values.
      * @param globalValues - the normalized global retry values (comparison base).
      * @param presence - `retryLeafPresence` of the current user layer.
+     * @param dirty - `retryDraftDiff` of the draft against its seeded baseline.
      * @returns ordered leaf-path ops; empty when there is nothing to write.
      */
-    function retryPolicyDiffOps(settingsPath, values, globalValues, presence) {
+    function retryPolicyDiffOps(settingsPath, values, globalValues, presence, dirty) {
       const base = [...settingsPath, 'retryPolicy'];
       const ops = [];
       const leaf = (key, path, value, globalValue, equal) => {
+        if (dirty === undefined || dirty[key] !== true) return;
         const same = equal === undefined ? value === globalValue : equal(value, globalValue);
         if (!same) ops.push({ op: 'set', path, value });
         else if (presence !== undefined && presence[key] === true) ops.push({ op: 'unset', path });
@@ -1472,24 +1542,28 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Whether a retry DRAFT differs from the seeded baseline, i.e. the user
-     * staged at least one edit. Text is compared exactly (a half-typed value
-     * still counts as an edit) and the code list by its ordered contents.
+     * Which retry controls the user TOUCHED, i.e. which fields differ from the
+     * draft seeded from the current snapshot. Text is compared exactly (a
+     * half-typed value still counts as an edit) and the code list by its
+     * ordered contents.
+     *
+     * This is what keeps the extra (opt-in) codes inert: the save path builds
+     * ops only for touched leaves, so an untouched retryable-code list never
+     * produces an op and can never add a code.
      * @param draft - the current text draft.
      * @param baseline - the draft reseeded from the current snapshot.
-     * @returns true when at least one control differs from the seed.
+     * @returns one boolean per `RETRY_FIELDS` key.
      */
-    function retryDraftChanged(draft, baseline) {
+    function retryDraftDiff(draft, baseline) {
+      const dirty = {};
       for (const field of RETRY_FIELDS) {
         const left = draft[field.key];
         const right = baseline[field.key];
-        if (Array.isArray(left) || Array.isArray(right)) {
-          if (!sameRetryCodes(left, right)) return true;
-          continue;
-        }
-        if (left !== right) return true;
+        dirty[field.key] = Array.isArray(left) || Array.isArray(right)
+          ? !sameRetryCodes(left, right)
+          : left !== right;
       }
-      return false;
+      return dirty;
     }
 
     /* ══ rendered helpers ══════════════════════════════════════════════════ */
@@ -1573,7 +1647,7 @@ window.__ModuleLoader__.load({
             h('legend', { className: 'dlct-field-label' }, t('field.retryableCodes.label')),
             h('span', { className: 'dlct-unit' }, t('field.retryableCodes.unit')),
           ),
-          h('div', { className: 'dlct-code-list' }, RETRYABLE_CODES.map(code => h('label', { className: 'dlct-code', key: code },
+          h('div', { className: 'dlct-code-list' }, OFFERED_RETRYABLE_CODES.map(code => h('label', { className: 'dlct-code', key: code },
             h('input', {
               type: 'checkbox',
               checked: selected.indexOf(code) >= 0,
@@ -1582,7 +1656,7 @@ window.__ModuleLoader__.load({
                 const next = new Set(selected);
                 if (event.target.checked === true) next.add(code);
                 else next.delete(code);
-                stage('retryableCodes', RETRYABLE_CODES.filter(known => next.has(known)));
+                stage('retryableCodes', OFFERED_RETRYABLE_CODES.filter(known => next.has(known)));
               },
             }),
             h('span', null, t(`code.${code}`)),
@@ -1768,7 +1842,8 @@ window.__ModuleLoader__.load({
       }
       const retryCheck = validateDraft(retryValues, false);
       const retryErrors = retryCheck.ok ? {} : retryCheck.errors;
-      const retryChanged = retryDraftChanged(retryValues, retryBaseline);
+      const retryDirty = retryDraftDiff(retryValues, retryBaseline);
+      const retryChanged = RETRY_FIELDS.some(field => retryDirty[field.key] === true);
 
       const userProfile = ready && isPlainObject(user) ? getAt(user, row.settingsPath) : undefined;
       const timeoutSeedKey = ready
@@ -1790,7 +1865,7 @@ window.__ModuleLoader__.load({
       }
 
       const retryOps = retryCheck.ok && retryChanged
-        ? retryPolicyDiffOps(row.settingsPath, retryCheck.values, globalRetryValues, retryPresence)
+        ? retryPolicyDiffOps(row.settingsPath, retryCheck.values, globalRetryValues, retryPresence, retryDirty)
         : [];
       const timeoutChangedOps = timeoutCheck.ok
         ? timeoutOps(row.settingsPath, family, timeoutBaseline, timeoutCheck.values)
@@ -2412,20 +2487,275 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /* ══ manual same-turn retry dock ═══════════════════════════════════════ */
+
+    /**
+     * Channel of the host's manual-retry web route (the plugin-owned
+     * authenticated route that answers `state` and `decide`).
+     */
+    const MANUAL_RETRY_CHANNEL = '/llm-api-call-tuning';
+
+    /** How often the dock asks the Host for a pending decision, in ms. */
+    const MANUAL_RETRY_POLL_MS = 2000;
+
+    /** The Host's per-turn manual-retry cap, mirrored for the `n/5` indicator. */
+    const MANUAL_RETRY_MAX_ATTEMPTS = 5;
+
+    /** Error code the Host returns when the offered decision is already gone. */
+    const MANUAL_RETRY_STALE = 'manual-retry/stale';
+
+    /**
+     * Dock styles. The dock renders on the Conversation page, where the
+     * settings page's `STYLE_TEXT` is not injected, so it carries its own rules
+     * (the same theme variables and button conventions, one string because a
+     * `<style>` child must be text).
+     */
+    const DOCK_STYLE_TEXT = [
+      '.dlct-dock { display: flex; align-items: flex-start; gap: 10px; width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 8px 12px; border: 1px solid var(--border, #d8dde4); border-radius: 8px; background: var(--surface-sunken, #f4f6f9); }',
+      '.dlct-dock-icon { flex: none; font-size: 15px; line-height: 20px; }',
+      '.dlct-dock-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }',
+      '.dlct-dock-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }',
+      '.dlct-dock-title { font-weight: 600; }',
+      '.dlct-dock-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }',
+      '.dlct-dock-provider { font-size: 12px; color: var(--text-secondary, #5b6472); }',
+      '.dlct-dock-attempt { font-size: 12px; color: var(--text-tertiary, #7a8493); }',
+      '.dlct-dock-expired { font-size: 12px; color: var(--text-tertiary, #7a8493); }',
+      '.dlct-dock-message { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--text-secondary, #5b6472); }',
+      '.dlct-dock-actions { flex: none; display: flex; gap: 6px; }',
+      '.dlct-dock-button { font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--accent, #2563eb); background: var(--accent, #2563eb); color: #fff; cursor: pointer; }',
+      '.dlct-dock-button[disabled] { opacity: 0.55; cursor: default; }',
+      '.dlct-dock-outline { background: transparent; color: var(--accent, #2563eb); }',
+    ].join('\n');
+
+    /**
+     * Call one manual-retry endpoint, turning a synchronous throw into a
+     * rejection so every caller only has to attach the two handlers.
+     * @param call - the slot-injected route caller.
+     * @param endpoint - `'state'` or `'decide'`.
+     * @param payload - the endpoint payload.
+     * @param signal - optional abort signal.
+     * @returns a promise of the route result envelope.
+     */
+    function callManualRetry(call, endpoint, payload, signal) {
+      try {
+        return Promise.resolve(call(endpoint, payload, signal));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+
+    /**
+     * Read the pending manual-retry offer out of one `state` reply.
+     *
+     * The Host answers `{ok:true, value:{pending}}` on success and
+     * `{ok:false, error}` on a refusal; anything else (including a transport
+     * failure) is treated as "no offer", so the dock stays hidden rather than
+     * showing a bar for a decision the Host no longer holds.
+     * @param reply - the route result envelope.
+     * @returns the pending decision object, or `null` when there is none.
+     */
+    function readManualRetryPending(reply) {
+      if (reply === null || typeof reply !== 'object' || reply.ok !== true) return null;
+      const value = reply.value;
+      if (value === null || typeof value !== 'object') return null;
+      const pending = value.pending;
+      return pending !== null && typeof pending === 'object' ? pending : null;
+    }
+
+    /**
+     * The 1-based attempt number shown for one offer. `attemptsLeft` counts the
+     * manual retries still available on this turn, so the offered decision is
+     * attempt `cap - attemptsLeft + 1` (with all five left, the first offer shows
+     * `1/5`).
+     * @param pending - the pending decision (`attemptsLeft` optional).
+     * @returns the attempt number in `1..MANUAL_RETRY_MAX_ATTEMPTS`.
+     */
+    function manualRetryAttempt(pending) {
+      const left = Number.isFinite(pending.attemptsLeft) ? pending.attemptsLeft : MANUAL_RETRY_MAX_ATTEMPTS;
+      const remaining = Math.max(0, Math.min(MANUAL_RETRY_MAX_ATTEMPTS, left));
+      return Math.min(MANUAL_RETRY_MAX_ATTEMPTS, MANUAL_RETRY_MAX_ATTEMPTS - remaining + 1);
+    }
+
+    /**
+     * The manual same-turn retry bar above the composer.
+     *
+     * It renders ONLY while the Host reports a pending decision for this
+     * session AND the session is running: the Host's waterfall is awaiting the
+     * answer, so the turn is still open. Clicking Retry (or Dismiss) posts the
+     * decision once; both buttons are disabled while that call is in flight,
+     * and a stale/expired decision drops the bar silently. Polling stops on
+     * unmount, on a session change, and as soon as the session stops running.
+     * @param props - the session slot standard kit plus `{call}` from this
+     *   plugin's registration.
+     * @returns the alert row, or `null` when no decision is pending.
+     */
+    function ManualRetryDock(props) {
+      const { sessionId, useSession, t, call } = props;
+      const running = useSession(state => state.running);
+      /** The last observed offer, tagged with the session it was fetched for. */
+      const [offer, setOffer] = useState(null);
+      /** Which decision is in flight, or `null` when both buttons are free. */
+      const [busy, setBusy] = useState(null);
+
+      useEffect(() => {
+        // A session change invalidates every in-flight/awaited decision state.
+        setBusy(null);
+      }, [sessionId]);
+
+      useEffect(() => {
+        if (running !== true) {
+          // Not running means no waterfall can be waiting: hide and stop.
+          setOffer(null);
+          return undefined;
+        }
+        const controller = new AbortController();
+        let live = true;
+        let timer;
+        const poll = () => {
+          callManualRetry(call, 'state', { sessionId }, controller.signal).then(
+            reply => {
+              if (!live) return;
+              const pending = readManualRetryPending(reply);
+              setOffer(pending === null ? null : { sessionId, pending, at: Date.now() });
+              timer = setTimeout(poll, MANUAL_RETRY_POLL_MS);
+            },
+            () => {
+              // A transient transport failure must not flicker the bar away:
+              // keep the last known offer and ask again on the next tick.
+              if (!live) return;
+              timer = setTimeout(poll, MANUAL_RETRY_POLL_MS);
+            },
+          );
+        };
+        poll();
+        return () => {
+          live = false;
+          if (timer !== undefined) clearTimeout(timer);
+          controller.abort();
+        };
+      }, [call, running, sessionId]);
+
+      const decide = useCallback(decision => {
+        const current = offer !== null && offer.sessionId === sessionId ? offer.pending : null;
+        if (current === null || busy !== null) return;
+        setBusy(decision);
+        callManualRetry(call, 'decide', { sessionId, nonce: current.nonce, decision }).then(
+          reply => {
+            setBusy(null);
+            if (reply !== null && typeof reply === 'object' && reply.ok === true) {
+              setOffer(null);
+              return;
+            }
+            const error = reply !== null && typeof reply === 'object' ? reply.error : undefined;
+            const code = error !== null && typeof error === 'object' ? error.code : undefined;
+            // A decision the Host no longer holds (expired/timed out) or cannot
+            // parse is terminal for this offer: drop the bar, do not retry it.
+            if (code === MANUAL_RETRY_STALE || code === 'manual-retry/bad-request') setOffer(null);
+          },
+          () => { setBusy(null); },
+        );
+      }, [busy, call, offer, sessionId]);
+
+      const current = offer !== null && offer.sessionId === sessionId ? offer : null;
+      if (current === null || running !== true) return null;
+
+      const pending = current.pending;
+      const code = typeof pending.code === 'string' && pending.code.length > 0 ? pending.code : undefined;
+      const provider = typeof pending.provider === 'string' && pending.provider.length > 0 ? pending.provider : undefined;
+      const message = typeof pending.message === 'string' && pending.message.length > 0 ? pending.message : undefined;
+      const expiresAt = Number.isFinite(pending.expiresAt) ? pending.expiresAt : undefined;
+      const expired = expiresAt !== undefined && expiresAt <= current.at;
+      const attempt = manualRetryAttempt(pending);
+      const disabled = busy !== null;
+
+      const actions = expired
+        ? h('div', { className: 'dlct-dock-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dlct-dock-button dlct-dock-outline',
+              disabled,
+              onClick: () => decide('dismiss'),
+            }, t('manualRetry.dismiss')),
+          )
+        : h('div', { className: 'dlct-dock-actions' },
+            h('button', {
+              type: 'button',
+              className: 'dlct-dock-button',
+              disabled,
+              'aria-busy': busy === 'retry' ? 'true' : undefined,
+              onClick: () => decide('retry'),
+            }, t('manualRetry.retry')),
+            h('button', {
+              type: 'button',
+              className: 'dlct-dock-button dlct-dock-outline',
+              disabled,
+              'aria-busy': busy === 'dismiss' ? 'true' : undefined,
+              onClick: () => decide('dismiss'),
+            }, t('manualRetry.dismiss')),
+          );
+
+      return h('div', {
+        className: 'dlct-dock',
+        role: 'alert',
+        'aria-label': t('manualRetry.aria'),
+      },
+        h('style', { key: 'style' }, DOCK_STYLE_TEXT),
+        h('span', { className: 'dlct-dock-icon', 'aria-hidden': 'true' }, '\u26A0'),
+        h('div', { className: 'dlct-dock-body' },
+          h('div', { className: 'dlct-dock-head' },
+            h('strong', { className: 'dlct-dock-title' }, t('manualRetry.title')),
+            code === undefined ? null : h('code', { className: 'dlct-dock-code' }, code),
+            provider === undefined ? null : h('span', { className: 'dlct-dock-provider' }, provider),
+            expired
+              ? h('span', { className: 'dlct-dock-expired' }, t('manualRetry.expired'))
+              : h('span', { className: 'dlct-dock-attempt' },
+                  `${t('manualRetry.attempt')} ${attempt}/${MANUAL_RETRY_MAX_ATTEMPTS}`),
+          ),
+          message === undefined ? null : h('div', { className: 'dlct-dock-message' }, message),
+        ),
+        actions,
+      );
+    }
+
     /* ══ plugin registration ═══════════════════════════════════════════════ */
 
     const plugin = {
       name: 'dsh-llm-api-call-tuning',
-      inject: ['slots', 'locale', 'configForms', 'remote'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'connection'],
       /**
-       * Register the plugin dictionaries and the tuning settings section. The
-       * provider directory is resolved lazily inside the mounted page, so a
-       * composition without the Remote LLM namespace still registers the page
-       * and degrades the provider list to a localized note.
+       * Register the plugin dictionaries, the manual-retry dock, and the tuning
+       * settings section. The provider directory is resolved lazily inside the
+       * mounted page, so a composition without the Remote LLM namespace still
+       * registers the page and degrades the provider list to a localized note.
+       *
+       * The dock is registered BEFORE the `configForms` guard below: it is a
+       * Conversation-page contribution, independent of the settings page, and
+       * must also work on a Host that serves no settings form for this row.
        * @param ctx - client root context.
        */
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-llm-api-call-tuning: dictionaries');
+        /**
+         * One authenticated call on the plugin's manual-retry web route.
+         * @param {string} endpoint - the route endpoint (`'state'` or `'decide'`).
+         * @param {object} payload - the endpoint payload.
+         * @param {AbortSignal} [signal] - cancels the request.
+         * @returns {Promise<object>} the route result envelope.
+         */
+        const callHost = (endpoint, payload, signal) => {
+          const connection = ctx.get('connection');
+          if (connection === undefined) {
+            return Promise.reject(new Error('llm-api-call-tuning: the connection service is unavailable'));
+          }
+          return connection.rpc.call(MANUAL_RETRY_CHANNEL, endpoint, payload, signal);
+        };
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock',
+          id: 'manual-retry',
+          order: 20,
+          locale: NS,
+          inject: () => ({ call: callHost }),
+        }, ManualRetryDock));
         const forms = ctx.configForms;
         // `configForms` is an injected service, so a real composition without
         // it parks this fiber before `apply` runs (NIT-2 in the verification

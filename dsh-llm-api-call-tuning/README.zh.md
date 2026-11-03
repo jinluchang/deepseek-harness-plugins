@@ -12,6 +12,8 @@
   一个**保存全局设置**会把六个重试叶子与两个抓取叶子放在同一次写入中；**恢复系统默认**只清除两个抓取计时器。
 - **各路由覆盖（其下）**——一个路由区：列表上方是原生**路由选择器**，然后每个**偏离**的提供方路由一张**合并卡片**，卡片以两个子分组（**重试策略** / **超时**）同时容纳该路由的重试策略与应用层超时。重试与超时不再是独立区块。路由满足以下条件之一时出现：其**生效的已存重试策略至少有一个叶子**与全局重试值不同，或该路由**显式存有任一超时叶子**；与全局值相同的已存条目会被隐藏。路由卡片通过**叶子路径操作直接写入该提供方自己的设置命名空间**，并且在你编辑字段之前不会写入任何内容。
 
+**扩展的重试错误码是可选的，默认关闭。** `normal` 模式下错误码清单提供**十个**失败错误码，但默认恰好选中**五个上游错误码**（全新安装，以及任何尚未显式指定扩展码的已存策略都是如此）：`EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`。五个扩展码——`STREAM_CLOSED`、`MALFORMED_RESPONSE`、`PI_AI_ERROR`、`HTTP_408`、`HTTP_409`——在你勾选并保存之前不会改变任何行为，因此升级后只会多出五个**未勾选**的复选框，其余行为完全不变。保存一个未改动或默认的路由**完全不会写入 `retryableCodes` 变更**：路由卡片现在只写入你实际改动过的叶子。全局卡片的预设（以及在你没有在全局卡片上勾选扩展码时的**应用默认值到全部**）仍然恰好是这五个。
+
 列表规则刻意不对称：重试是否偏离按**值**比较（与全局重试值比较），超时是否偏离按**存在性**判断，因为全局抓取计时器是 undici 的**传输层**计时器，而路由的 `streamIdleTimeoutMs` / `timeoutMs` / `filesApiTimeoutMs` 是应用层**看门狗**——它们是不同的开关，没有可比较的全局对应值。这些实体是**提供方路由，绝不是模型**：DSH 按路由解析一次重试与超时策略。
 
 提供方路由是权威来源；只有在明确要求时（某张路由卡片上的**使用默认值**，或**应用默认值到全部启用的提供方**）才会复制全局重试值。两个抓取计时器则是独立的**进程级**副作用：它们不属于重试预设，也不会被复制到任何提供方路由。线格式冻结在 [CONTRACT.md](CONTRACT.md)。
@@ -54,20 +56,40 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 已声明但未激活的路由、未声明设置命名空间的路由，以及本部署不提供其命名空间的路由**不会被列出，也无法选择**：没有生效的配置表单就无法证明其偏离，而写入超时叶子会生成不完整的提供方配置，并可能激活未激活的路由。
 
+在这两层设置之外，插件还会为自动策略放弃的失败在输入框上方添加一条**重试条**（见[手动重试](#手动重试)）；它是独立的 Host/客户端功能，不是第三个设置页面。
+
 重试字段表（与 Host `Config` 及上游重试解析器使用的值一致）适用于全局卡片的**重试**子分组与每张路由卡片；后面是两个进程级抓取字段：
 
 | 字段 | 含义 | 接受范围 | 代码默认值 |
 | --- | --- | --- | --- |
-| `mode` | 重试模式。`normal` 仅在重试上限内重试所选错误码；`always` 对每次失败都重试，直到成功、取消或关闭，并忽略重试上限与错误码列表。 | `'normal'` 或 `'always'` | `'normal'` |
+| `mode` | 重试模式。`normal` 仅在重试上限内重试所选错误码；`always` 对**每一次**模型请求失败都重试——包括 AUTH、INVALID_REQUEST、QUOTA 这类永久性失败——且没有重试上限，直到成功、取消或插件销毁，并忽略错误码列表。 | `'normal'` 或 `'always'` | `'normal'` |
 | `maxRetries` | `normal` 模式下首次请求之后的可重试次数；`0` 表示禁用重试。 | 0..9007199254740991 的整数 | `5` |
 | `initialDelayMs` | 本地调度的首次重试延迟，单位毫秒。 | 大于 0 的有限数，最大 2147483647；不得大于 maxDelayMs | `500` |
 | `maxDelayMs` | 本地调度或接受的提供方延迟上限，单位毫秒。 | 大于 0 的有限数，最大 2147483647；不得小于 initialDelayMs | `10000` |
 | `jitterRatio` | 每个本地延迟周围的对称随机倍数：`0` 关闭抖动，`1` 最多翻倍。 | 0 到 1 之间的数 | `0.1` |
-| `retryableCodes` | `normal` 模式会重试的稳定临时错误码。 | 来自五个上游错误码的非空且不重复的数组 | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` |
+| `retryableCodes` | `normal` 模式会重试的失败错误码。五个上游错误码默认选中；新增的五个提供方/HTTP 错误码为可选，未勾选时不生效。 | 来自十个可选错误码的非空且不重复的数组；默认为五个上游错误码 | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` |
 | `headersTimeoutMs` | 进程级 HTTP 响应头超时，单位毫秒，由宿主应用到所有提供方、联网搜索与 HTTP MCP 服务器共用的 fetch 调度器上。 | `unset`（保持系统/DSH 默认不变），或 0..2147483647 的整数；`0` 表示禁用该计时器 | `unset`（未设置） |
 | `bodyTimeoutMs` | 同一 fetch 调度器上的进程级 HTTP 响应正文（分块）超时，单位毫秒。 | `unset`（保持系统/DSH 默认不变），或 0..2147483647 的整数；`0` 表示禁用该计时器 | `unset`（未设置） |
 
 重试行的**代码默认值**列是上游解析回退值（`retry-policy.ts:14-22`），也是未配置的提供方路由实际运行的值。bundle 不写入任何初始值，因此页面从这些值开始。两个抓取行的代码默认值是 **`unset`**，而不是数字：schema 刻意没有 `.default()`，所以全新安装不会物化任何计时器，宿主自己的调度器默认值继续生效。`unset` 表示不改变行为；`0` 是真实取值，表示禁用该计时器；正整数表示设置该值。
+
+### 可重试错误码（可选扩展）
+
+`normal` 模式提供十个复选框。其中五个是上游错误码默认值且默认选中；另外五个是本页面提供、但绝不会自行启用的扩展：
+
+| 错误码 | 含义 |
+| --- | --- |
+| `STREAM_CLOSED` | 流在终止事件之前结束——响应中途连接断开或被截断。 |
+| `MALFORMED_RESPONSE` | 畸形的或无效的流帧（例如无效 JSON，或无效的工具参数）。 |
+| `PI_AI_ERROR` | `llm-pi-ai` 无法归类到更具体错误码的失败。 |
+| `HTTP_408` | DeepSeek 传输层在 HTTP 408 时产生的状态形错误码。 |
+| `HTTP_409` | DeepSeek 传输层在 HTTP 409 时产生的状态形错误码。 |
+
+**可选语义。** 未勾选的扩展码不属于策略。页面只在你勾选并保存后才记住某个扩展码；已经存有扩展码的列表会保持勾选。若已存列表为空或不包含本页面认识的任何错误码，则回退到五个默认值——绝不会回退到十个。未改动的列表不会被路由卡片重写，因此保存不会悄悄启用某个错误码。
+
+**上游并不限于五个。** 重试 schema 是 `retryableCodes: z.array(z.string())`（`packages/llm/llm/src/retry-policy.ts:90`）：schema 只校验条目是字符串，解析器另外拒绝空数组、空字符串与重复项（`retry-policy.ts:170-178`）——任何一层都不校验成员资格。执行器按精确字符串比较错误码（`packages/llm/llm-retry/src/index.ts:212`）。五个错误码的默认值是本插件自己的策略，不是上游限制；十个错误码是本页面提供的列表，手工存储的列表外错误码只会在错误码列表真正被重写时才从草稿中丢弃（路由卡片只写改动过的叶子；全局卡片的保存总是重写它的六个默认叶子，因此会把本插件自己的预设规范化）。
+
+**绝不要加入 `CONTEXT_WINDOW_EXCEEDED` 或 `IMAGE_OFFLOAD_REQUIRED`。** `normal` 模式下，命中列表的错误码会在执行器委托给 `next()` **之前**就被重试，因此该失败永远不会到达真正修复它们的处理器——`compaction-basic`（`packages/compaction/compaction-basic/src/index.ts:213,217`）与 `compaction-image-offload`（`packages/compaction/compaction-image-offload/src/index.ts:27,28`）。重试它们只会浪费重试次数，而不是压缩或卸载内容；因此页面刻意不提供它们。
 
 ### 保存全局卡片
 
@@ -77,7 +99,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 **保存**会先在本地校验两份草稿——小数重试上限、`0` 或大于 `2147483647` 的延迟、初始延迟大于最大延迟、超出 `[0, 1]` 的抖动、为空/未知/重复的错误码列表，或超出留空/`1..2147483647` 的超时，都会以本地化消息拒绝，且**不发起 Host 调用**——然后按一个 revision 围栏提交**一次原子写入的叶子操作**，同时携带该路由的重试叶子与变更的超时叶子。
 
-重试部分**相对于全局重试值**写入：与全局值不同的叶子写入 `set`；改回全局值的叶子写入 `unset`（仅当用户层确实存有该叶子）；已存且等于全局值的叶子也会用 `unset` 清理。当重试部分的列表非空且其中每个操作都是 `unset` 时，页面把它折叠为单条 `unset [...settingsPath, 'retryPolicy']`。`normal` 模式下涉及 `retryPolicy.mode`、`retryPolicy.maxRetries`、`retryPolicy.retryableCodes` 与三个 `retryPolicy.backoff.*` 叶子；`always` 模式保存会设置 `retryPolicy.mode`，并**清除** `retryPolicy.maxRetries` 与 `retryPolicy.retryableCodes`，因为这两项在上游模式下不生效。永远不会整体*设置* `retryPolicy` 对象，因此同级配置（base URL、凭据引用、模型）不受影响。
+重试部分**相对于全局重试值**写入，并且**只写入你实际改动过的叶子**：未改动的叶子不会产生任何操作；改动过且与全局值不同的叶子写入 `set`，改回全局值的叶子写入 `unset`（仅当用户层确实存有该叶子）。这也是可选错误码列表安全的原因：未改动的 `retryableCodes` 列表永远不会被写入，因此默认路由不会因为按下保存而获得扩展码。当重试部分的列表非空且其中每个操作都是 `unset` 时，页面把它折叠为单条 `unset [...settingsPath, 'retryPolicy']`。`normal` 模式下可改动的叶子包括 `retryPolicy.mode`、`retryPolicy.maxRetries`、`retryPolicy.retryableCodes` 与三个 `retryPolicy.backoff.*` 叶子。`always` 模式下错误码清单**隐藏**，最大重试次数输入框仍然可见且可输入但**被忽略且不参与校验**，保存会设置 `retryPolicy.mode`，并**清除**已存的 `retryPolicy.maxRetries` 与 `retryPolicy.retryableCodes`，因为上游 `always` 形状没有重试上限与错误码列表。`always` 模式会对**每一次**模型请求失败重试且没有上限——包括永久性失败（`AUTH`、`INVALID_REQUEST`、`QUOTA`、`CONTEXT_WINDOW_EXCEEDED`、`IMAGE_OFFLOAD_REQUIRED`）——直到成功、取消或插件销毁。永远不会整体*设置* `retryPolicy` 对象，因此同级配置（base URL、凭据引用、模型）不受影响。
 
 超时部分只写入草稿发生变化的叶子：从已存值播种后清空的字段发出 `unset`，输入值发出 `set`，未改动的字段不发出任何操作。刚选中、尚未存有任何内容的路由卡片没有可保存内容（其**保存**保持禁用）；任一份草稿无效或没有任何变化时，**保存**同样禁用。
 
@@ -129,7 +151,17 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 ### 两半的职责
 
-`index.js`（Host）拥有全局默认值 `Config`——六个 `.volatile()` 重试字段加两个进程级抓取字段——以及 `DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、`PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS`（路由卡片的冻结元数据，**不是** `Config` 字段）、`validateTune()`（schema 无法表达的重试组合规则守卫）和 `apply(ctx, config)`。`apply()` 有两项职责：为该命名空间注册文档化的 `auto: false` 页面策略（当前只是面向未来的准备：本版本没有内置客户端会从 schema 生成页面），以及安装上述可选的抓取超时调度器包装。它从不把任何值投射到提供方。`client.js`（浏览器）是页面：一张**全局设置**卡片加一层**各路由覆盖**。它从 Client Remote `llm` 命名空间读取提供方目录，从每个路由自己的配置表单读取生效策略与已存超时叶子，并通过同一表单写回叶子路径操作，且从不持有路由状态的副本。提供方路由是事实来源；`DEFAULT_TUNE` 是页面提供的预设，而不是回退层；抓取计时器是进程级副作用，不是任何提供方的回退。
+`index.js`（Host）拥有全局默认值 `Config`——六个 `.volatile()` 重试字段加两个进程级抓取字段——以及 `DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、`PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS`（路由卡片的冻结元数据，**不是** `Config` 字段）、`validateTune()`（schema 无法表达的重试组合规则守卫）和 `apply(ctx, config)`。`apply()` 有三项职责：为该命名空间注册文档化的 `auto: false` 页面策略（当前只是面向未来的准备：本版本没有内置客户端会从 schema 生成页面）、安装上述可选的抓取超时调度器包装，以及运行**手动同回合重试**（`agent/request-error` 监听器加经过认证的 `state`/`decide` 路由）。它从不把任何值投射到提供方。`client.js`（浏览器）是页面——一张**全局设置**卡片加一层**各路由覆盖**——再加输入框上方的**重试条**。页面从 Client Remote `llm` 命名空间读取提供方目录，从每个路由自己的配置表单读取生效策略与已存超时叶子，并通过同一表单写回叶子路径操作，且从不持有路由状态的副本。提供方路由是事实来源；`DEFAULT_TUNE` 是页面提供的预设，而不是回退层；抓取计时器是进程级副作用，不是任何提供方的回退。
+
+## 手动重试
+
+这是独立于设置页面的第二项功能：当模型请求失败、且自动重试策略已经放弃（没有可重试错误码、重试次数耗尽，或恢复链路拒绝）时，拥有该失败的会话会在对话输入框上方显示一条**重试条**。它显示失败错误码、提供方、消息、**重试** / **忽略**，以及灰色的 **`尝试次数 n/5`** 指示。它只在打开且被浏览器观察的会话中出现（`normal` 模式，或没有存储策略的路由；`always` 模式本就对每次失败重试，因此不会询问）。
+
+**重试**会在**同一个回合、同一个步骤**中重新发起这次模型请求。它是重新调度而不是新回合：用户消息不会被作为新消息重新发送，`step/start` 不会重复，之前步骤的工具结果仍保留在历史中。每次尝试都会重新执行请求准备与 `llm.prepareCall()`，因此调用是全新的、重试策略也会重新捕获；重试条出现期间保存的调优会因此作用于这次重试请求（全局默认值卡片仍然只是预设，它本身不会改写任何路由）。
+
+手动决定会**绕过重试策略的预算**：不会查询 `maxRetries` 与 `retryableCodes`，也不会记录 `llm/retry` 事件。唯一的限制是**每回合最多 5 次手动重试**和**每次尝试只能点击一次**（每次新的失败只会询问一次）。
+
+**忽略**会以正常的错误行结束该回合。90 秒的决定超时、取消回合、销毁插件，以及关闭页面（后者要等超时：重试条需要页面持续轮询 Host）同样如此。重试条显示期间回合仍在运行，因此输入框被禁用；**取消**是逃生通道。只有第一个有效决定生效——过期的标签页无法结算更新的提示。重试条经过 Host 认证，且只能通过本插件自己的 `POST`+JSON 路由访问；无头运行、CLI 运行以及已崩溃关闭的回合不会看到它，并回退到原有行为。如果模型再次发起相同的工具调用，重试可能重复副作用；重试条显示提供方而不是模型（失败负载中没有模型字段）。
 
 ## 故障排查
 
@@ -139,7 +171,9 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 - **由 home patch/`--patch` 拥有的行显示“宿主拒绝了本次写入”。** home patch 或 `--patch` 覆盖层拥有该提供方行，配置编辑器拒绝写入，页面显示**通用**拒绝文案（设置表单 API 不暴露原因）。请改为编辑覆盖层（或 profile patch）；本页面刻意不提供强制写入。独立的“由其他位置管理”文案只用于直接携带 `settings/rejected` 的 `RemoteError`，在此不可达。
 - **普通行显示“宿主拒绝了本次写入”。** 写入值未被接受（例如 revision 已被取代）。字段会用 Host 当前值重新填充；请检查后再次保存。
 - **保存全局卡片后没有变化。** 这是设计如此：重试值是预设。请用某张路由卡片的**使用默认值**或**应用默认值到全部启用的提供方**把它们写入提供方。
-- **显示值与输入不一致。** 页面始终显示 Host 报告的生效值。路由卡片处于 `always` 模式时，重试上限和错误码列表不可编辑，并会在保存时被清除；全局卡片仍会保存它们，因为它们是面向所有路由的预设。
+- **显示值与输入不一致。** 页面始终显示 Host 报告的生效值。路由卡片处于 `always` 模式时错误码清单隐藏，最大重试次数输入框仍然可见但被忽略且不参与校验，保存会清除已存的重试上限与错误码列表；全局卡片仍会保存全部六个重试值，因为它们是面向所有路由的预设。
+- **重试条从不出现。** 只有在自动重试策略已放弃、请求处于 `normal` 模式、浏览器页面正在轮询该会话，且回合没有因崩溃关闭时才会提供；无头/CLI 运行、`always` 模式、已关闭的标签页与已中断的回合都保留正常错误行。
+- **重试条显示期间回合看起来卡住了。** 这是预期行为：Host 等待决定时回合保持运行、输入框被禁用，最多 90 秒。点击**忽略**（或**取消**该回合）即可用正常错误行结束。
 - **提供方目录不可用。** 本部署未暴露 Remote `llm` 目录（`providers.unavailable`），或读取失败（`providers.error`）。此时无法列出或选择任何路由，但全局卡片仍可用。
 - **刚添加的提供方没有列出。** 目录只在页面挂载时读取一次，不会实时刷新；请离开后重新进入（或刷新页面）以重新读取。
 - **`llm-pi-ai` 调用报 stream idle timeout after 300000 ms。** 这是包默认空闲看门狗（慢速首个 token / TTFT 卡顿），不是传输错误。请在路由卡片提高 `streamIdleTimeoutMs`，并在更短时同步提高请求 `timeoutMs` 与进程级抓取 `bodyTimeoutMs`。若仍有更短的期限先触发，该卡片会显示非阻断警告。
@@ -151,7 +185,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/verify.mjs
 ```
 
-在本仓库根目录运行（或在插件目录内导出同一变量后运行）。套件是封闭的——纯 Node、`node:assert/strict`、`node:vm` 中的 Context/表单/React 替身，无网络、无服务器、无文件写入——并通过 `$DSH_HARNESS_CHECKOUT` 解析**真实的** `@deepseek-ai/schemastery` 与上游 `retry-policy.ts`，因此 schema 或常量漂移会显式失败。它覆盖 manifest 与 bundle patch、Host `Config` 的接受/拒绝矩阵、`validateTune()` 规则、`apply()`、客户端注册（一个 section、id `llm-api-call-tuning`、order 45）、en/zh 文案一致性（120 个键）、渲染出的两层布局（唯一的全局卡片位于各路由区之前；两个子分组都存在；旧的独立重试/超时区块已消失）、仅列出偏离路由的规则（与全局值相同的已存重试覆盖被隐藏、只存有超时的路由会被列出、选择器排除已列出路由、选中后新增一张卡片、空态会渲染）、精确操作形状（全局保存同时携带重试与抓取叶子、合并路由保存与重置、改回全局值的叶子发出 `unset`、全 unset 折叠）、提供方超时元数据（冻结的键/默认值/边界/作用域及其镜像的上游 schema 与默认值）、校验、拒绝、逐写门控/跳过与 revision 重试路径、提供方目录合并与所有降级路径、路由卡片行为（按族显示字段、从用户层播种、协议显示、警告、仅激活门控、不限预设、拒绝 0）、抓取超时调度器对记录型假调度器与宿主真实 `undici` 全局对象的安装/填充/恢复/dispose/`NODE_USE_ENV_PROXY` 行为（含 `undici` 不可解析时的子进程场景），以及本 README 与 CONTRACT.md 中的字段表。“由其他位置管理”分类只作为防御性单元路径用会 reject 的假表单测试；真实设置表单的拒绝会解析为 `false`。
+在本仓库根目录运行（或在插件目录内导出同一变量后运行）。套件是封闭的——纯 Node、`node:assert/strict`、`node:vm` 中的 Context/表单/React 替身，无网络、无服务器、无文件写入——并通过 `$DSH_HARNESS_CHECKOUT` 解析**真实的** `@deepseek-ai/schemastery` 与上游 `retry-policy.ts`，因此 schema 或常量漂移会显式失败。它覆盖 manifest 与 bundle patch、Host `Config` 的接受/拒绝矩阵、`validateTune()` 规则、`apply()`、客户端注册（一个 section、id `llm-api-call-tuning`、order 45）、en/zh 文案一致性（131 个键）、提供的十个可重试错误码与五个默认值（导出的扩展码顺序、`Config` 的 union/default 拆分以及 `validateTune` 的成员校验）、渲染出的两层布局（唯一的全局卡片位于各路由区之前；两个子分组都存在；旧的独立重试/超时区块已消失）、仅列出偏离路由的规则（与全局值相同的已存重试覆盖被隐藏、只存有超时的路由会被列出、选择器排除已列出路由、选中后新增一张卡片、空态会渲染）、精确操作形状（全局保存同时携带重试与抓取叶子、合并路由保存与重置、路由重试保存只写改动过的叶子且绝不新增可选错误码、改回全局值的叶子发出 `unset`、全 unset 折叠、`always` 模式下隐藏错误码清单）、提供方超时元数据（冻结的键/默认值/边界/作用域及其镜像的上游 schema 与默认值）、校验、拒绝、逐写门控/跳过与 revision 重试路径、提供方目录合并与所有降级路径、路由卡片行为（按族显示字段、从用户层播种、协议显示、警告、仅激活门控、不限预设、拒绝 0）、抓取超时调度器对记录型假调度器与宿主真实 `undici` 全局对象的安装/填充/恢复/dispose/`NODE_USE_ENV_PROXY` 行为（含 `undici` 不可解析时的子进程场景），手动同回合重试（监听器先等待 `next()`、台面的观察窗口/超时/上限与 nonce/stale 处理、认证路由的守卫/信封/错误码，以及重试条的渲染/轮询/决定行为），以及本 README 与 CONTRACT.md 中的字段表。“由其他位置管理”分类只作为防御性单元路径用会 reject 的假表单测试；真实设置表单的拒绝会解析为 `false`。
 
 一次绿色运行会对全部检查报告 `0 failed, 0 skipped` 并以 `0` 退出。这是离线契约检查，不是真实 GUI 测试：它不启动 Host 或浏览器，也不会执行真实设置保存、真实导航行、下一请求延迟、一次真实 HTTP 请求在已安装调度器下真正超时的验证，或真实提供方路由因超时中止慢速首个 token 的验证。这些仍属于部署检查；套件证明的是线格式契约与调度器形状，而不是真实计时。
 
@@ -159,8 +193,8 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/veri
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | Host 半部：六个重试全局默认字段与两个进程级抓取字段（`Config`）、`DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、冻结的 `PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS` 元数据、`validateTune()`，以及抑制自动页面并安装/恢复可选抓取超时调度器包装的 `apply(ctx, config)`。 |
-| `client.js` | 浏览器半部：**LLM API 调用调优**设置页，渲染为一张**全局设置**卡片与一层**各路由覆盖**（列表上方是路由选择器，每个偏离路由一张合并的重试 + 超时卡片），以及本地校验和通过提供方表单与本插件命名空间的叶子路径写入。 |
+| `index.js` | Host 半部：六个重试全局默认字段与两个进程级抓取字段（`Config`）、`DEFAULT_TUNE`/`TUNE_OPTIONS`、`DEFAULT_FETCH`/`FETCH_KEYS`/`FETCH_OPTIONS`、冻结的 `PROVIDER_TIMEOUT_FIELDS`/`PROVIDER_TIMEOUT_KEYS`/`PROVIDER_TIMEOUT_OPTIONS` 元数据、`validateTune()`，以及抑制自动页面、安装/恢复可选抓取超时调度器包装，并注册手动重试监听器与其认证 `state`/`decide` 路由的 `apply(ctx, config)`。 |
+| `client.js` | 浏览器半部：**LLM API 调用调优**设置页，渲染为一张**全局设置**卡片与一层**各路由覆盖**（列表上方是路由选择器，每个偏离路由一张合并的重试 + 超时卡片），以及本地校验、通过提供方表单与本插件命名空间的叶子路径写入，和输入框上方的**手动重试条**（id `manual-retry`、order 20）。 |
 | `cordis.patch.yml` | 插入 `llm-api-call-tuning` 行且**不带初始值**的 bundle patch。 |
 | `locale/en.json`、`locale/zh.json` | 供 Plugin Manager 与设置清单使用的插件显示元数据。 |
 | `package.json` | Bundle manifest（`dsh.bundle.patch`、`dsh.client` injects、`exports`、`files`）。 |
@@ -174,11 +208,18 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/veri
 - **没有跨提供方事务。** 应用到全部时逐个提供方写入；失败时此前的写入仍然保留。
 - **home patch / `--patch` 拥有的行无法编辑**，会显示通用拒绝文案（“由其他位置管理”分类仅是防御性分支，通过设置表单 API 不可达）。
 - **进行中的请求保持旧策略。**
+- **手动重试会保持回合打开。** 重试条显示期间回合保持运行、输入框被禁用，最多 90 秒；**取消**是逃生通道。
+- **手动重试需要浏览器观察者。** 只有页面向 Host 轮询过（最近 20 秒内）的会话才会提供重试条；无头/CLI 运行、已关闭的标签页与断开的浏览器保留正常错误行为。
+- **崩溃关闭的回合与无头运行不会获得手动重试。** 已被 Host 崩溃/重启标记为 `interrupted` 的回合，以及任何没有活动浏览器页面的运行，都回退到自动链的结果。
+- **手动重试可能重复副作用。** 之前的工具结果仍保留在历史中，但重试的调用可能再次发起相同工具调用并再次执行；本功能不做去重。
+- **失败负载没有模型字段。** 重试条显示提供方与失败错误码/消息，而不是模型。
 - **按路由，而不是按模型。** DSH 在适配器注册时按**提供方路由**捕获一份重试策略（`packages/llm/llm/src/retry-policy.ts:78,450-455`），而 agent/request-error 负载只携带提供方、不携带模型（`packages/core/agent/src/runtime-types.ts:389`）。按模型覆盖会被存储和渲染，但永远不会生效，因此页面不提供该能力。
 - **休眠路由、没有设置命名空间的路由，以及命名空间不可用的路由不会被列出，也无法选择。** 没有生效的配置表单就无法证明其偏离，而写入超时叶子会生成不完整的提供方配置并可能激活休眠路由。
 - **与全局值相同的已存覆盖会被隐藏。** 列表是偏离列表，而不是存储状态列表：与全局重试值完全相同的 `retryPolicy`（或只存有等于包默认值的超时叶子）不会生成卡片。超时叶子仍按存在性视为偏离，因为没有全局对应值可比较。
 - **提供方目录每次挂载只读取一次**，没有实时刷新：页面保持打开时新增或移除的提供方需要刷新页面。
 - **不存在命令行、环境变量或 GUI 核心设置**——本页面是唯一受支持的 UI；手工编辑 profile patch 会绕过其校验。
+- **新增的重试错误码是可选的，默认关闭。** 页面提供十个错误码，但默认预选五个上游错误码；只有显式勾选后才会写入扩展码，未改动或默认路由的保存不会写入任何 `retryableCodes` 变更。五个错误码的默认值是本插件自己的策略，不是上游限制；十个错误码的列表是页面的 UX 子集，而不是 DSH 强制的白名单。
+- **`CONTEXT_WINDOW_EXCEEDED` 与 `IMAGE_OFFLOAD_REQUIRED` 刻意不在提供之列。** `normal` 模式下对已列错误码的重试会绕过 `next()`，从而跳过真正修复这两类失败的 compaction-basic / compaction-image-offload 处理器。
 - **提供方超时按路由生效，且拒绝 `0`。** 页面拒绝 `0`，因为 DeepSeek/流空闲 schema 拒绝它，而 SDK 请求超时为 0 会让每个请求立即中止；**不限**预设写入 `2147483647` 毫秒上限（约 24.8 天）而不是关闭开关。直接调用 `settings.mutate` 仍可持久化 `0`，这会触发提供方加载期断言失败并使路由无法解析。
 - **超时警告只是启发式，不是强制。** 它在本地比较卡片草稿值与进程级抓取正文超时草稿；通过直接写入或其他命名空间层级设置的更短期限不会被发现，且警告从不阻止保存。
 - **`connectTimeoutMs` 不在范围内。** undici 6/7/8 没有按请求的 connect 超时；传输层连接上限应在上游 `packages/util/http-proxy/src/install.ts` 修复，而不是本页面。

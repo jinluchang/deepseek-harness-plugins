@@ -39,8 +39,14 @@
  *   `MAX_TIMER_DELAY_MS` = `2147483647`, defaults `500` / `10000`
  *   (`retry-policy.ts:82-83,15-16,127-132`);
  * - `jitterRatio`: `0..1`, default `0.1` (`retry-policy.ts:84,17`);
- * - `retryableCodes`: non-empty array drawn from the five upstream codes,
- *   defaulting to all five (`retry-policy.ts:90,18-22,170-177`).
+ * - `retryableCodes`: non-empty array drawn from the codes this plugin OFFERS
+ *   (the five upstream codes plus five opt-in extras, see
+ *   `OFFERED_RETRYABLE_CODES`), defaulting to exactly the five upstream codes
+ *   (`retry-policy.ts:90,18-22,170-177`). Upstream accepts any string here
+ *   (`z.array(z.string())`) and matches exact strings at retry time, so the
+ *   narrowing is this plugin's own; offering more codes cannot change the
+ *   default policy, because the extras are opt-in checkboxes that only an
+ *   explicit user tick can add.
  *
  * One upstream rule cannot be expressed in a schema: `initialDelayMs` must not
  * exceed `maxDelayMs` (`retry-policy.ts:133-135`). It is enforced by
@@ -59,6 +65,14 @@
  * or the plugin is disposed — and only when ours is still current. That
  * mechanism is adapted from `dsh-fetch-timeouts` (MIT, © 2026 Dev Mehra); see
  * THIRD-PARTY-NOTICES.md.
+ *
+ * A third, independent job is the manual same-turn retry: a non-retryable model
+ * failure can be parked while the settings page asks the user whether to retry
+ * it. It is purely additive — the `agent/request-error` listener awaits the
+ * downstream recovery chain FIRST, so an automatic retry always wins and a
+ * prompt is never shown for a failure the policy already handles. It is also
+ * fully optional at runtime: without a page polling the decision route, no
+ * turn is ever parked (see {@link createRetryDesk} and {@link registerRetryChannel}).
  *
  * None of it adds a dependency: the bundle ships no `node_modules`. undici is
  * resolved from the running Host (the profile the Host boots from, then the
@@ -232,8 +246,15 @@ export const RETRY_MODES = Object.freeze(['normal', 'always'])
 
 /**
  * The failure codes the upstream retry policy ships with
- * (`retry-policy.ts:18-22`). `EMPTY_RESPONSE` is `EMPTY_RESPONSE_CODE` in
+ * (`retry-policy.ts:18-22`), and this plugin's global DEFAULT code list.
+ * `EMPTY_RESPONSE` is `EMPTY_RESPONSE_CODE` in
  * `packages/llm/llm/src/error.ts`; the other four are literal strings.
+ *
+ * Upstream does NOT restrict the array to these five: its schema is
+ * `z.array(z.string())` (`retry-policy.ts:90`) and the executor matches exact
+ * code strings (`packages/llm/llm-retry/src/index.ts:212`). The narrowing lives
+ * only in this plugin, so it can widen what the page offers without changing
+ * what an unconfigured policy resolves to.
  */
 export const RETRYABLE_CODES = Object.freeze([
   'EMPTY_RESPONSE',
@@ -243,8 +264,32 @@ export const RETRYABLE_CODES = Object.freeze([
   'TRANSPORT',
 ])
 
-/** Fast membership test for the code allowlist. */
-const RETRYABLE_CODE_SET = new Set(RETRYABLE_CODES)
+/**
+ * The codes the settings page OFFERS, in checkbox order: the five upstream
+ * defaults, then five opt-in extras.
+ *
+ * `STREAM_CLOSED` / `MALFORMED_RESPONSE` / `PI_AI_ERROR` are the llm-pi-ai
+ * failure codes (`packages/llm/llm-pi-ai/src/stream.ts:67`,
+ * `packages/llm/llm-pi-ai/src/stream.ts:40-41`); `HTTP_408` / `HTTP_409` are
+ * the status-shaped codes the DeepSeek transport produces
+ * (`packages/llm/llm-deepseek/src/transport.ts:35`).
+ *
+ * OPT-IN ONLY: every default, every fallback and every unset leaf still
+ * resolves to `RETRYABLE_CODES`, so a fresh install and every existing stored
+ * config keep the exact five-code policy. An extra code is written only when a
+ * user ticks it.
+ */
+export const OFFERED_RETRYABLE_CODES = Object.freeze([
+  ...RETRYABLE_CODES,
+  'STREAM_CLOSED',
+  'MALFORMED_RESPONSE',
+  'PI_AI_ERROR',
+  'HTTP_408',
+  'HTTP_409',
+])
+
+/** Fast membership test for every code the page offers (validation only). */
+const OFFERED_RETRYABLE_CODE_SET = new Set(OFFERED_RETRYABLE_CODES)
 
 /**
  * The complete global-default surface this plugin owns, declared ONCE. The
@@ -311,8 +356,8 @@ const TUNE_FIELDS = Object.freeze([
     kind: 'retryableCodes',
     default: RETRYABLE_CODES,
     defaultText: "'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'",
-    range: 'non-empty array of unique codes from the five upstream codes',
-    build: lib => lib.array(lib.union(RETRYABLE_CODES.map(code => lib.const(code))))
+    range: 'non-empty array of unique codes from the ten offered codes; defaults to the five upstream codes',
+    build: lib => lib.array(lib.union(OFFERED_RETRYABLE_CODES.map(code => lib.const(code))))
       .min(1)
       .default([...RETRYABLE_CODES])
       .volatile(),
@@ -610,7 +655,8 @@ export const TUNE_PROBLEMS = Object.freeze({
  * non-negative safe-integer `maxRetries`, two finite positive delays no larger
  * than `2147483647` with `initialDelayMs <= maxDelayMs`, a `jitterRatio` within
  * `[0, 1]`, and a non-empty, duplicate-free `retryableCodes` array drawn from
- * `RETRYABLE_CODES`.
+ * `OFFERED_RETRYABLE_CODES` (the five upstream defaults plus the opt-in extras;
+ * an absent value still falls back to the five).
  *
  * Fields that are `undefined` fall back to `DEFAULT_TUNE`, so a page draft that
  * omits an untouched field still validates. The function never throws: it
@@ -648,7 +694,7 @@ export function validateTune(values = {}) {
   /** Whether a value is a code list the upstream resolver would accept. */
   const isRetryableCodes = candidate => Array.isArray(candidate)
     && candidate.length > 0
-    && candidate.every(code => typeof code === 'string' && RETRYABLE_CODE_SET.has(code))
+    && candidate.every(code => typeof code === 'string' && OFFERED_RETRYABLE_CODE_SET.has(code))
     && new Set(candidate).size === candidate.length
 
   const problems = []
@@ -970,10 +1016,543 @@ function installFetchTimeouts(ctx, config) {
   }
 }
 
+/* ══ Manual same-turn retry ═══════════════════════════════════════════════ */
+
+/**
+ * Authenticated Web route the settings page uses for the manual same-turn
+ * retry. `dsh-backend-restart` established the shape: a plugin-owned prefix
+ * route whose first act is `ctx.connection.requestRejection(req)`, so
+ * Connection's Host/Origin fence and browser authentication run before any
+ * method, body, or envelope decision.
+ */
+const RETRY_CHANNEL = '/llm-api-call-tuning'
+
+/** How long one manual-retry prompt may hold the turn open before it declines. */
+const RETRY_DECISION_TIMEOUT_MS = 90_000
+
+/**
+ * Freshness window of a page `state` poll. A prompt is offered only for a
+ * session whose page polled `state` within this window, so a closed tab, a
+ * disconnected browser, or a headless Host never parks an open turn.
+ */
+const RETRY_WATCHER_WINDOW_MS = 20_000
+
+/**
+ * Manual retries one turn may accept. A manual decision bypasses the policy's
+ * own budget (`retryPolicy.maxRetries`), so this cap is the only bound on a
+ * user pressing Retry over and over.
+ */
+const MANUAL_RETRY_MAX_PER_TURN = 5
+
+/** Bound on one retry-channel body; every request carries two short strings. */
+const RETRY_MAX_BODY_BYTES = 64 * 1024
+
+/** Defensive bound on the session id this channel echoes back into a prompt. */
+const RETRY_MAX_SESSION_ID_LENGTH = 256
+
+/** Segment shape Connection accepts inside one channel endpoint. */
+const RETRY_ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
+
+/** Correlation id answered when a request never carried a usable one. */
+const RETRY_INVALID_RPC_ID = 'invalid-request'
+
+/** Prefix of every failure code this channel returns. */
+const RETRY_FAILURE_PREFIX = 'manual-retry'
+
+/** The endpoints this channel serves, as `connection.rpc.call` addresses them. */
+const RETRY_ENDPOINTS = Object.freeze(['state', 'decide'])
+
+/**
+ * Read the session id that owns one `agent/request-error` payload.
+ * @param {object} payload - the waterfall payload.
+ * @returns {string | undefined} `String(agent.id)`, or undefined when the payload carries no agent.
+ */
+function retrySessionId(payload) {
+  const id = payload?.agent?.id
+  if (id === undefined || id === null) return undefined
+  const text = String(id)
+  return text.length === 0 ? undefined : text
+}
+
+/**
+ * One unguessable decision nonce. The page must echo it back, so a decision
+ * cannot be replayed against a later prompt and a decision minted for one
+ * prompt cannot settle another.
+ * @returns {string} a fresh nonce.
+ */
+function retryNonce() {
+  const uuid = globalThis.crypto?.randomUUID
+  if (typeof uuid === 'function') {
+    try {
+      return uuid.call(globalThis.crypto)
+    } catch {
+      // A restricted crypto implementation falls through to the local form.
+    }
+  }
+  return `n-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
+/**
+ * Create the in-memory desk that parks one non-retryable model failure while
+ * the page asks the user whether to retry it.
+ *
+ * The desk owns all of this feature's state:
+ * - `pending`: one live prompt per session, because a turn runs one model
+ *   request at a time; its `settle` resolves the parked waterfall.
+ * - `watchers`: the last `state` poll per session — the only evidence that a
+ *   page is open and may be prompted at all.
+ * - `manualRetries`: accepted manual retries per `${sessionId}:${turn}`. A
+ *   manual decision bypasses the retry policy's own budget, so this counter is
+ *   the only bound on repeated manual retries.
+ *
+ * Every browser tab shares one pending entry: the first valid decision settles
+ * it, and every later decision is answered `manual-retry/stale`.
+ *
+ * @returns {object} the desk API (`shouldOffer`, `awaitDecision`, `stateFor`, `decide`, `settleAll`).
+ */
+function createRetryDesk() {
+  /** One live prompt per session; the waterfall is parked on its `settle`. */
+  const pending = new Map()
+  /** Last `state` poll per session: the heartbeat that authorizes prompting. */
+  const watchers = new Map()
+  /** Accepted manual retries per `${sessionId}:${turn}`. */
+  const manualRetries = new Map()
+
+  /**
+   * Counter key for one session turn.
+   * @param {string} sessionId - owning session.
+   * @param {number} turn - turn number.
+   * @returns {string} the key.
+   */
+  const counterKey = (sessionId, turn) => `${sessionId}:${turn}`
+
+  /**
+   * Manual retries this turn already accepted.
+   * @param {string} sessionId - owning session.
+   * @param {number} turn - turn number.
+   * @returns {number} the accepted count (0 when none).
+   */
+  const used = (sessionId, turn) => {
+    const count = manualRetries.get(counterKey(sessionId, turn))
+    return Number.isSafeInteger(count) && count > 0 ? count : 0
+  }
+
+  /**
+   * Drop heartbeat entries older than the window, so the map cannot grow with
+   * closed tabs.
+   * @param {number} now - current epoch milliseconds.
+   */
+  const pruneWatchers = now => {
+    for (const [sessionId, at] of watchers) {
+      if (now - at > RETRY_WATCHER_WINDOW_MS) watchers.delete(sessionId)
+    }
+  }
+
+  /**
+   * Whether this failure may be offered to the user.
+   *
+   * False when: the route retries automatically in `always` mode; the payload
+   * carries no session; a prompt is already pending; the per-turn cap is spent;
+   * or no page polled `state` within the watcher window. The listener has
+   * already awaited `next()`, so this only decides the MANUAL fallback.
+   * @param {object} payload - the `agent/request-error` payload.
+   * @returns {boolean} whether to park the turn and prompt.
+   */
+  const shouldOffer = payload => {
+    if (payload?.retryPolicy?.mode === 'always') return false
+    const sessionId = retrySessionId(payload)
+    if (sessionId === undefined) return false
+    if (pending.has(sessionId)) return false
+    const turn = Number.isSafeInteger(payload?.turn) ? payload.turn : -1
+    if (used(sessionId, turn) >= MANUAL_RETRY_MAX_PER_TURN) return false
+    const at = watchers.get(sessionId)
+    return typeof at === 'number' && Date.now() - at <= RETRY_WATCHER_WINDOW_MS
+  }
+
+  /**
+   * Park the turn until the page decides, the timeout expires, or the turn is
+   * cancelled. The pending entry, its timer, and its abort link are all removed
+   * by one idempotent `settle`.
+   * @param {object} payload - the `agent/request-error` payload.
+   * @returns {Promise<{ kind: 'retry' } | undefined>} the retry action, or undefined to decline.
+   */
+  const awaitDecision = payload => {
+    const sessionId = retrySessionId(payload)
+    if (sessionId === undefined) return Promise.resolve(undefined)
+    const signal = payload?.signal
+    if (signal !== undefined && signal.aborted === true) return Promise.resolve(undefined)
+    const turn = Number.isSafeInteger(payload?.turn) ? payload.turn : -1
+    const step = Number.isSafeInteger(payload?.step) ? payload.step : -1
+    const provider = typeof payload?.provider === 'string' ? payload.provider : ''
+    const code = typeof payload?.failure?.code === 'string' ? payload.failure.code : ''
+    const message = typeof payload?.failure?.message === 'string' ? payload.failure.message : ''
+    return new Promise(resolve => {
+      const nonce = retryNonce()
+      const expiresAt = Date.now() + RETRY_DECISION_TIMEOUT_MS
+      let settled = false
+      /** Fiber-owned expiry timer; cleared by `settle`. */
+      let timer
+      /** The abort link, replaced once the pending entry exists. */
+      let onAbort = () => {}
+      /**
+       * Resolve once: clear the timer, unlink the abort listener, drop the map
+       * entry, then hand the value to the parked waterfall.
+       * @param {{ kind: 'retry' } | undefined} value - the decision.
+       */
+      const settle = value => {
+        if (settled) return
+        settled = true
+        if (timer !== undefined) clearTimeout(timer)
+        if (signal !== undefined && typeof signal.removeEventListener === 'function') {
+          try {
+            signal.removeEventListener('abort', onAbort)
+          } catch {
+            // A foreign or already-disposed signal has nothing to remove.
+          }
+        }
+        const current = pending.get(sessionId)
+        if (current !== undefined && current.nonce === nonce) pending.delete(sessionId)
+        resolve(value)
+      }
+      onAbort = () => settle(undefined)
+      timer = setTimeout(() => settle(undefined), RETRY_DECISION_TIMEOUT_MS)
+      pending.set(sessionId, { nonce, turn, step, provider, code, message, expiresAt, settle })
+      // Forget counters of this session's earlier turns: only the live turn counts.
+      const currentKey = counterKey(sessionId, turn)
+      for (const key of manualRetries.keys()) {
+        if (key.startsWith(`${sessionId}:`) && key !== currentKey) manualRetries.delete(key)
+      }
+      if (signal !== undefined && typeof signal.addEventListener === 'function') {
+        if (signal.aborted === true) settle(undefined)
+        else signal.addEventListener('abort', onAbort, { once: true })
+      }
+    })
+  }
+
+  /**
+   * The page's view of one session, and the heartbeat that authorizes
+   * prompting: every call records the session as watched.
+   * @param {string} sessionId - the session to report on.
+   * @returns {{ pending: null | { nonce: string, turn: number, step: number, provider: string, code: string, message: string, expiresAt: number, attemptsLeft: number } }} the live prompt, if any.
+   */
+  const stateFor = sessionId => {
+    const now = Date.now()
+    pruneWatchers(now)
+    watchers.set(sessionId, now)
+    const entry = pending.get(sessionId)
+    if (entry === undefined) return { pending: null }
+    if (entry.expiresAt <= now) {
+      entry.settle(undefined)
+      return { pending: null }
+    }
+    return {
+      pending: {
+        nonce: entry.nonce,
+        turn: entry.turn,
+        step: entry.step,
+        provider: entry.provider,
+        code: entry.code,
+        message: entry.message,
+        expiresAt: entry.expiresAt,
+        attemptsLeft: Math.max(0, MANUAL_RETRY_MAX_PER_TURN - used(sessionId, entry.turn)),
+      },
+    }
+  }
+
+  /**
+   * Apply one decision. The first valid decision wins: it clears the pending
+   * entry, so a later, foreign, or replayed decision is answered stale.
+   * @param {string} sessionId - owning session.
+   * @param {string} nonce - nonce of the prompt being answered.
+   * @param {'retry' | 'dismiss'} decision - the user's choice.
+   * @returns {{ accepted: boolean }} whether the decision settled the prompt.
+   */
+  const decide = (sessionId, nonce, decision) => {
+    const entry = pending.get(sessionId)
+    if (entry === undefined || entry.nonce !== nonce) return { accepted: false }
+    if (entry.expiresAt <= Date.now()) {
+      entry.settle(undefined)
+      return { accepted: false }
+    }
+    if (decision === 'retry') {
+      manualRetries.set(counterKey(sessionId, entry.turn), used(sessionId, entry.turn) + 1)
+      entry.settle({ kind: 'retry' })
+      return { accepted: true }
+    }
+    entry.settle(undefined)
+    return { accepted: true }
+  }
+
+  /**
+   * Decline every live prompt and drop all state. The effect disposer calls
+   * this: without it, a disposed plugin would leave every parked turn waiting
+   * out its 90 s timeout.
+   */
+  const settleAll = () => {
+    for (const entry of [...pending.values()]) entry.settle(undefined)
+    pending.clear()
+    watchers.clear()
+    manualRetries.clear()
+  }
+
+  return { shouldOffer, awaitDecision, stateFor, decide, settleAll }
+}
+
+/**
+ * The `agent/request-error` listener: let every automatic policy decide first,
+ * then offer the manual retry.
+ *
+ * Awaiting `next()` is what makes listener ordering irrelevant and the feature
+ * additive: llm-retry answers `{ kind: 'retry' }` for a code it retries (and
+ * for every failure in `always` mode), so this listener passes that action
+ * through untouched and never prompts. It only sees the failures nothing else
+ * recovered.
+ * @param {object} desk - the desk from {@link createRetryDesk}.
+ * @param {object} payload - the waterfall payload.
+ * @param {() => Promise<object>} next - the downstream recovery chain.
+ * @returns {Promise<object>} the automatic action, the manual retry action, or undefined to decline.
+ */
+async function retryOrPrompt(desk, payload, next) {
+  // A bare listener invocation (a diagnostic or a host double calling every
+  // registered listener) has no downstream chain to await; nothing can be
+  // retried, so decline instead of throwing.
+  if (typeof next !== 'function') return undefined
+  const automatic = await next()
+  if (automatic !== undefined) return automatic
+  if (!desk.shouldOffer(payload)) return undefined
+  return desk.awaitDecision(payload)
+}
+
+/**
+ * Build one Connection-shaped failure result.
+ * @param {string} code - channel-relative failure code.
+ * @param {string} message - diagnostic text; the page localizes its own copy.
+ * @returns {{ ok: false, error: { code: string, message: string, details: object } }} the failure result.
+ */
+function retryFailure(code, message) {
+  return { ok: false, error: { code: `${RETRY_FAILURE_PREFIX}/${code}`, message, details: {} } }
+}
+
+/**
+ * Build the malformed-request failure result.
+ * @param {string} message - diagnostic text.
+ * @returns {{ ok: false, error: { code: string, message: string, details: object } }} the failure result.
+ */
+function retryBadRequest(message) {
+  return retryFailure('bad-request', message)
+}
+
+/**
+ * Extract the channel-relative endpoint from a request target.
+ * @param {string | undefined} url - request target as node:http supplied it.
+ * @returns {string | undefined} `state` or `decide`, or undefined outside this channel.
+ */
+function retryEndpointOf(url) {
+  const pathname = new URL(url ?? '/', 'http://dsh.internal').pathname
+  if (!pathname.startsWith(`${RETRY_CHANNEL}/`)) return undefined
+  const endpoint = pathname.slice(RETRY_CHANNEL.length + 1)
+  const segments = endpoint.split('/')
+  if (segments.length !== 1) return undefined
+  const [segment] = segments
+  if (segment === '' || segment === '.' || segment === '..'
+    || !RETRY_ENDPOINT_SEGMENT_PATTERN.test(segment)) {
+    return undefined
+  }
+  return RETRY_ENDPOINTS.includes(segment) ? segment : undefined
+}
+
+/**
+ * Buffer one request body under this channel's ceiling.
+ * @param {import('node:http').IncomingMessage} req - request owning the body.
+ * @returns {Promise<string | undefined>} UTF-8 body, or undefined past the ceiling.
+ */
+async function readRetryBody(req) {
+  const declaredLength = req.headers['content-length']
+  if (declaredLength !== undefined && Number(declaredLength) > RETRY_MAX_BODY_BYTES) return undefined
+  const chunks = []
+  let received = 0
+  for await (const chunk of req) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+    received += buffer.byteLength
+    if (received > RETRY_MAX_BODY_BYTES) return undefined
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks, received).toString('utf8')
+}
+
+/**
+ * Narrow an unknown JSON value to a non-array object.
+ * @param {unknown} value - parsed JSON value.
+ * @returns {value is Record<string, unknown>} whether it is a JSON object.
+ */
+function isRetryRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Frame one handler result exactly as Connection's JSON channel does.
+ * @param {object} result - handler result.
+ * @returns {object} the result carried in the envelope.
+ */
+function frameRetryResult(result) {
+  if (!result.ok) return result
+  const { attachments: _attachments, ...framed } = result
+  return framed
+}
+
+/**
+ * Write one Connection `server-response` envelope.
+ * @param {import('node:http').ServerResponse} res - response owned here.
+ * @param {string} rpcId - correlation id echoed to the caller.
+ * @param {object} result - handler result or Connection failure result.
+ */
+function sendRetryEnvelope(res, rpcId, result) {
+  // Serialize before writing headers: a malformed handler result must reach the
+  // handler-failure path, not leave a half-written response.
+  const payload = JSON.stringify({ type: 'server-response', rpcId, result: frameRetryResult(result) })
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(payload)
+}
+
+/**
+ * Decode and serve one channel endpoint.
+ * @param {object} desk - the desk from {@link createRetryDesk}.
+ * @param {string} endpoint - `state` or `decide`.
+ * @param {unknown} payload - the decoded `payload` member of the envelope.
+ * @returns {object} a `{ ok: true, value }` or `{ ok: false, error }` result.
+ */
+function handleRetryRequest(desk, endpoint, payload) {
+  if (!isRetryRecord(payload)) return retryBadRequest('payload must be a JSON object')
+  const sessionId = payload.sessionId
+  if (typeof sessionId !== 'string' || sessionId.length === 0
+    || sessionId.length > RETRY_MAX_SESSION_ID_LENGTH) {
+    return retryBadRequest('payload.sessionId must be a non-empty string')
+  }
+  if (endpoint === 'state') return { ok: true, value: desk.stateFor(sessionId) }
+  const nonce = payload.nonce
+  if (typeof nonce !== 'string' || nonce.length === 0 || nonce.length > 128) {
+    return retryBadRequest('payload.nonce must be a non-empty string')
+  }
+  const decision = payload.decision
+  if (decision !== 'retry' && decision !== 'dismiss') {
+    return retryBadRequest('payload.decision must be "retry" or "dismiss"')
+  }
+  const outcome = desk.decide(sessionId, nonce, decision)
+  if (outcome.accepted !== true) {
+    return retryFailure('stale', 'this retry prompt is no longer pending')
+  }
+  return { ok: true, value: { accepted: true } }
+}
+
+/**
+ * Mount the manual-retry channel as an authenticated Web route.
+ *
+ * `ctx.connection.rpc.handle()` is deliberately not used: on Cordis
+ * 4.0.0-rc.11 the Connection provider resolves `webServer` through its own
+ * def-site inject list, so that call is refused even though this plugin injects
+ * `webServer` (the same limitation `dsh-backend-restart` records). Mounting on
+ * this plugin's own fiber keeps `webServer` resolution here and reproduces
+ * Connection's channel adapter before dispatch: its Host/Origin fence and
+ * browser authentication first, then the request guards (POST only,
+ * channel-relative endpoint, JSON media type, bounded body), the
+ * `client-request` envelope parse, and the `server-response` framing.
+ *
+ * @param {object} ctx - a context that injects `connection` and `webServer`.
+ * @param {object} desk - the desk from {@link createRetryDesk}.
+ * @returns {() => void} the route disposer, owned by the caller's effect.
+ */
+function registerRetryChannel(ctx, desk) {
+  const webServer = ctx.webServer ?? ctx.get?.('webServer')
+  const connection = ctx.connection ?? ctx.get?.('connection')
+  if (webServer === undefined || typeof webServer.register !== 'function'
+    || connection === undefined || typeof connection.requestRejection !== 'function') {
+    warn(ctx, `${name}: the manual-retry channel needs the connection and webServer services; it stays unmounted`)
+    return () => {}
+  }
+  const dispose = webServer.register({
+    kind: 'prefix',
+    path: RETRY_CHANNEL,
+    handler: async (req, res) => {
+      // Connection's fence owns trust and browser authentication; it answers
+      // before any method, body, or envelope decision, as its own adapter does.
+      const rejection = connection.requestRejection(req)
+      if (rejection !== undefined) {
+        res.writeHead(rejection)
+        res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+        return
+      }
+      const endpoint = retryEndpointOf(req.url)
+      if (endpoint === undefined) {
+        res.writeHead(404)
+        res.end('not found')
+        return
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(405, { allow: 'POST' })
+        res.end('method must be POST')
+        return
+      }
+      const mediaType = typeof req.headers['content-type'] === 'string'
+        ? req.headers['content-type'].split(';', 1)[0].trim().toLowerCase()
+        : undefined
+      if (mediaType !== 'application/json') {
+        res.writeHead(415)
+        res.end('content type must be application/json')
+        return
+      }
+      let text
+      try {
+        text = await readRetryBody(req)
+      } catch {
+        res.writeHead(400)
+        res.end('body is not JSON')
+        return
+      }
+      if (text === undefined) {
+        // Connection's bridge bounds every buffered body; this channel carries
+        // two short strings, so its ceiling is far below the shared one.
+        res.writeHead(413, { connection: 'close' })
+        res.end()
+        req.destroy()
+        return
+      }
+      let body
+      try {
+        body = JSON.parse(text)
+      } catch {
+        res.writeHead(400)
+        res.end('body is not JSON')
+        return
+      }
+      // Connection's client-request schema: a JSON object with the message
+      // literal, a string id, a string method, and a present (any-valued)
+      // payload. Unknown keys are stripped by that schema, so they are ignored.
+      if (!isRetryRecord(body) || body.type !== 'client-request' || typeof body.rpcId !== 'string'
+        || typeof body.method !== 'string' || !Object.hasOwn(body, 'payload')) {
+        const rpcId = isRetryRecord(body) && typeof body.rpcId === 'string' ? body.rpcId : RETRY_INVALID_RPC_ID
+        sendRetryEnvelope(res, rpcId, retryBadRequest('invalid client-request message'))
+        return
+      }
+      if (body.method !== endpoint) {
+        sendRetryEnvelope(res, body.rpcId, retryBadRequest(
+          `method ${JSON.stringify(body.method)} does not match endpoint ${JSON.stringify(endpoint)}`))
+        return
+      }
+      try {
+        sendRetryEnvelope(res, body.rpcId, handleRetryRequest(desk, endpoint, body.payload))
+      } catch (error) {
+        res.writeHead(500)
+        res.end(`handler failure: ${String(error)}`)
+      }
+    },
+  })
+  return () => { void dispose() }
+}
+
 /**
  * Apply the host half.
  *
- * Two independent jobs:
+ * Three independent jobs:
  *
  * 1. The bundle ships its own settings page, so suppress the auto-generated
  *    generic config form for this same row; otherwise one namespace renders two
@@ -986,6 +1565,11 @@ function installFetchTimeouts(ctx, config) {
  *    the disposer that restores the previous dispatcher is owned by this row's
  *    fiber. With both settings unset — the shipped default — nothing is
  *    installed and the Host's dispatcher is untouched.
+ * 3. Offer the manual same-turn retry (see {@link createRetryDesk}): the
+ *    waterfall listener is fiber-owned, and the authenticated decision route
+ *    mounts only where the Host serves `connection` and `webServer`. A headless
+ *    Host therefore still boots and never parks a turn for a page that cannot
+ *    exist.
  *
  * The page itself edits provider rows through the settings form API, and the
  * host half stores no projection state.
@@ -1018,5 +1602,54 @@ export function apply(ctx, config = {}) {
     // A context without lifecycle effects (the offline doubles) still gets the
     // side effect; it just has no fiber to dispose it.
     install()
+  }
+
+  // Manual same-turn retry. The desk lives exactly as long as this activation:
+  // its disposer declines every parked prompt, so disposing the plugin can
+  // never leave a turn waiting for a page that will never answer.
+  const desk = createRetryDesk()
+
+  /**
+   * Register the `agent/request-error` listener on this fiber.
+   * @returns {() => void} the disposer: detach the listener, then settle the desk.
+   */
+  const mountRetryListener = () => {
+    if (typeof ctx.on !== 'function') return () => {}
+    let detach
+    try {
+      detach = ctx.on('agent/request-error', (payload, next) => retryOrPrompt(desk, payload, next))
+    } catch (error) {
+      warn(ctx, `${name}: the manual-retry listener could not be registered: ${errorMessage(error)}`)
+      return () => {}
+    }
+    return () => {
+      try {
+        if (typeof detach === 'function') detach()
+      } catch {
+        // A fiber-scoped disposer may already have run.
+      }
+      desk.settleAll()
+    }
+  }
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(mountRetryListener, `${name}: manual-retry listener`)
+  } else {
+    // Offline doubles without fiber effects still get the listener.
+    mountRetryListener()
+  }
+
+  // The decision route needs the browser-facing services. A headless Host has
+  // no page to answer, so this callback simply never runs there and the plugin
+  // still boots; the listener above stays quiet because `shouldOffer` needs a
+  // recent `state` poll from that same page.
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['connection', 'webServer'], child => child.effect(() => {
+      try {
+        return registerRetryChannel(child, desk)
+      } catch (error) {
+        warn(ctx, `${name}: the manual-retry channel could not be mounted: ${errorMessage(error)}`)
+        return () => {}
+      }
+    }, `${name}: manual-retry channel`))
   }
 }

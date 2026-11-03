@@ -21,6 +21,12 @@
  * pins the element tree and the exact write shapes, not a real browser render.
  * The missing-`undici` degradation runs in a child process, because the host
  * half caches its resolution for the lifetime of the module.
+ *
+ * The manual same-turn retry is exercised entirely in memory: the
+ * `agent/request-error` listener against synthetic waterfall payloads, the
+ * plugin-owned decision route against fake `node:http` req/res objects, and the
+ * dock against a fake session store plus fake timers. No live Host, browser,
+ * turn, or socket is involved.
  */
 
 import assert from 'node:assert/strict'
@@ -172,6 +178,7 @@ function createReactStub() {
     return {
       get tree() { return inst.tree },
       rerender: render,
+      updateProps: next => { inst.props = next; render() },
       unmount: () => {
         if (inst.active !== undefined) inst.active.unsubscribe()
         for (const entry of inst.effectState.values()) {
@@ -524,7 +531,7 @@ function deviationForms(deviations = {}) {
  *   or `'none'`), and `remoteImpl` (an explicit `llm` service double).
  * @returns the context double plus its recording state.
  */
-function fakeContext({ forms = makeForms(), registered = REGISTERED, configurable = CONFIGURABLE, remote = 'dotted', remoteImpl } = {}) {
+function fakeContext({ forms = makeForms(), registered = REGISTERED, configurable = CONFIGURABLE, remote = 'dotted', remoteImpl, connection } = {}) {
   const state = {
     dictionaries: [], registered: [], effects: [], injections: [], serviceReads: [], formRequests: [],
   }
@@ -537,6 +544,7 @@ function fakeContext({ forms = makeForms(), registered = REGISTERED, configurabl
     state,
     get(name) {
       state.serviceReads.push(name)
+      if (name === 'connection') return connection
       if (name !== 'remote.llm') return undefined
       if (remote === 'throwing') throw new Error('cannot get property "remote.llm" without inject')
       return remote === 'dotted' ? llm : undefined
@@ -573,6 +581,52 @@ function fakeContext({ forms = makeForms(), registered = REGISTERED, configurabl
 
 /* ══ fixture load and the client vm realm ══════════════════════════════════ */
 
+/**
+ * A deterministic fake-timer set for the client vm realm. The manual-retry
+ * dock polls every 2000 ms, so its loop is driven by advancing this clock
+ * instead of waiting on real timers.
+ * @returns the timer functions plus `advance(ms)`, `flush()`, `pending()`, `now()`.
+ */
+function createTimerDouble() {
+  let now = 1_000_000
+  let nextId = 1
+  const timers = new Map()
+  const setTimeout = (callback, ms, ...args) => {
+    const id = nextId
+    nextId += 1
+    timers.set(id, { callback, args, at: now + Math.max(0, Number(ms) || 0), order: id })
+    return id
+  }
+  const clearTimeout = id => { timers.delete(id) }
+  const pending = () => timers.size
+  const drainMicrotasks = () => new Promise(resolve => { setImmediate(resolve) })
+  const runDue = async () => {
+    for (;;) {
+      let due
+      for (const [id, entry] of timers) {
+        if (entry.at > now) continue
+        if (due === undefined || entry.at < due.entry.at || (entry.at === due.entry.at && entry.order < due.entry.order)) {
+          due = { id, entry }
+        }
+      }
+      if (due === undefined) return
+      timers.delete(due.id)
+      due.entry.callback(...due.entry.args)
+      await drainMicrotasks()
+    }
+  }
+  return {
+    setTimeout,
+    clearTimeout,
+    pending,
+    now: () => now,
+    async advance(ms) { now += ms; await runDue() },
+    async flush() { await drainMicrotasks() },
+  }
+}
+
+const vmTimers = createTimerDouble()
+
 const manifest = readJson('package.json')
 const patch = read('cordis.patch.yml')
 const clientSource = read('client.js')
@@ -586,6 +640,9 @@ const requested = []
 const clientVm = createContext({
   window: { __ModuleLoader__: { load: options => { captured = options } } },
   console,
+  setTimeout: vmTimers.setTimeout,
+  clearTimeout: vmTimers.clearTimeout,
+  AbortController,
 })
 runInContext(clientSource, clientVm, { filename: 'client.js' })
 const clientPlugin = captured.factory(specifier => {
@@ -602,18 +659,59 @@ const COPY = (() => {
 })()
 const EN = COPY.en
 
+/** One named slot registration from a fake client context. */
+function registrationByName(ctx, name) {
+  const found = ctx.state.registered.find(entry => entry.options?.name === name)
+  assert.ok(
+    found !== undefined,
+    `the client registered no ${name} slot (registrations: ${JSON.stringify(ctx.state.registered.map(entry => entry.options?.name))})`,
+  )
+  return found
+}
+
+/** The manual-retry dock registration (registered BEFORE the settings guard). */
+const dockRegistration = ctx => registrationByName(ctx, 'conversation.input.dock')
+
+/** The tuning settings section registration. */
+const settingsRegistration = ctx => registrationByName(ctx, 'settings.section')
+
 /**
- * Mount the real section against a fresh form set.
+ * Mount the real settings section against a fresh form set. The dock is
+ * registered first on purpose, so the section is selected BY NAME.
  * @param options - passed through to {@link fakeContext}.
  * @returns the context, registration, injected face, and mounted page.
  */
 function mountPage(options = {}) {
   const ctx = fakeContext(options)
   clientPlugin.apply(ctx)
-  const registration = ctx.state.registered[0]
+  const registration = settingsRegistration(ctx)
   const face = registration.options.inject()
   const page = react.mount(registration.component, face)
   return { ctx, registration, face, page }
+}
+
+/**
+ * Mount the manual-retry dock with one fake session and the injected route
+ * caller.
+ * @param options - `running` (session state), `connection` (rpc double),
+ *   `sessionId`, and `props` (extra slot props).
+ * @returns the context, registration, session double, and mounted dock.
+ */
+function mountDock({ running = true, connection, sessionId = 'sess-main', props: extraProps = {} } = {}) {
+  const ctx = fakeContext({ connection })
+  clientPlugin.apply(ctx)
+  const registration = dockRegistration(ctx)
+  const face = registration.options.inject()
+  const session = sessionDouble(running)
+  const props = {
+    sessionId,
+    useSession: session.useSession,
+    t: ctx.locale.bind('llm-api-call-tuning'),
+    ...face,
+    ...extraProps,
+  }
+  const page = react.mount(registration.component, props)
+  return { ctx, registration, session, page, props }
 }
 
 /**
@@ -653,7 +751,9 @@ await check('the manifest declares the frozen identity, bundle patch, engines, a
   assert.deepEqual(
     [...manifest.dsh.client.inject],
     [
+      '@deepseek-ai/dsh-client-connection',
       '@deepseek-ai/dsh-client-locale',
+      '@deepseek-ai/dsh-client-ui-conversation',
       '@deepseek-ai/dsh-client-ui-settings',
       '@deepseek-ai/dsh-client-ui-settings-general',
       '@deepseek-ai/dsh-api-remotes',
@@ -745,6 +845,7 @@ await check('the host half has no default export and exposes only the frozen nam
     Object.keys(host).sort(),
     [
       'Config', 'DEFAULT_FETCH', 'DEFAULT_TUNE', 'FETCH_KEYS', 'FETCH_OPTIONS',
+      'OFFERED_RETRYABLE_CODES',
       'PROVIDER_TIMEOUT_FIELDS', 'PROVIDER_TIMEOUT_KEYS', 'PROVIDER_TIMEOUT_OPTIONS',
       'RETRYABLE_CODES', 'RETRY_MODES', 'TUNE_KEYS', 'TUNE_OPTIONS', 'TUNE_PROBLEMS',
       'apply', 'name', 'schemaLibrary', 'validateTune',
@@ -800,6 +901,26 @@ await check('RETRY_MODES, RETRYABLE_CODES, and TUNE_PROBLEMS are frozen and exac
     jitterRatio: 'jitterRatio',
     retryableCodes: 'retryableCodes',
   }, 'TUNE_PROBLEMS drifted')
+})
+
+await check('OFFERED_RETRYABLE_CODES is the frozen ten-code superset, and the default constant stays exactly the five', () => {
+  assert.equal(Object.isFrozen(host.OFFERED_RETRYABLE_CODES), true, 'OFFERED_RETRYABLE_CODES must stay frozen')
+  assert.deepEqual(plain(host.OFFERED_RETRYABLE_CODES), [
+    'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT',
+    'STREAM_CLOSED', 'MALFORMED_RESPONSE', 'PI_AI_ERROR', 'HTTP_408', 'HTTP_409',
+  ], `OFFERED_RETRYABLE_CODES drifted: ${JSON.stringify(plain(host.OFFERED_RETRYABLE_CODES))}`)
+  assert.equal(host.OFFERED_RETRYABLE_CODES.length, host.RETRYABLE_CODES.length + 5, 'exactly five opt-in extras must be offered')
+  assert.deepEqual(
+    [...host.OFFERED_RETRYABLE_CODES.slice(0, host.RETRYABLE_CODES.length)],
+    [...host.RETRYABLE_CODES],
+    'the offered list must LEAD with the frozen five defaults, in order',
+  )
+  assert.deepEqual(plain(host.RETRYABLE_CODES), ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'], 'RETRYABLE_CODES (the default) must stay exactly the five upstream codes')
+  assert.deepEqual(plain(host.DEFAULT_TUNE.retryableCodes), [...host.RETRYABLE_CODES], 'DEFAULT_TUNE.retryableCodes must stay the five defaults, never the offered ten')
+  const offered = new Set(host.OFFERED_RETRYABLE_CODES)
+  for (const defaultCode of host.RETRYABLE_CODES) {
+    assert.equal(offered.has(defaultCode), true, `the offered set lost the default code ${defaultCode}`)
+  }
 })
 
 await check('FETCH_KEYS, DEFAULT_FETCH, and FETCH_OPTIONS are frozen and exact', () => {
@@ -924,7 +1045,7 @@ await check('the loader id, host name, section id, locale NS, and dictionary NS 
 function clientPluginApplyRegistration() {
   const ctx = fakeContext()
   clientPlugin.apply(ctx)
-  return ctx.state.registered[0]?.options
+  return settingsRegistration(ctx).options
 }
 
 /* ══ 3. upstream drift: the real DSH sources ═══════════════════════════════ */
@@ -1165,6 +1286,18 @@ await check('the schema accepts every valid shape, including mode always and the
   }
 })
 
+await check('Config accepts every offered code, refuses non-offered codes, and keeps the five-code default', () => {
+  for (const code of host.OFFERED_RETRYABLE_CODES) {
+    assert.doesNotThrow(() => host.Config({ retryableCodes: [code] }), `Config must accept the offered code ${code}`)
+  }
+  assert.doesNotThrow(() => host.Config({ retryableCodes: [...host.OFFERED_RETRYABLE_CODES] }), 'Config must accept the full ten-code list')
+  assert.deepEqual(plain(host.Config.dict.retryableCodes.meta.default), [...host.RETRYABLE_CODES], 'the schema default must stay the five codes')
+  assert.deepEqual(plain(volatileValue(host.Config({}).retryableCodes)), [...host.RETRYABLE_CODES], 'Config({}) must materialize exactly the five-code default, never the offered ten')
+  for (const unknown of ['AUTH', 'CONTEXT_WINDOW_EXCEEDED', 'OVERLOADED', 'NOPE']) {
+    assert.throws(() => host.Config({ retryableCodes: [unknown] }), `Config must refuse the non-offered code ${unknown}`)
+  }
+})
+
 await check('the schema refuses a bad mode, a bad retry limit, and out-of-range delays or jitter', () => {
   for (const [label, input] of [
     ['mode often', { mode: 'often' }],
@@ -1261,6 +1394,23 @@ await check('validateTune accepts the defaults, a partial tune, and every bounda
   }
 })
 
+await check('validateTune accepts every offered code and refuses non-offered, empty, duplicate, and non-string lists', () => {
+  for (const code of host.OFFERED_RETRYABLE_CODES) {
+    assert.deepEqual([...host.validateTune({ retryableCodes: [code] })], [], `validateTune must accept the offered code ${code}`)
+  }
+  assert.deepEqual([...host.validateTune({ retryableCodes: [...host.OFFERED_RETRYABLE_CODES] })], [], 'validateTune must accept the full offered list')
+  for (const [label, codes] of [
+    ['a non-offered permanent-failure code (AUTH)', ['AUTH']],
+    ['CONTEXT_WINDOW_EXCEEDED', ['CONTEXT_WINDOW_EXCEEDED']],
+    ['OVERLOADED', ['OVERLOADED']],
+    ['an empty list', []],
+    ['a duplicate list', ['SERVER', 'SERVER']],
+    ['a non-string entry', ['SERVER', 42]],
+  ]) {
+    assert.deepEqual([...host.validateTune({ retryableCodes: codes })], ['retryableCodes'], `validateTune must refuse ${label}`)
+  }
+})
+
 await check('validateTune reports the stable per-field problem codes', () => {
   const cases = [
     ['mode', { mode: 'often' }, 'mode'],
@@ -1309,21 +1459,26 @@ await check('validateTune accumulates problems in field order, returns a frozen 
 /* ══ 6. apply(), the host half ═════════════════════════════════════════════ */
 
 /**
- * Build a fake Host context with the `settings` inject and the row fiber.
- * @param options - `configure` overrides the settings.configure body (may throw);
- *   `logger` seeds the optional logger.
+ * Build a fake Host context carrying both inject jobs and the lifecycle seats:
+ * `settings` (which the row suppression needs) plus `connection`/`webServer`
+ * (which the manual-retry channel needs), a fiber, `effect`, and `on`.
+ * @param options - `configure` overrides the settings.configure body (may
+ *   throw); `logger` seeds the optional logger; `browser` is false to mimic a
+ *   headless Host whose `connection`/`webServer` inject is never satisfied;
+ *   `lifecycle` is false to drop `effect`/`on` (the offline-double path).
  * @returns the context, the recorded calls, and the fiber.
  */
-function hostApplyContext({ configure, logger } = {}) {
-  const calls = { injects: [], effects: 0, configures: [], warnings: [] }
+function hostApplyContext({ configure, logger, browser = true, lifecycle = true, requestRejection } = {}) {
+  const calls = {
+    injects: [], ctxEffects: [], injectedEffects: [], configures: [], warnings: [],
+    listeners: [], route: undefined,
+  }
   const fiber = { __fiber: true }
-  const child = {
-    effect(callback) {
-      calls.effects += 1
-      const dispose = callback()
-      assert.equal(typeof dispose, 'function', 'the injected effect must return a disposer')
-      return dispose
-    },
+  const log = logger ?? {
+    warn(message) { calls.warnings.push(String(message)) },
+    info() {},
+  }
+  const services = {
     settings: {
       configure(presentation, owner) {
         calls.configures.push({ presentation, owner })
@@ -1331,23 +1486,69 @@ function hostApplyContext({ configure, logger } = {}) {
         return () => {}
       },
     },
+    connection: { requestRejection: typeof requestRejection === 'function' ? requestRejection : () => undefined },
+    webServer: {
+      register(registration) {
+        calls.route = { path: registration.path, kind: registration.kind, handler: registration.handler, disposed: false }
+        return () => { calls.route.disposed = true }
+      },
+    },
   }
+  const makeChild = () => ({
+    effect(callback, label) {
+      const dispose = callback()
+      assert.equal(typeof dispose, 'function', 'every injected effect must return a disposer')
+      calls.injectedEffects.push({ label, dispose })
+      return dispose
+    },
+    settings: services.settings,
+    connection: services.connection,
+    webServer: services.webServer,
+    get(service) { return services[service] },
+  })
   const ctx = {
     fiber,
-    get(service) { return service === 'logger' ? logger : undefined },
-    inject(services, callback) { calls.injects.push(services); callback(child); return child },
+    logger: log,
+    get(service) { return service === 'logger' ? log : undefined },
+    inject(servicesList, callback) {
+      calls.injects.push(servicesList)
+      // Cordis invokes the callback only when every dependency is served.
+      if (servicesList.includes('settings') || browser) callback(makeChild())
+      return makeChild()
+    },
+  }
+  if (lifecycle) {
+    ctx.effect = (callback, label) => {
+      const dispose = callback()
+      calls.ctxEffects.push({ label, dispose })
+      return dispose
+    }
+    ctx.on = (event, listener) => {
+      const entry = { event, listener }
+      calls.listeners.push(entry)
+      return () => { calls.listeners = calls.listeners.filter(candidate => candidate !== entry) }
+    }
   }
   return { ctx, calls, fiber }
 }
 
-await check('apply injects settings and suppresses the generated form with the row fiber', () => {
+await check('apply injects settings and the browser services, suppressing the generated form and mounting the retry seats', () => {
   const { ctx, calls, fiber } = hostApplyContext()
   host.apply(ctx)
-  assert.deepEqual(calls.injects, [['settings']], `apply injected ${JSON.stringify(calls.injects)}`)
-  assert.equal(calls.effects, 1, `apply mounted ${calls.effects} effects, expected one`)
+  assert.deepEqual(calls.injects, [['settings'], ['connection', 'webServer']], `apply injected ${JSON.stringify(calls.injects)}`)
+  assert.deepEqual(
+    calls.ctxEffects.map(entry => entry.label),
+    ['llm-api-call-tuning: fetch timeouts', 'llm-api-call-tuning: manual-retry listener'],
+    `the fiber-owned effects drifted: ${JSON.stringify(calls.ctxEffects.map(entry => entry.label))}`,
+  )
+  assert.equal(calls.injectedEffects.length, 2, `the injected effects drifted to ${calls.injectedEffects.length}`)
   assert.equal(calls.configures.length, 1, `settings.configure was called ${calls.configures.length} times`)
   assert.deepEqual(calls.configures[0].presentation, { auto: false }, 'the auto-generated settings form was not suppressed')
   assert.equal(calls.configures[0].owner, fiber, 'settings.configure must receive the row fiber')
+  assert.equal(calls.listeners.filter(entry => entry.event === 'agent/request-error').length, 1, 'the agent/request-error listener was not registered')
+  assert.equal(calls.route?.kind, 'prefix', 'the manual-retry channel was not mounted as a prefix route')
+  assert.equal(calls.route?.path, '/llm-api-call-tuning', `the manual-retry channel path drifted to ${String(calls.route?.path)}`)
+  assert.equal(typeof calls.route?.handler, 'function', 'the manual-retry channel has no handler')
 })
 
 await check('a configure() refusal warns and still returns a disposer; a host without a logger is tolerated', () => {
@@ -1360,15 +1561,14 @@ await check('a configure() refusal warns and still returns a disposer; a host wi
   assert.doesNotThrow(() => host.apply(bare.ctx), 'apply must not assume a logger')
 })
 
-await check('with no lifecycle effects or loader events, apply() still adds no projection and no extra inject', () => {
-  // This fake context has no `ctx.on` and no `ctx.effect`, so the second job
-  // (the fetch-timeout dispatcher) runs its reconcile inline: with both fetch
-  // values unset that is a no-op. The new listener/effect surface is pinned by
-  // the dispatcher checks below.
-  const { ctx, calls } = hostApplyContext()
-  host.apply(ctx)
-  assert.deepEqual(calls.injects, [['settings']], 'apply injected another service')
-  assert.equal(calls.effects, 1, 'apply mounted more than one injected effect')
+await check('with no lifecycle effects or loader events, apply() still boots, mounts the channel, and never throws', () => {
+  // This fake context has no `ctx.on` and no `ctx.effect`: the fetch-timeout
+  // reconcile and the listener registration run inline (the latter is a no-op
+  // without `on`), while the channel still mounts through its inject.
+  const { ctx, calls } = hostApplyContext({ lifecycle: false })
+  assert.doesNotThrow(() => host.apply(ctx), 'apply() threw without lifecycle seats')
+  assert.deepEqual(calls.injects, [['settings'], ['connection', 'webServer']], 'apply injected other services')
+  assert.equal(calls.ctxEffects.length, 0, 'an effect was mounted without a lifecycle seat')
   assert.equal(calls.configures.length, 1, 'apply configured the settings service more than once')
   assert.deepEqual(calls.warnings, [], `apply warned although both fetch values are unset: ${JSON.stringify(calls.warnings)}`)
 })
@@ -1429,11 +1629,19 @@ function fakeDispatcher() {
  *   a disposer.
  */
 function dispatcherHostContext(config = {}, fiber = undefined) {
-  const state = { warnings: [], infos: [], listeners: [], disposers: [], effectLabels: [] }
+  const state = { warnings: [], infos: [], listeners: [], disposers: [], effectLabels: [], route: undefined }
   const logger = { warn(message) { state.warnings.push(message) }, info(message) { state.infos.push(message) } }
   const child = {
     effect(callback) { const dispose = callback(); return () => { if (typeof dispose === 'function') dispose() } },
     settings: { configure() { return () => {} } },
+    connection: { requestRejection: () => undefined },
+    webServer: {
+      register(registration) {
+        state.route = { path: registration.path, kind: registration.kind, disposed: false }
+        return () => { state.route.disposed = true }
+      },
+    },
+    get(service) { return service === 'logger' ? logger : (service === 'connection' ? this.connection : undefined) },
   }
   const ctx = {
     fiber,
@@ -1475,14 +1683,16 @@ await check('apply() with both fetch values unset touches no dispatcher and stil
   try {
     run()
     assert.equal(undici.getGlobalDispatcher(), original, 'an all-unset apply() replaced the global dispatcher')
-    assert.deepEqual(state.listeners.map(entry => entry.event), ['loader/volatile-update', 'app-boot/config-reload'], 'the two reload listeners were not registered')
+    assert.deepEqual(state.listeners.map(entry => entry.event), ['loader/volatile-update', 'app-boot/config-reload', 'agent/request-error'], 'the reload listeners plus the retry listener were not registered')
     assert.equal(state.effectLabels.includes('llm-api-call-tuning: fetch timeouts'), true, `the fetch-timeout effect label drifted: ${JSON.stringify(state.effectLabels)}`)
+    assert.equal(state.effectLabels.includes('llm-api-call-tuning: manual-retry listener'), true, `the manual-retry listener effect is missing: ${JSON.stringify(state.effectLabels)}`)
+    assert.equal(state.route?.path, '/llm-api-call-tuning', 'the manual-retry channel did not mount next to the dispatcher job')
     assert.deepEqual(state.warnings, [], `apply() with both values unset warned: ${JSON.stringify(state.warnings)}`)
   } finally {
     dispose()
     undici.setGlobalDispatcher(original)
   }
-  assert.deepEqual(state.listeners, [], 'dispose() did not detach both reload listeners')
+  assert.deepEqual(state.listeners, [], 'dispose() did not detach the two reload listeners and the retry listener')
   assert.equal(undici.getGlobalDispatcher(), original, 'dispose() changed the global dispatcher although nothing was installed')
 })
 
@@ -1521,7 +1731,7 @@ await check('a live value change is re-read without reinstalling, clearing resto
     run()
     const wrapper = undici.getGlobalDispatcher()
     assert.notEqual(wrapper, previous, 'the first value did not install the wrapper')
-    assert.equal(state.listeners.length, 2, 'the reload listeners are missing')
+    assert.equal(state.listeners.length, 3, 'the reload listeners plus the retry listener are missing')
 
     await wrapper.dispatch({}, {})
     assert.deepEqual(previous.calls[0], { headersTimeout: 300 }, 'an unset body timeout must stay absent so the dispatcher default applies')
@@ -1535,7 +1745,7 @@ await check('a live value change is re-read without reinstalling, clearing resto
     fiber.config = { headersTimeoutMs: null, bodyTimeoutMs: null }
     for (const entry of [...state.listeners]) entry.listener()
     assert.equal(undici.getGlobalDispatcher(), previous, 'clearing both values did not restore the previous dispatcher')
-    assert.equal(state.listeners.length, 2, 'clearing the values detached the reload listeners (a later live save must still install)')
+    assert.equal(state.listeners.length, 3, 'clearing the values detached a listener (a later live save must still install)')
 
     fiber.config = { bodyTimeoutMs: 0 }
     for (const entry of [...state.listeners]) entry.listener()
@@ -1596,9 +1806,14 @@ const symbol = Symbol.for('undici.globalDispatcher.2')
 const before = globalThis[symbol]
 const warnings = []
 const events = []
-const child = { effect(callback) { return callback() }, settings: { configure() { return () => {} } } }
+const settingsChild = { effect(callback) { return callback() }, settings: { configure() { return () => {} } } }
+const browserChild = {
+  effect(callback) { return callback() },
+  connection: { requestRejection: () => undefined },
+  webServer: { register() { return () => {} } },
+}
 const ctx = {
-  inject(services, callback) { callback(child); return child },
+  inject(services, callback) { const child = services.includes('settings') ? settingsChild : browserChild; callback(child); return child },
   effect(callback) { return callback() },
   on(event, listener) { events.push([event, listener]); return () => {} },
   get(service) { return service === 'logger' ? { warn(message) { warnings.push(message) }, info() {} } : undefined },
@@ -1622,7 +1837,7 @@ console.log(JSON.stringify({
   assert.equal(result.threw, null, `apply() threw without undici: ${String(result.threw)}`)
   assert.equal(result.warnings.length, 1, `the missing-undici warning must run once per instance, got ${JSON.stringify(result.warnings)}`)
   assert.match(result.warnings[0], /undici could not be resolved from the Host/, `the missing-undici warning drifted: ${String(result.warnings[0])}`)
-  assert.deepEqual(result.events, ['loader/volatile-update', 'app-boot/config-reload'], 'the reload listeners were not registered without undici')
+  assert.deepEqual(result.events, ['loader/volatile-update', 'app-boot/config-reload', 'agent/request-error'], 'the reload listeners plus the retry listener were not registered without undici')
   assert.equal(result.dispatcherUnchanged, true, 'apply() changed a process-wide dispatcher although undici was unresolvable')
 })
 
@@ -2027,12 +2242,17 @@ await check('the locale metadata descriptions mention the provider timeouts in b
 
 /* ══ 8. client registration and copy ═══════════════════════════════════════ */
 
-await check('apply registers one settings.section immediately, with the frozen id, order, label, and locale', () => {
+await check('apply registers the dock FIRST, then exactly one settings.section, with the frozen ids/order/label/locale', () => {
   const loadingOwn = makeForms({ 'llm-api-call-tuning': new BoundForm('llm-api-call-tuning', loadingSnapshot) })
   const { ctx, registration } = mountPage({ forms: loadingOwn })
-  assert.deepEqual(ctx.state.injections, ['settings.section'], `slots.inject was called with ${JSON.stringify(ctx.state.injections)}`)
-  assert.equal(ctx.state.registered.length, 1, `apply registered ${ctx.state.registered.length} sections before the namespace was ready`)
-  assert.equal(registration.options.name, 'settings.section', `the slot name drifted to ${String(registration.options.name)}`)
+  assert.deepEqual(ctx.state.injections, ['conversation.input.dock', 'settings.section'], `slots.inject was called with ${JSON.stringify(ctx.state.injections)}`)
+  assert.equal(ctx.state.registered.length, 2, `apply registered ${ctx.state.registered.length} slots before the namespace was ready`)
+  const dock = dockRegistration(ctx)
+  assert.equal(dock.options.name, 'conversation.input.dock', `the dock slot name drifted to ${String(dock.options.name)}`)
+  assert.equal(dock.options.id, 'manual-retry', `the dock id drifted to ${String(dock.options.id)}`)
+  assert.equal(dock.options.order, 20, `the dock order drifted to ${String(dock.options.order)}`)
+  assert.equal(dock.options.locale, 'llm-api-call-tuning', `the dock locale NS drifted to ${String(dock.options.locale)}`)
+  assert.equal(registration.options.name, 'settings.section', `the settings slot name drifted to ${String(registration.options.name)}`)
   assert.equal(registration.options.id, 'llm-api-call-tuning', `the section id drifted to ${String(registration.options.id)}`)
   assert.equal(registration.options.order, 45, `the section order drifted to ${String(registration.options.order)}`)
   assert.equal(typeof registration.options.label, 'function', 'the section label must be a thunk: a plain string would not follow the locale revision')
@@ -2043,11 +2263,11 @@ await check('apply registers one settings.section immediately, with the frozen i
   assert.equal(ctx.state.dictionaries[0].ns, 'llm-api-call-tuning', 'the dictionary NS drifted')
 })
 
-await check('the en and zh dictionaries carry the same 120-key set and every statically referenced key resolves', () => {
+await check('the en and zh dictionaries carry the same 131-key set and every statically referenced key resolves', () => {
   const en = COPY.en
   const zh = COPY.zh
   assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key SETS')
-  assert.equal(Object.keys(en).length, 120, `the per-language dictionary key count drifted to ${Object.keys(en).length}`)
+  assert.equal(Object.keys(en).length, 131, `the per-language dictionary key count drifted to ${Object.keys(en).length}`)
   /* Static audit: every key the client can hand to its translate helper must
    * resolve in BOTH languages. Three sources are unioned so a new call site
    * cannot slip through:
@@ -2062,7 +2282,7 @@ await check('the en and zh dictionaries carry the same 120-key set and every sta
   const ALL_FIELD_KEYS = [...RETRY_NUMERIC_KEYS, ...FETCH_KEY_NAMES, ...TIMEOUT_KEY_NAMES]
   const templateFamilies = [
     { template: 'mode.${mode}', values: ['normal', 'always'] },
-    { template: 'code.${code}', values: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'] },
+    { template: 'code.${code}', values: [...host.OFFERED_RETRYABLE_CODES] },
     { template: 'field.${field.key}.label', values: ALL_FIELD_KEYS },
     { template: 'field.${field.key}.unit', values: [...RETRY_NUMERIC_KEYS, ...FETCH_KEY_NAMES] },
     { template: 'field.${field.key}.description', values: ALL_FIELD_KEYS },
@@ -2085,11 +2305,11 @@ await check('the en and zh dictionaries carry the same 120-key set and every sta
       referenced.add(family.template.replace(/\$\{[^}]+\}/, value))
     }
   }
-  const allowed = new Set(['remote.llm', 'settings.section'])
+  const allowed = new Set(['remote.llm', 'settings.section', 'conversation.input.dock'])
   for (const match of clientSource.matchAll(/'([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9_]+)+)'/g)) {
     if (!allowed.has(match[1])) referenced.add(match[1])
   }
-  assert.equal(referenced.size, 120, `the static reference set drifted to ${referenced.size} keys; update the audit when the page gains a call site`)
+  assert.equal(referenced.size, 131, `the static reference set drifted to ${referenced.size} keys; update the audit when the page gains a call site`)
   const missing = [...referenced].filter(key => typeof en[key] !== 'string' || typeof zh[key] !== 'string').sort()
   assert.deepEqual(missing, [], `the client references dictionary keys missing from en/zh: ${JSON.stringify(missing)}`)
   /* Copy quality: English carries no CJK; every value in both languages is a
@@ -2120,6 +2340,7 @@ await check('the en and zh dictionaries carry the same 120-key set and every sta
     'field.maxDelayMs.label', 'field.jitterRatio.label', 'field.retryableCodes.label',
     'mode.normal', 'mode.always',
     'code.EMPTY_RESPONSE', 'code.RATE_LIMIT', 'code.SERVER', 'code.TIMEOUT', 'code.TRANSPORT',
+    'code.STREAM_CLOSED', 'code.MALFORMED_RESPONSE', 'code.PI_AI_ERROR', 'code.HTTP_408', 'code.HTTP_409',
     'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved', 'status.reset',
     'status.routeReset', 'status.fetchReset', 'error.refused', 'error.managed',
     'fetch.heading', 'fetch.description', 'fetch.reset', 'fetch.resetting', 'fetch.placeholder',
@@ -2129,6 +2350,8 @@ await check('the en and zh dictionaries carry the same 120-key set and every sta
     'field.streamIdleTimeoutMs.label', 'field.timeoutMs.label', 'field.filesApiTimeoutMs.label',
     'error.streamIdleTimeoutMs', 'error.timeoutMs', 'error.filesApiTimeoutMs',
     'apply.outcome.saved', 'apply.outcome.refused', 'apply.outcome.managed', 'apply.outcome.skipped',
+    'manualRetry.aria', 'manualRetry.title', 'manualRetry.retry', 'manualRetry.dismiss',
+    'manualRetry.attempt', 'manualRetry.expired',
   ]) {
     assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing the key "${key}"`)
     assert.ok(typeof zh[key] === 'string' && zh[key].length > 0, `zh is missing the key "${key}"`)
@@ -2144,7 +2367,7 @@ await check('the injected face carries exactly the four members, and the page ig
   assert.equal(typeof face.t, 'function', 'the face has no translate function')
   const ctx = fakeContext()
   clientPlugin.apply(ctx)
-  const registration = ctx.state.registered[0]
+  const registration = settingsRegistration(ctx)
   const injected = registration.options.inject()
   assert.doesNotThrow(
     () => react.mount(registration.component, { ...injected, close: () => { throw new Error('close must not be called') } }),
@@ -2152,11 +2375,12 @@ await check('the injected face carries exactly the four members, and the page ig
   )
 })
 
-await check('a direct apply() without ctx.configForms registers no page (belt-and-braces; real compositions park the fiber first)', () => {
+await check('a direct apply() without ctx.configForms registers the dock but no settings page (belt-and-braces; real compositions park the fiber first)', () => {
   const ctx = fakeContext()
   Object.defineProperty(ctx, 'configForms', { value: undefined })
   assert.doesNotThrow(() => clientPlugin.apply(ctx), 'apply threw without configForms')
-  assert.equal(ctx.state.registered.length, 0, 'a section was registered without configForms')
+  assert.equal(ctx.state.registered.filter(entry => entry.options?.name === 'settings.section').length, 0, 'a settings.section was registered without configForms')
+  assert.equal(ctx.state.registered.filter(entry => entry.options?.name === 'conversation.input.dock').length, 1, 'the dock must register even without configForms')
   assert.equal(ctx.state.dictionaries.length, 1, 'the dictionaries should still be registered')
 })
 
@@ -2184,7 +2408,8 @@ await check('the page renders ONE global card (retries + fetch timeouts) and ONE
   )
   assert.equal(modeSelect(global).props.value, 'normal', 'the global mode is not seeded from the snapshot')
   assert.deepEqual(retryInputs(global).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'the global retry controls are not seeded from the defaults')
-  assert.deepEqual(codeCheckboxes(global).map(box => box.props.checked), [true, true, true, true, true], 'not every default retryable code is checked')
+  assert.equal(codeCheckboxes(global).length, host.OFFERED_RETRYABLE_CODES.length, `the global card rendered ${codeCheckboxes(global).length} code checkboxes, expected one per offered code`)
+  assert.deepEqual(codeCheckboxes(global).map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], 'the global card must check exactly the five defaults and leave the five opt-in codes unchecked')
   assert.deepEqual(fetchInputs(global).map(input => input.props.value), ['', ''], 'the shipped fetch draft must be empty (unset), never a seeded timer')
   assert.deepEqual(
     fetchInputs(global).map(input => input.props.placeholder),
@@ -2204,6 +2429,31 @@ await check('the page renders ONE global card (retries + fetch timeouts) and ONE
     ['llm-api-call-tuning', 'llm-deepseek-account', 'llm-deepseek', 'llm-pi-ai'],
     `apply/mount requested forms ${JSON.stringify(ctx.state.formRequests)}`,
   )
+})
+
+await check('the default retryable-code state is exactly the five CHECKED and the five opt-in codes UNCHECKED', async () => {
+  const base = mountPage()
+  await flush()
+  const global = codeCheckboxes(globalCard(base.page))
+  assert.equal(global.length, host.OFFERED_RETRYABLE_CODES.length, `the global card rendered ${global.length} code checkboxes, expected one per offered code`)
+  assert.deepEqual(global.map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], 'the global default must check the five and leave the five opt-in codes unchecked')
+  base.page.unmount()
+
+  const forms = deviationForms({
+    deepseek: { value: { retryPolicy: { mode: 'normal', maxRetries: 7 } }, user: { retryPolicy: { maxRetries: 7 } } },
+  })
+  const route = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(route.page, 'deepseek-official')
+  const boxes = codeCheckboxes(card.tree)
+  assert.equal(boxes.length, host.OFFERED_RETRYABLE_CODES.length, `a default route rendered ${boxes.length} code checkboxes, expected one per offered code`)
+  assert.deepEqual(boxes.map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], 'a default/untouched route must check exactly the five defaults and NEVER the five opt-in codes')
+  const routeText = renderedText(card.tree)
+  for (const code of host.OFFERED_RETRYABLE_CODES) {
+    assert.ok(routeText.includes(EN[`code.${code}`]), `the rendered card is missing the dictionary label for ${code}`)
+  }
+  card.unmount()
+  route.page.unmount()
 })
 
 await check('the old separate "global defaults", "provider retry policies", "provider timeouts", and "fetch timeouts" cards are GONE', async () => {
@@ -2255,7 +2505,8 @@ await check('the ONE add-selector sits ABOVE the list, excludes listed routes, a
 
   const card = mountRouteCard(page, 'openrouter')
   assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['2', '250', '5000', '0.2'], 'the merged card is not seeded from the effective retry policy')
-  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [false, true, false, false, false], 'the merged card did not select the stored RATE_LIMIT code')
+  assert.equal(codeCheckboxes(card.tree).length, host.OFFERED_RETRYABLE_CODES.length, `the merged card rendered ${codeCheckboxes(card.tree).length} code checkboxes, expected one per offered code`)
+  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [false, true, false, false, false, false, false, false, false, false], 'the merged card did not select the stored RATE_LIMIT code, or it checked an opt-in code by default')
   assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.value), ['', ''], 'an untouched timeout half must start blank')
   assert.deepEqual(
     findAll(card.tree, node => node.type === 'h5').map(node => directText(node)),
@@ -2432,7 +2683,7 @@ await check('the merged cards render in the joined rank order, seeded from each 
   )
   const official = mountRouteCard(page, 'deepseek-official')
   assert.deepEqual(retryInputs(official.tree).map(input => input.props.value), ['3', '500', '10000', '0.1'], 'the DeepSeek card is not seeded from its policy')
-  assert.deepEqual(codeCheckboxes(official.tree).map(box => box.props.checked), [true, true, true, true, true], 'the absent code list did not fall back to the code defaults')
+  assert.deepEqual(codeCheckboxes(official.tree).map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], 'an absent stored code list must fall back to exactly the five defaults, never the offered ten')
   assert.ok(renderedText(official.tree).includes(EN['provider.source.override']), 'a stored retryPolicy did not paint the override badge')
   official.unmount()
   const account = mountRouteCard(page, 'deepseek-account')
@@ -2442,8 +2693,37 @@ await check('the merged cards render in the joined rank order, seeded from each 
   account.unmount()
   const openrouter = mountRouteCard(page, 'openrouter')
   assert.deepEqual(retryInputs(openrouter.tree).map(input => input.props.value), ['2', '250', '5000', '0.2'], 'the pi-ai card is not seeded from its effective policy')
-  assert.deepEqual(codeCheckboxes(openrouter.tree).map(box => box.props.checked), [false, true, false, false, false], 'the pi-ai code list drifted')
+  assert.deepEqual(codeCheckboxes(openrouter.tree).map(box => box.props.checked), [false, true, false, false, false, false, false, false, false, false], 'the pi-ai code list drifted or an opt-in code was checked')
   openrouter.unmount()
+})
+
+await check('normalizeCodes fallbacks stay the five defaults: empty/unknown stored lists render five checked, a stored opt-in code round-trips', async () => {
+  for (const [label, codes] of [
+    ['an empty stored list', []],
+    ['an all-unknown stored list', ['AUTH', 'OVERLOADED']],
+    ['a non-array stored list', 'SERVER'],
+  ]) {
+    const forms = deviationForms({
+      openrouter: { value: { retryPolicy: { mode: 'normal', maxRetries: 7, retryableCodes: codes } }, user: { retryPolicy: { maxRetries: 7 } } },
+    })
+    const { page } = mountPage({ forms })
+    await flush()
+    const card = mountRouteCard(page, 'openrouter')
+    assert.equal(codeCheckboxes(card.tree).length, host.OFFERED_RETRYABLE_CODES.length, `${label}: the offered checkbox count drifted`)
+    assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], `${label} must fall back to exactly the five defaults, never the offered ten`)
+    card.unmount()
+    page.unmount()
+  }
+
+  const stored = deviationForms({
+    openrouter: { value: { retryPolicy: { mode: 'normal', maxRetries: 7, retryableCodes: ['STREAM_CLOSED'] } }, user: { retryPolicy: { maxRetries: 7 } } },
+  })
+  const { page } = mountPage({ forms: stored })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [false, false, false, false, false, true, false, false, false, false], 'a stored opt-in code must render round-tripped, neither discarded nor expanded')
+  card.unmount()
+  page.unmount()
 })
 
 await check('each merged card names its namespace, its route, and the effective protocol (catalog default when the snapshot has none)', async () => {
@@ -2577,6 +2857,8 @@ await check('the global Save writes the six retry defaults AND the two fetch lea
     { op: 'set', path: ['headersTimeoutMs'], value: 0 },
     { op: 'set', path: ['bodyTimeoutMs'], value: 1800000 },
   ], 'the merged global save ops drifted')
+  const codesOp = plain(own.calls[0].ops).find(op => op.path.join('.') === 'retryableCodes')
+  assert.deepEqual(codesOp.value, [...host.RETRYABLE_CODES], 'the global Save must still write exactly the five default codes, byte-for-byte, never the offered ten')
   for (const ns of ['llm-deepseek', 'llm-deepseek-account', 'llm-pi-ai']) {
     assert.equal(ctx.configForms.get(ns).calls.length, 0, `the global Save wrote the provider namespace ${ns}`)
   }
@@ -2676,6 +2958,10 @@ await check('Apply defaults writes every editable provider once, at its own revi
   assert.deepEqual(plain(ctx.configForms.get('llm-deepseek').calls[0].ops).map(op => op.path.join('.')), retryLeaves(''), 'the DeepSeek apply ops drifted')
   assert.deepEqual(plain(ctx.configForms.get('llm-deepseek-account').calls[0].ops).map(op => op.path.join('.')), retryLeaves(''), 'the DeepSeek Account apply ops drifted')
   assert.deepEqual(plain(ctx.configForms.get('llm-pi-ai').calls[0].ops).map(op => op.path.join('.')), retryLeaves('providers.openrouter.'), 'the pi-ai apply ops drifted')
+  for (const [ns, base] of [['llm-deepseek', ''], ['llm-deepseek-account', ''], ['llm-pi-ai', 'providers.openrouter.']]) {
+    const codesOp = plain(ctx.configForms.get(ns).calls[0].ops).find(op => op.path.join('.') === `${base}retryPolicy.retryableCodes`)
+    assert.deepEqual(codesOp.value, [...host.RETRYABLE_CODES], `${ns}: Apply defaults must project exactly the five default codes, never the ten offered`)
+  }
   const text = renderedText(page.tree)
   for (const displayName of ['DeepSeek Account', 'DeepSeek', 'OpenRouter']) {
     assert.ok(text.includes(`${displayName}: ${EN['apply.outcome.saved']}`), `the section summary is missing "${displayName}: ${EN['apply.outcome.saved']}"`)
@@ -2757,17 +3043,66 @@ await check('a merged route Save writes the changed retry AND timeout leaves und
   const form = ctx.configForms.get('llm-pi-ai')
   assert.equal(form.calls.length, 1, `expected one merged route write, got ${form.calls.length}`)
   assert.equal(form.calls[0].revision, 4, `the merged route write was fenced at ${form.calls[0].revision}`)
+  /* Only the leaves the user TOUCHED are written: the edited retry limit and
+   * the two timeout fields. The untouched mode/codes/backoff leaves produce no
+   * op at all, which is what keeps the opt-in codes inert. */
   assertOps(form.calls[0].ops, [
-    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy', 'mode'] },
     { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 7 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'], value: ['RATE_LIMIT'] },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'initialDelayMs'], value: 250 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'maxDelayMs'], value: 5000 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'jitterRatio'], value: 0.2 },
     { op: 'set', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'], value: 450000 },
     { op: 'set', path: ['providers', 'openrouter', 'timeoutMs'], value: 900000 },
-  ], 'the merged route save ops drifted')
+  ], 'the merged route save must write only the touched leaves')
+  assert.equal(plain(form.calls[0].ops).some(op => op.path.join('.').includes('retryableCodes')), false, 'an untouched retryable-code list must produce no op')
   assert.ok(!JSON.stringify(plain(form.calls[0].ops)).includes('"retryPolicy":{"mode"'), 'a whole retryPolicy object was set')
+  card.unmount()
+})
+
+await check('a retry Save writes ONLY leaves the user touched: editing maxRetries emits no retryableCodes/mode/backoff op', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 7 },
+  ], 'touching one retry leaf must write only that leaf')
+  card.unmount()
+
+  /* A stored five-code list round-trips identically: saving another leaf never
+   * emits a retryableCodes op, and no opt-in code becomes checked. */
+  const stored = deviationForms({
+    openrouter: {
+      value: { retryPolicy: { mode: 'normal', maxRetries: 7, retryableCodes: [...host.RETRYABLE_CODES] } },
+      user: { retryPolicy: { maxRetries: 7, retryableCodes: [...host.RETRYABLE_CODES] } },
+    },
+  })
+  const storedPage = mountPage({ forms: stored })
+  await flush()
+  const storedCard = mountRouteCard(storedPage.page, 'openrouter')
+  assert.deepEqual(codeCheckboxes(storedCard.tree).map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], 'a stored five-code policy did not render identically')
+  setRetryInput(storedCard.tree, 0, '8')
+  buttonWithText(storedCard.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(storedPage.ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 8 },
+  ], 'a stored five-code list must round-trip with no retryableCodes op')
+  storedCard.unmount()
+  storedPage.page.unmount()
+})
+
+await check('ticking ONE opt-in code writes exactly that code leaf and never enables the others', async () => {
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  assert.equal(codeCheckboxes(card.tree).length, host.OFFERED_RETRYABLE_CODES.length, 'the offered checkbox count drifted')
+  toggleCode(card.tree, 5, true)
+  await flush()
+  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [false, true, false, false, false, true, false, false, false, false], 'ticking STREAM_CLOSED must not toggle any other code')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'], value: ['RATE_LIMIT', 'STREAM_CLOSED'] },
+  ], 'ticking one opt-in code must write one retryableCodes leaf containing exactly the stored code plus the ticked one')
   card.unmount()
 })
 
@@ -2853,7 +3188,8 @@ await check('Use defaults stages the validated global values and a Save reverts 
   await flush()
   assert.equal(ctx.configForms.get('llm-pi-ai').calls.length, 0, 'Use defaults wrote to the Host')
   assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'Use defaults did not stage the global values')
-  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [true, true, true, true, true], 'Use defaults did not stage the global code list')
+  assert.equal(codeCheckboxes(card.tree).length, host.OFFERED_RETRYABLE_CODES.length, 'Use defaults changed the offered checkbox count')
+  assert.deepEqual(codeCheckboxes(card.tree).map(box => box.props.checked), [true, true, true, true, true, false, false, false, false, false], 'Use defaults did not stage exactly the five default codes (never the offered ten)')
   buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
   assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
@@ -3066,6 +3402,26 @@ await check('an out-of-range jitter and an empty code list are refused', async (
   card.unmount()
 })
 
+await check('the always-mode copy pins every failure incl. permanent, no retry limit, a visible but ignored limit, cleared stored limit+codes, and codes shown only in normal mode', () => {
+  assert.equal(EN['mode.always'], 'Always \u2014 every failure, no limit', 'the mode.always label drifted')
+  assert.equal(
+    EN['provider.alwaysNote'],
+    'Always mode retries EVERY model-request failure \u2014 including permanent ones such as AUTH, INVALID_REQUEST, or QUOTA \u2014 with no retry limit. The maximum-retries input stays visible but is ignored and unvalidated in this mode; saving clears the stored retry limit and code list. The offered codes are the checkboxes shown in normal mode.',
+    'the always-mode note drifted',
+  )
+  for (const phrase of ['AUTH', 'INVALID_REQUEST', 'QUOTA', 'no retry limit', 'stays visible', 'ignored', 'saving clears the stored retry limit and code list', 'checkboxes shown in normal mode']) {
+    assert.ok(EN['provider.alwaysNote'].includes(phrase), `the always-mode note lost "${phrase}"`)
+  }
+  assert.equal(EN['provider.alwaysNote'].includes('listed below'), false, 'the always-mode note must not claim the codes are listed below (the checklist is hidden in always mode)')
+  assert.equal(COPY.zh['mode.always'], '\u603b\u662f \u2014 \u6bcf\u6b21\u5931\u8d25\uff0c\u65e0\u4e0a\u9650', 'the zh mode.always label drifted')
+  for (const phrase of ['AUTH', 'INVALID_REQUEST', 'QUOTA', '\u6ca1\u6709\u91cd\u8bd5\u4e0a\u9650', '\u4ecd\u7136\u53ef\u89c1', '\u88ab\u5ffd\u7565', '\u6e05\u9664', '\u666e\u901a\u201d\u6a21\u5f0f\u4e0b\u663e\u793a\u7684\u590d\u9009\u6846']) {
+    assert.ok(COPY.zh['provider.alwaysNote'].includes(phrase), `the zh always-mode note lost "${phrase}"`)
+  }
+  for (const phrase of ['five upstream codes are pre-selected', 'opt-in', 'inactive until ticked']) {
+    assert.ok(EN['field.retryableCodes.description'].includes(phrase), `the code-list description lost "${phrase}"`)
+  }
+})
+
 await check('an always-mode card skips the normal-only validation and unsets the two inactive leaves on Save, while the global card keeps validating', async () => {
   const forms = deviationForms({
     openrouter: {
@@ -3080,17 +3436,19 @@ await check('an always-mode card skips the normal-only validation and unsets the
   setMode(card.tree, 'always')
   await flush()
   assert.equal(codeCheckboxes(card.tree).length, 0, 'the code list stayed rendered in always mode')
+  assert.equal(retryInputs(card.tree).length, 4, 'the always-mode card hid the retry-limit input; it must stay visible')
+  assert.equal(retryInputs(card.tree)[0].props.disabled, false, 'the visible retry-limit input must stay typable in always mode')
   assert.ok(renderedText(card.tree).includes(EN['provider.alwaysNote']), 'the always-mode note is missing')
   assert.equal(buttonWithText(card.tree, [EN['provider.save']]).props.disabled, false, 'always mode still validated the inactive retry limit')
   buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
   await flush()
+  /* The always-mode contract is unchanged: the mode is set and every STORED
+   * normal-only leaf is cleared. The untouched backoff leaves are not written
+   * (touched-leaf safety), and no opt-in code can be activated here. */
   assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
     { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'mode'], value: 'always' },
     { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'] },
     { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'] },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'initialDelayMs'], value: 250 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'maxDelayMs'], value: 5000 },
-    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'jitterRatio'], value: 0.2 },
   ], 'the always-mode save ops drifted')
   card.unmount()
 
@@ -3198,7 +3556,7 @@ await check('readProviders resolves remote.llm through ctx.get and falls back to
   for (const remote of ['dotted', 'fallback', 'throwing']) {
     const ctx = fakeContext({ remote })
     clientPlugin.apply(ctx)
-    const state = await ctx.state.registered[0].options.inject().readProviders()
+    const state = await settingsRegistration(ctx).options.inject().readProviders()
     assert.ok(ctx.state.serviceReads.includes('remote.llm'), `${remote}: readProviders never asked for remote.llm`)
     assert.equal(state.status, 'ready', `${remote}: the provider directory did not resolve`)
     assert.deepEqual(state.rows.map(row => row.provider), ['deepseek-account', 'deepseek-official', 'openrouter'], `${remote}: the joined rows drifted`)
@@ -3229,7 +3587,7 @@ await check('a deployment without the Remote LLM directory degrades to providers
   assert.ok(text.includes(EN['providers.unavailable']), 'the provider-unavailable note is missing')
   assert.equal(routeCardElements(page).length, 0, 'cards were rendered without a provider directory')
   assert.equal(pickerSelect(page.tree), undefined, 'the selector rendered without a provider directory')
-  const state = await ctx.state.registered[0].options.inject().readProviders()
+  const state = await settingsRegistration(ctx).options.inject().readProviders()
   assert.deepEqual(plain(state), { status: 'unavailable', rows: [] }, 'readProviders did not report unavailable')
 })
 
@@ -3251,7 +3609,7 @@ await check('a refused directory envelope and a throwing read both degrade to pr
   })
   await flush()
   assert.ok(renderedText(throwing.page.tree).includes(EN['providers.error']), 'a throwing read did not render the directory error note')
-  const state = await throwing.ctx.state.registered[0].options.inject().readProviders()
+  const state = await settingsRegistration(throwing.ctx).options.inject().readProviders()
   assert.equal(state.status, 'error', 'readProviders did not report the throwing read as an error')
   throwing.page.unmount()
 })
@@ -3339,6 +3697,623 @@ await check('Apply defaults reports each refused and managed outcome in the sect
   assert.ok(text.includes(`DeepSeek Account: ${EN['apply.outcome.saved']}`), 'the saved apply outcome is missing from the summary')
   assert.ok(text.includes(`OpenRouter: ${EN['apply.outcome.managed']}`), 'the managed apply outcome is missing from the summary')
 })
+
+/* ══ 15. manual same-turn retry: the Host desk, listener, and wire route ═══ */
+
+/**
+ * The Host's real `setTimeout`, captured before the timeout check clamps it.
+ */
+const realSetTimeout = globalThis.setTimeout
+
+/** Sentinel for "the promise had not settled within the probe window". */
+const NOT_SETTLED = Symbol('not-settled')
+
+/** Resolve within `ms`, or return {@link NOT_SETTLED}. */
+const settledWithin = (promise, ms = 40) => Promise.race([
+  Promise.resolve(promise),
+  new Promise(resolve => realSetTimeout(() => resolve(NOT_SETTLED), ms)),
+])
+
+/** One fake `http.ServerResponse` carrying the written status/headers/body. */
+function retryRes() {
+  const out = { status: 0, headers: {}, body: '' }
+  return {
+    out,
+    writeHead(status, headers) { out.status = status; out.headers = headers ?? {} },
+    end(body) { out.body = body === undefined ? '' : String(body) },
+  }
+}
+
+/** One fake `http.IncomingMessage` carrying a fixed UTF-8 body. */
+function retryReq({ method = 'POST', url = '/llm-api-call-tuning/state', contentType = 'application/json', body = '' } = {}) {
+  const headers = {}
+  if (contentType !== undefined) headers['content-type'] = contentType
+  if (body !== '') headers['content-length'] = String(Buffer.byteLength(body))
+  return {
+    method,
+    url,
+    headers,
+    destroyed: false,
+    destroy() { this.destroyed = true },
+    [Symbol.asyncIterator]() {
+      const chunk = body === '' ? undefined : Buffer.from(body)
+      return (async function* () {
+        if (chunk !== undefined) yield chunk
+      })()
+    },
+  }
+}
+
+/** One `agent/request-error` payload. */
+function retryPayload({
+  sessionId = 'sess-main', turn = 1, step = 0, provider = 'deepseek',
+  code = 'QUOTA', message = 'quota exceeded', mode = 'normal', signal, retryPolicy = true,
+} = {}) {
+  return {
+    agent: { id: sessionId },
+    turn,
+    step,
+    provider,
+    failure: { code, message },
+    ...(retryPolicy ? { retryPolicy: { mode } } : {}),
+    ...(signal === undefined ? {} : { signal }),
+  }
+}
+
+/** Build one host double and apply the real plugin against it. */
+function manualRetryHost(options = {}) {
+  const harness = hostApplyContext(options)
+  host.apply(harness.ctx, {})
+  return harness
+}
+
+/** The one `agent/request-error` listener the host registered. */
+function retryListener(harness) {
+  const entry = harness.calls.listeners.find(candidate => candidate.event === 'agent/request-error')
+  assert.ok(entry !== undefined, 'the host registered no agent/request-error listener')
+  return entry.listener
+}
+
+/** POST one client-request envelope through the real prefix route. */
+async function retryCall(harness, {
+  endpoint = 'state', payload, method = 'POST', contentType = 'application/json',
+  url, rawBody, rpcId = 'rpc-1',
+} = {}) {
+  assert.equal(typeof harness.calls.route?.handler, 'function', 'the manual-retry route is not mounted')
+  const body = rawBody !== undefined
+    ? rawBody
+    : JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload })
+  const req = retryReq({ method, url: url ?? `/llm-api-call-tuning/${endpoint}`, contentType, body })
+  const res = retryRes()
+  await harness.calls.route.handler(req, res)
+  let json
+  try {
+    json = JSON.parse(res.out.body)
+  } catch {
+    json = undefined
+  }
+  return { status: res.out.status, headers: res.out.headers, body: res.out.body, json, req }
+}
+
+/** Read the `value` of one successful route reply. */
+const retryValue = reply => {
+  assert.equal(reply.status, 200, `route answered HTTP ${reply.status}: ${reply.body}`)
+  assert.equal(reply.json?.result?.ok, true, `route returned a failure envelope: ${reply.body}`)
+  return reply.json.result.value
+}
+
+await check('the Host mounts the authenticated manual-retry route and the agent/request-error listener on its own fiber', () => {
+  const harness = manualRetryHost()
+  assert.deepEqual(harness.calls.injects, [['settings'], ['connection', 'webServer']], 'the host inject list drifted')
+  assert.deepEqual(
+    harness.calls.ctxEffects.map(entry => entry.label),
+    ['llm-api-call-tuning: fetch timeouts', 'llm-api-call-tuning: manual-retry listener'],
+    'the fiber-owned effects drifted',
+  )
+  assert.deepEqual(
+    harness.calls.injectedEffects.map(entry => entry.label),
+    [undefined, 'llm-api-call-tuning: manual-retry channel'],
+    'the injected effects drifted',
+  )
+  assert.equal(typeof retryListener(harness), 'function', 'the agent/request-error listener is missing')
+  assert.equal(harness.calls.route.path, '/llm-api-call-tuning', 'the manual-retry route path drifted')
+  assert.equal(harness.calls.route.kind, 'prefix', 'the manual-retry route kind drifted')
+  assert.equal(harness.calls.route.disposed, false, 'the route was disposed on mount')
+  assert.deepEqual(harness.calls.warnings, [], `apply warned: ${JSON.stringify(harness.calls.warnings)}`)
+  for (const entry of [...harness.calls.ctxEffects].reverse()) entry.dispose()
+  for (const entry of [...harness.calls.injectedEffects].reverse()) entry.dispose?.()
+  assert.equal(harness.calls.route.disposed, true, 'the channel disposer did not release the prefix route')
+  assert.equal(harness.calls.listeners.filter(entry => entry.event === 'agent/request-error').length, 0, 'the listener disposer did not detach')
+})
+
+await check('always mode never prompts: the waterfall answers undefined immediately with a live watcher', async () => {
+  const harness = manualRetryHost()
+  retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-always' } }))
+  const action = await settledWithin(retryListener(harness)(retryPayload({ sessionId: 'sess-always', mode: 'always' }), async () => undefined))
+  assert.equal(action, undefined, `always mode answered ${String(action)} instead of declining`)
+  assert.equal(action === NOT_SETTLED, false, 'always mode parked the turn behind a prompt')
+  assert.deepEqual(retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-always' } })), { pending: null }, 'always mode left a pending prompt')
+})
+
+await check('next()-first ordering: an upstream retry action is passed through untouched and nothing is parked', async () => {
+  const harness = manualRetryHost()
+  retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-auto' } }))
+  const action = await retryListener(harness)(retryPayload({ sessionId: 'sess-auto', code: 'AUTH' }), async () => ({ kind: 'retry' }))
+  assert.deepEqual(action, { kind: 'retry' }, 'the downstream retry action was not passed through')
+  assert.deepEqual(retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-auto' } })), { pending: null }, 'an automatically retried failure was also parked')
+})
+
+await check('the watcher gate declines immediately without a recent state poll, and a stale poll stops authorizing prompts', async () => {
+  const harness = manualRetryHost()
+  const noWatcher = await settledWithin(retryListener(harness)(retryPayload({ sessionId: 'sess-nowatch' }), async () => undefined))
+  assert.equal(noWatcher, undefined, 'a session with no page watcher parked the turn')
+  assert.equal(noWatcher === NOT_SETTLED, false, 'a session with no page watcher parked the turn behind a prompt')
+
+  retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-stale' } }))
+  const originalNow = Date.now
+  try {
+    const shifted = originalNow() + 21_000
+    Date.now = () => shifted
+    const stale = await settledWithin(retryListener(harness)(retryPayload({ sessionId: 'sess-stale' }), async () => undefined))
+    assert.equal(stale, undefined, 'a 21 s-old state poll still authorized a prompt')
+    assert.equal(stale === NOT_SETTLED, false, 'a stale watcher parked the turn behind a prompt')
+  } finally {
+    Date.now = originalNow
+  }
+})
+
+await check('state parks one failure and reports nonce/turn/step/provider/code/message/expiresAt/attemptsLeft', async () => {
+  const harness = manualRetryHost()
+  const empty = await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-main' } })
+  assert.deepEqual(plain(empty.json), {
+    type: 'server-response',
+    rpcId: 'rpc-1',
+    result: { ok: true, value: { pending: null } },
+  }, 'the empty state envelope drifted')
+  assert.equal(empty.headers['content-type'], 'application/json', 'the route did not answer application/json')
+
+  const parked = retryListener(harness)(retryPayload({ sessionId: 'sess-main' }), async () => undefined)
+  await flush()
+  const pending = retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-main' } })).pending
+  assert.ok(pending !== null, 'the parked failure did not surface on state')
+  assert.equal(typeof pending.nonce, 'string', 'the pending prompt carries no nonce')
+  assert.ok(pending.nonce.length >= 8, `the nonce is too short: ${pending.nonce}`)
+  assert.equal(pending.turn, 1, 'the pending turn drifted')
+  assert.equal(pending.step, 0, 'the pending step drifted')
+  assert.equal(pending.provider, 'deepseek', 'the pending provider drifted')
+  assert.equal(pending.code, 'QUOTA', 'the pending failure code drifted')
+  assert.equal(pending.message, 'quota exceeded', 'the pending message drifted')
+  assert.ok(Number.isFinite(pending.expiresAt) && pending.expiresAt > Date.now(), 'the pending expiry is in the past')
+  assert.equal(pending.attemptsLeft, 5, 'the first prompt must offer five attempts')
+  assert.ok(parked instanceof Promise, 'the waterfall was not parked')
+  // Clean up: the parked waterfall owns a 90 s decision timer that would keep
+  // the process alive (and disposal settling it is asserted separately below).
+  harness.calls.ctxEffects.find(entry => entry.label === 'llm-api-call-tuning: manual-retry listener').dispose()
+  assert.equal(await settledWithin(parked, 300), undefined, 'settling the shape fixture revealed a different action')
+})
+
+await check('decide accepts only the right nonce for the owning session; accept settles the retry, stale/replay/foreign decisions do not', async () => {
+  const harness = manualRetryHost()
+  retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-main' } }))
+  const parked = retryListener(harness)(retryPayload({ sessionId: 'sess-main' }), async () => undefined)
+  await flush()
+  const pending = retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-main' } })).pending
+  assert.ok(pending !== null, 'the failure was not parked')
+
+  const wrong = await retryCall(harness, { endpoint: 'decide', payload: { sessionId: 'sess-main', nonce: 'nope', decision: 'retry' } })
+  assert.equal(wrong.json.result.ok, false, 'a wrong nonce was accepted')
+  assert.equal(wrong.json.result.error.code, 'manual-retry/stale', 'a wrong nonce did not answer manual-retry/stale')
+  const foreign = await retryCall(harness, { endpoint: 'decide', payload: { sessionId: 'sess-other', nonce: pending.nonce, decision: 'retry' } })
+  assert.equal(foreign.json.result.error.code, 'manual-retry/stale', 'a cross-session decision was not rejected as stale')
+  const invalid = await retryCall(harness, { endpoint: 'decide', payload: { sessionId: 'sess-main', nonce: pending.nonce, decision: 'maybe' } })
+  assert.equal(invalid.json.result.error.code, 'manual-retry/bad-request', 'an invalid decision was not answered bad-request')
+  assert.equal(parked instanceof Promise, true, 'an invalid decision settled the parked turn')
+
+  const accepted = await retryCall(harness, { endpoint: 'decide', payload: { sessionId: 'sess-main', nonce: pending.nonce, decision: 'retry' } })
+  assert.deepEqual(retryValue(accepted), { accepted: true }, 'the accepted decision envelope drifted')
+  assert.deepEqual(await parked, { kind: 'retry' }, 'the accepted retry did not reach the parked waterfall')
+  const replay = await retryCall(harness, { endpoint: 'decide', payload: { sessionId: 'sess-main', nonce: pending.nonce, decision: 'retry' } })
+  assert.equal(replay.json.result.error.code, 'manual-retry/stale', 'a replayed decision settled the prompt twice')
+  assert.deepEqual(retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-main' } })), { pending: null }, 'the accepted decision left the pending entry behind')
+})
+
+await check('the per-turn cap is five manual retries; the sixth failure declines immediately', async () => {
+  const harness = manualRetryHost()
+  const sessionId = 'sess-cap'
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId } }))
+    const parked = retryListener(harness)(retryPayload({ sessionId, turn: 3 }), async () => undefined)
+    await flush()
+    const pending = retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId } })).pending
+    assert.ok(pending !== null, `attempt ${String(attempt)} was not offered`)
+    assert.equal(pending.attemptsLeft, 6 - attempt, `attemptsLeft drifted on attempt ${String(attempt)}`)
+    const accepted = await retryCall(harness, { endpoint: 'decide', payload: { sessionId, nonce: pending.nonce, decision: 'retry' } })
+    assert.deepEqual(retryValue(accepted), { accepted: true }, `attempt ${String(attempt)} was not accepted`)
+    assert.deepEqual(await parked, { kind: 'retry' }, `attempt ${String(attempt)} did not settle the waterfall`)
+  }
+  retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId } }))
+  const sixth = await settledWithin(retryListener(harness)(retryPayload({ sessionId, turn: 3 }), async () => undefined))
+  assert.equal(sixth, undefined, 'the sixth manual retry was offered')
+  assert.equal(sixth === NOT_SETTLED, false, 'the per-turn cap parked the sixth prompt')
+})
+
+await check('the decision timeout and a payload.signal abort both resolve undefined and clear the pending entry', async () => {
+  const harness = manualRetryHost()
+  const unclamped = globalThis.setTimeout
+  globalThis.setTimeout = (callback, ms, ...args) => realSetTimeout(callback, ms >= 90_000 ? 10 : ms, ...args)
+  try {
+    retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-timeout' } }))
+    const parked = retryListener(harness)(retryPayload({ sessionId: 'sess-timeout' }), async () => undefined)
+    await flush()
+    assert.ok(retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-timeout' } })).pending !== null, 'the timeout fixture did not park')
+    assert.equal(await settledWithin(parked, 300), undefined, 'the 90 s decision timeout did not decline the prompt')
+    assert.deepEqual(retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-timeout' } })), { pending: null }, 'a timed-out prompt stayed pending')
+  } finally {
+    globalThis.setTimeout = unclamped
+  }
+
+  const abortHarness = manualRetryHost()
+  retryValue(await retryCall(abortHarness, { endpoint: 'state', payload: { sessionId: 'sess-abort' } }))
+  const controller = new AbortController()
+  const aborted = retryListener(abortHarness)(retryPayload({ sessionId: 'sess-abort', signal: controller.signal }), async () => undefined)
+  await flush()
+  assert.ok(retryValue(await retryCall(abortHarness, { endpoint: 'state', payload: { sessionId: 'sess-abort' } })).pending !== null, 'the abort fixture did not park')
+  controller.abort()
+  assert.equal(await settledWithin(aborted, 300), undefined, 'aborting the turn did not decline the prompt')
+  assert.deepEqual(retryValue(await retryCall(abortHarness, { endpoint: 'state', payload: { sessionId: 'sess-abort' } })), { pending: null }, 'an aborted prompt stayed pending')
+})
+
+await check('disposal settles every parked prompt with undefined and detaches the listener (no open turn can hang)', async () => {
+  const harness = manualRetryHost()
+  retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-settle' } }))
+  const parked = retryListener(harness)(retryPayload({ sessionId: 'sess-settle' }), async () => undefined)
+  await flush()
+  assert.ok(retryValue(await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-settle' } })).pending !== null, 'the disposal fixture did not park')
+  const effect = harness.calls.ctxEffects.find(entry => entry.label === 'llm-api-call-tuning: manual-retry listener')
+  assert.ok(effect !== undefined, 'the listener effect is missing')
+  effect.dispose()
+  assert.equal(await settledWithin(parked, 300), undefined, 'disposing the plugin left the parked turn open')
+  assert.equal(harness.calls.listeners.filter(entry => entry.event === 'agent/request-error').length, 0, 'disposal did not detach the listener')
+})
+
+await check('the route fence answers requestRejection 401/403 before method, body, or envelope parsing', async () => {
+  for (const [status, copy] of [[401, 'unauthorized'], [403, 'forbidden']]) {
+    const harness = manualRetryHost({ requestRejection: () => status })
+    const reply = await retryCall(harness, { method: 'GET', url: '/llm-api-call-tuning/state', rawBody: '{not json' })
+    assert.equal(reply.status, status, `the trust fence did not answer ${String(status)} first`)
+    assert.equal(reply.body, copy, `the ${String(status)} body drifted to ${JSON.stringify(reply.body)}`)
+  }
+})
+
+await check('the route guards answer 404 unknown endpoint, 405 non-POST, 415 wrong media, 400 bad JSON, and 413 oversized bodies', async () => {
+  const harness = manualRetryHost()
+  const unknown = await retryCall(harness, { endpoint: 'nope', payload: { sessionId: 'x' } })
+  assert.equal(unknown.status, 404, 'an unknown endpoint was not answered 404')
+  const get = await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'x' }, method: 'GET' })
+  assert.equal(get.status, 405, 'a non-POST request was not answered 405')
+  assert.equal(get.headers.allow, 'POST', 'the 405 reply does not advertise allow: POST')
+  const media = await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'x' }, contentType: 'text/plain' })
+  assert.equal(media.status, 415, 'a wrong media type was not answered 415')
+  const malformed = await retryCall(harness, { endpoint: 'state', rawBody: '{not json' })
+  assert.equal(malformed.status, 400, 'a malformed body was not answered 400')
+  const oversized = await retryCall(harness, { endpoint: 'state', rawBody: 'x'.repeat(70 * 1024) })
+  assert.equal(oversized.status, 413, 'an oversized body was not answered 413')
+  assert.equal(oversized.req.destroyed, true, 'the oversized request was not destroyed')
+})
+
+await check('the route frames every answer as a server-response envelope with connection-style business errors', async () => {
+  const harness = manualRetryHost()
+  const valid = await retryCall(harness, { endpoint: 'state', payload: { sessionId: 'sess-wire' } })
+  assert.deepEqual(plain(valid.json), {
+    type: 'server-response',
+    rpcId: 'rpc-1',
+    result: { ok: true, value: { pending: null } },
+  }, 'the successful envelope drifted')
+
+  const bare = await retryCall(harness, { endpoint: 'state', rawBody: JSON.stringify({ nope: true }) })
+  assert.equal(bare.status, 200, 'a malformed client-request must still be framed as 200 + envelope')
+  assert.equal(bare.json.rpcId, 'invalid-request', 'the invalid-request rpcId drifted')
+  assert.equal(bare.json.result.ok, false, 'a malformed client-request was accepted')
+  assert.equal(bare.json.result.error.code, 'manual-retry/bad-request', 'the malformed envelope code drifted')
+
+  const mismatch = await retryCall(harness, {
+    endpoint: 'state',
+    rawBody: JSON.stringify({ type: 'client-request', rpcId: 'r9', method: 'decide', payload: { sessionId: 'x' } }),
+  })
+  assert.equal(mismatch.json.rpcId, 'r9', 'the method-mismatch reply did not echo the rpcId')
+  assert.equal(mismatch.json.result.error.code, 'manual-retry/bad-request', 'a method/endpoint mismatch was not bad-request')
+
+  const badPayload = await retryCall(harness, { endpoint: 'state', payload: { sessionId: 42 } })
+  assert.equal(badPayload.json.result.error.code, 'manual-retry/bad-request', 'a non-string sessionId was not bad-request')
+
+  const stale = await retryCall(harness, { endpoint: 'decide', payload: { sessionId: 'sess-wire', nonce: 'nope', decision: 'retry' } })
+  assert.equal(stale.json.result.ok, false, 'a stale decision was accepted')
+  assert.equal(stale.json.result.error.code, 'manual-retry/stale', 'the stale code drifted')
+  assert.equal(typeof stale.json.result.error.message, 'string', 'the stale error carries no message')
+  assert.deepEqual(plain(stale.json.result.error.details), {}, 'the stale error details drifted')
+})
+
+await check('a headless Host boots without connection/webServer, registers no route, and the listener stays quiet', async () => {
+  const harness = manualRetryHost({ browser: false })
+  assert.deepEqual(harness.calls.injects, [['settings'], ['connection', 'webServer']], 'the guarded inject list drifted')
+  assert.equal(harness.calls.route, undefined, 'a route was mounted although the browser services are unmet')
+  assert.deepEqual(harness.calls.warnings, [], `the headless boot warned: ${JSON.stringify(harness.calls.warnings)}`)
+  const action = await settledWithin(retryListener(harness)(retryPayload({ sessionId: 'sess-headless' }), async () => undefined))
+  assert.equal(action, undefined, 'a headless Host parked a turn')
+  assert.equal(action === NOT_SETTLED, false, 'a headless Host parked a turn behind a prompt')
+})
+
+/* ══ 16. manual same-turn retry: the client dock ══════════════════════════ */
+
+/**
+ * One fake session store for the dock's `useSession(selector)` prop, wired to
+ * the gate's React double so `setRunning()` re-renders the dock.
+ * @param running - the initial `state.running`.
+ * @returns the store plus `useSession` and `setRunning`.
+ */
+function sessionDouble(running) {
+  let snapshot = { running }
+  const listeners = new Set()
+  return {
+    useSession(selector) {
+      return react.React.useSyncExternalStore(
+        listener => {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+        () => selector(snapshot),
+      )
+    },
+    setRunning(next) {
+      if (snapshot.running === next) return
+      snapshot = { ...snapshot, running: next }
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
+
+/**
+ * A fake `connection.rpc` that records every call and answers through `reply`.
+ * @param reply - `(entry) => object | Promise<object>`; defaults to "no pending".
+ * @returns the connection double with its recorded calls.
+ */
+function retryConnection(reply = () => ({ ok: true, value: { pending: null } })) {
+  const calls = []
+  return {
+    calls,
+    rpc: {
+      call(channel, endpoint, payload, signal) {
+        const entry = { channel, endpoint, payload, signal }
+        calls.push(entry)
+        try {
+          return Promise.resolve(reply(entry))
+        } catch (error) {
+          return Promise.reject(error)
+        }
+      },
+    },
+  }
+}
+
+/** One wire-shaped pending decision for the dock fixtures. */
+const retryPending = (overrides = {}) => ({
+  nonce: 'nonce-abcdefgh',
+  turn: 1,
+  step: 0,
+  provider: 'deepseek',
+  code: 'QUOTA',
+  message: 'quota exceeded',
+  expiresAt: Date.now() + 90_000,
+  attemptsLeft: 5,
+  ...overrides,
+})
+
+/** The `state` replies: `pending` when armed, otherwise none. */
+const stateReply = pending => () => ({ ok: true, value: { pending } })
+
+await check('the dock renders NO alert when the Host holds no pending decision, and polls every 2000 ms while running', async () => {
+  const connection = retryConnection()
+  const { page } = mountDock({ connection })
+  await flush()
+  assert.equal(page.tree, null, 'the dock rendered without a pending decision')
+  assert.equal(connection.calls.length, 1, `the dock did not poll once on mount (calls: ${connection.calls.length})`)
+  assert.equal(connection.calls[0].channel, '/llm-api-call-tuning', 'the dock called the wrong channel')
+  assert.equal(connection.calls[0].endpoint, 'state', 'the dock called the wrong endpoint')
+  assert.deepEqual(plain(connection.calls[0].payload), { sessionId: 'sess-main' }, 'the state payload drifted')
+  assert.ok(connection.calls[0].signal instanceof AbortSignal, 'the state poll carried no AbortSignal')
+  await vmTimers.advance(2000)
+  assert.equal(connection.calls.length, 2, 'the 2000 ms poll did not fire')
+  await vmTimers.advance(2000)
+  assert.equal(connection.calls.length, 3, 'the second 2000 ms poll did not fire')
+  page.unmount()
+})
+
+await check('a pending decision renders code, provider, message, Retry/Dismiss, and the attempt indicator', async () => {
+  const connection = retryConnection(stateReply(retryPending()))
+  const { page } = mountDock({ connection })
+  await flush()
+  const alerts = findAll(page.tree, node => node.props?.role === 'alert')
+  assert.equal(alerts.length, 1, `the dock rendered ${alerts.length} alert rows, expected one`)
+  const text = renderedText(page.tree)
+  for (const copy of ['QUOTA', 'deepseek', 'quota exceeded', EN['manualRetry.title'], EN['manualRetry.retry'], EN['manualRetry.dismiss'], `${EN['manualRetry.attempt']} 1/5`]) {
+    assert.ok(text.includes(copy), `the dock is missing ${JSON.stringify(copy)}`)
+  }
+  assert.equal(alerts[0].props['aria-label'], EN['manualRetry.aria'], 'the dock aria-label drifted')
+  assert.equal(buttonWithText(page.tree, [EN['manualRetry.retry']]).props.disabled, false, 'Retry is disabled on a live offer')
+  assert.equal(buttonWithText(page.tree, [EN['manualRetry.dismiss']]).props.disabled, false, 'Dismiss is disabled on a live offer')
+  page.unmount()
+})
+
+await check('the dock stops polling and hides as soon as the session is not running', async () => {
+  const connection = retryConnection(stateReply(retryPending()))
+  const { page, session } = mountDock({ connection })
+  await flush()
+  assert.notEqual(page.tree, null, 'the dock did not render for a running session with a pending decision')
+  const pollsBefore = connection.calls.length
+  const lastSignal = connection.calls[connection.calls.length - 1].signal
+  session.setRunning(false)
+  await flush()
+  assert.equal(page.tree, null, 'the dock stayed visible on a stopped session')
+  assert.equal(lastSignal.aborted, true, 'stopping the session did not abort the in-flight poll')
+  await vmTimers.advance(2000)
+  assert.equal(connection.calls.length, pollsBefore, 'the dock kept polling after the session stopped')
+  page.unmount()
+})
+
+await check('Retry posts decide once with the session/nonce, disables both buttons while in flight, and hides on acceptance', async () => {
+  let resolveDecide
+  const connection = retryConnection(entry => {
+    if (entry.endpoint === 'state') return { ok: true, value: { pending: retryPending() } }
+    return new Promise(resolve => { resolveDecide = resolve })
+  })
+  const { page } = mountDock({ connection })
+  await flush()
+  buttonWithText(page.tree, [EN['manualRetry.retry']]).props.onClick()
+  await flush()
+  const decideCall = connection.calls[connection.calls.length - 1]
+  assert.equal(decideCall.endpoint, 'decide', 'the Retry click did not post decide')
+  assert.equal(decideCall.channel, '/llm-api-call-tuning', 'the decide call used the wrong channel')
+  assert.deepEqual(plain(decideCall.payload), { sessionId: 'sess-main', nonce: 'nonce-abcdefgh', decision: 'retry' }, 'the decide payload drifted')
+  assert.equal(buttonWithText(page.tree, [EN['manualRetry.retry']]).props.disabled, true, 'Retry stayed enabled while the decide call was in flight')
+  assert.equal(buttonWithText(page.tree, [EN['manualRetry.dismiss']]).props.disabled, true, 'Dismiss stayed enabled while the decide call was in flight')
+  resolveDecide({ ok: true, value: { accepted: true } })
+  await flush()
+  assert.equal(page.tree, null, 'the dock stayed visible after an accepted decision')
+  page.unmount()
+})
+
+await check('Dismiss posts dismiss, a stale reply clears the bar silently, and a transport failure keeps the offer', async () => {
+  const staleConnection = retryConnection(entry => {
+    if (entry.endpoint === 'state') return { ok: true, value: { pending: retryPending() } }
+    return { ok: false, error: { code: 'manual-retry/stale', message: 'gone', details: {} } }
+  })
+  const stale = mountDock({ connection: staleConnection })
+  await flush()
+  buttonWithText(stale.page.tree, [EN['manualRetry.dismiss']]).props.onClick()
+  await flush()
+  assert.equal(staleConnection.calls[staleConnection.calls.length - 1].payload.decision, 'dismiss', 'Dismiss did not post decision: dismiss')
+  assert.equal(stale.page.tree, null, 'a stale reply did not clear the bar')
+  stale.page.unmount()
+
+  let stateCalls = 0
+  const flakyConnection = retryConnection(entry => {
+    if (entry.endpoint === 'state') {
+      stateCalls += 1
+      if (stateCalls === 1) return { ok: true, value: { pending: retryPending() } }
+      return Promise.reject(new Error('connection blip'))
+    }
+    return Promise.reject(new Error('connection blip'))
+  })
+  const flaky = mountDock({ connection: flakyConnection })
+  await flush()
+  assert.notEqual(flaky.page.tree, null, 'the first offer did not render')
+  buttonWithText(flaky.page.tree, [EN['manualRetry.retry']]).props.onClick()
+  await flush()
+  assert.notEqual(flaky.page.tree, null, 'a transport failure on decide flickered the offer away')
+  assert.equal(buttonWithText(flaky.page.tree, [EN['manualRetry.retry']]).props.disabled, false, 'a transport failure left the buttons disabled')
+  await vmTimers.advance(2000)
+  assert.notEqual(flaky.page.tree, null, 'a transport failure on state dropped the last known offer')
+  flaky.page.unmount()
+})
+
+await check('an expired offer renders the expired copy and only Dismiss (never Retry)', async () => {
+  const connection = retryConnection(stateReply(retryPending({ expiresAt: Date.now() - 1000 })))
+  const { page } = mountDock({ connection })
+  await flush()
+  const text = renderedText(page.tree)
+  assert.ok(text.includes(EN['manualRetry.expired']), 'the expired copy is missing')
+  assert.equal(text.includes(EN['manualRetry.retry']), false, 'an expired offer still renders Retry')
+  assert.ok(buttonWithText(page.tree, [EN['manualRetry.dismiss']]) !== undefined, 'an expired offer lost Dismiss')
+  page.unmount()
+})
+
+await check('a session change re-polls for the new session and never paints the previous session offer', async () => {
+  const connection = retryConnection(entry => ({ ok: true, value: { pending: retryPending() } }))
+  const { page, props } = mountDock({ connection, sessionId: 'sess-a' })
+  await flush()
+  assert.notEqual(page.tree, null, 'the first session offer did not render')
+  page.updateProps({ ...props, sessionId: 'sess-b' })
+  await flush()
+  const sessions = connection.calls.filter(entry => entry.endpoint === 'state').map(entry => entry.payload.sessionId)
+  assert.deepEqual(sessions, ['sess-a', 'sess-b'], `the dock polled sessions ${JSON.stringify(sessions)}`)
+  assert.notEqual(page.tree, null, 'the re-polled session offer did not render')
+  assert.equal(connection.calls[connection.calls.length - 1].payload.sessionId, 'sess-b', 'the live offer still belongs to the old session')
+  page.unmount()
+})
+
+await check('unmounting the dock aborts the in-flight poll and stops the timer', async () => {
+  const connection = retryConnection(stateReply(retryPending()))
+  const { page } = mountDock({ connection })
+  await flush()
+  const signal = connection.calls[connection.calls.length - 1].signal
+  const callsBefore = connection.calls.length
+  page.unmount()
+  assert.equal(signal.aborted, true, 'unmounting the dock did not abort the in-flight poll')
+  await vmTimers.advance(2000)
+  assert.equal(connection.calls.length, callsBefore, 'unmounting the dock left its poll timer running')
+})
+
+await check('a dock mounted without the connection service stays hidden and never throws', async () => {
+  const { page } = mountDock({ connection: undefined })
+  await flush()
+  assert.equal(page.tree, null, 'the dock rendered without a connection service')
+  await vmTimers.advance(2000)
+  assert.equal(page.tree, null, 'the dock surfaced an offer without a connection service')
+  page.unmount()
+})
+
+/* ══ 17. cross-half contract and the settings page beside the dock ════════ */
+
+await check('both halves agree on the channel, endpoints, poll cadence, cap, and the six manualRetry copy keys', async () => {
+  const harness = manualRetryHost()
+  assert.equal(harness.calls.route.path, '/llm-api-call-tuning', 'the host channel drifted')
+  const connection = retryConnection()
+  const { page } = mountDock({ connection })
+  await flush()
+  assert.equal(connection.calls[0].channel, harness.calls.route.path, 'the client and host channel literals disagree')
+  assert.equal(connection.calls[0].endpoint, 'state', 'the first endpoint must be state')
+  assert.equal(connection.calls.length, 1, 'the dock polled more than once on mount')
+  await vmTimers.advance(2000)
+  assert.equal(connection.calls.length, 2, 'the 2000 ms poll cadence drifted')
+  page.unmount()
+  for (const key of ['manualRetry.aria', 'manualRetry.title', 'manualRetry.retry', 'manualRetry.dismiss', 'manualRetry.attempt', 'manualRetry.expired']) {
+    assert.equal(typeof COPY.en[key], 'string', `en is missing ${key}`)
+    assert.equal(typeof COPY.zh[key], 'string', `zh is missing ${key}`)
+  }
+  assert.equal(COPY.en['manualRetry.attempt'], 'Attempt', 'the attempt copy drifted')
+  assert.equal(COPY.en['manualRetry.retry'], 'Retry', 'the retry copy drifted')
+  assert.equal(COPY.en['manualRetry.dismiss'], 'Dismiss', 'the dismiss copy drifted')
+})
+
+await check('the client declares the connection service its dock calls and resolves it lazily through ctx.get', async () => {
+  assert.deepEqual(
+    [...clientPlugin.inject],
+    ['slots', 'locale', 'configForms', 'remote', 'connection'],
+    `the client inject list drifted: ${JSON.stringify(clientPlugin.inject)}`,
+  )
+  const connection = retryConnection()
+  const { ctx, page } = mountDock({ connection })
+  await flush()
+  assert.equal(ctx.state.serviceReads.includes('connection'), true, 'the dock never resolved the connection service through ctx.get')
+  assert.equal(connection.calls.length, 1, 'the dock did not poll through the resolved connection service')
+  page.unmount()
+})
+
+await check('the settings page still renders (and the dock stays hidden) when connection/webServer are unavailable', async () => {
+  const headless = mountPage()
+  await flush()
+  assert.equal(sectionCards(headless.page.tree).length, 2, 'the settings page stopped rendering without the browser services')
+  assert.deepEqual(ctxEffectsOf(headless.ctx), ['dsh-llm-api-call-tuning: dictionaries'], 'the client registered extra effects')
+  assert.equal(headless.ctx.state.injections.length, 2, 'the dock and settings slot registrations drifted')
+  headless.page.unmount()
+})
+
+/** Every effect label one fake client context recorded. */
+function ctxEffectsOf(ctx) {
+  return [...ctx.state.effects]
+}
+
+/* ══ summary ══════════════════════════════════════════════════════════════ */
 
 /* ══ summary ═══════════════════════════════════════════════════════════════ */
 

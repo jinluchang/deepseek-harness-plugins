@@ -19,7 +19,8 @@ This plugin fills that gap with **one** Settings page, in two tiers:
 
 - a **Global settings** card, first, holding every global knob in two labeled sub-groups inside the one
   card: **Retries** (the six retry values stored as a preset in this plugin's own settings namespace,
-  `llm-api-call-tuning`) and **Fetch timeouts** (the two **process-wide** HTTP timers
+  `llm-api-call-tuning`; the code checklist offers ten codes but defaults to the five upstream ones, and
+  the extras are opt-in and off by default) and **Fetch timeouts** (the two **process-wide** HTTP timers
   `headersTimeoutMs`, `bodyTimeoutMs` that the Host applies to the undici dispatcher every provider
   route, web search, and HTTP MCP server shares). Both timers are `unset` by default, so a fresh
   install changes no behavior. This part is adapted from the MIT-licensed `dsh-fetch-timeouts` project:
@@ -35,6 +36,12 @@ This plugin fills that gap with **one** Settings page, in two tiers:
 
 Retry and timeout are **not** separate sections: they share one card and one write per route, because
 both groups address the same provider namespace and the same provider settings path.
+
+A **second, independent** contribution is the **manual same-turn retry** (documented under *Manual
+same-turn retry*): when a model request fails and every automatic recovery in the `agent/request-error`
+chain has declined, the Host parks that one request for up to 90 s and a bar above the composer offers
+**Retry** / **Dismiss**. The bar is not a settings tier; the settings page only tunes the policy the
+automatic chain uses.
 
 Non-goals: the plugin owns no projection state and never copies the retry defaults onto a provider on
 its own. It is not a new retry engine, it does not change any other profile, and it does not touch
@@ -54,18 +61,20 @@ authoritative, and `verify.mjs` pins behaviour and the upstream constants rather
 | Item | Value |
 | --- | --- |
 | Package | `dsh-llm-api-call-tuning` |
-| Client module id | `dsh-llm-api-call-tuning` — the exact package name (`window.__ModuleLoader__.load` `client.js:88-89`) |
-| Client plugin `name` | `dsh-llm-api-call-tuning` (`client.js:2418`) |
+| Client module id | `dsh-llm-api-call-tuning` — the exact package name (`window.__ModuleLoader__.load` `client.js:97-98`) |
+| Client plugin `name` | `dsh-llm-api-call-tuning` (`client.js:2723`) |
 | Loader entry id / row id | `llm-api-call-tuning` (`cordis.patch.yml`) |
 | Settings namespace | `llm-api-call-tuning` — this plugin's own `Config`, read/written with `ctx.configForms.get('llm-api-call-tuning')` |
 | Locale namespace | `llm-api-call-tuning` |
-| Host `name` export | `llm-api-call-tuning` (`index.js:588`) |
-| Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `DEFAULT_FETCH`, `FETCH_KEYS`, `FETCH_OPTIONS`, `PROVIDER_TIMEOUT_FIELDS`, `PROVIDER_TIMEOUT_KEYS`, `PROVIDER_TIMEOUT_OPTIONS`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
-| Host `inject` | none exported — `apply()` calls `ctx.inject(['settings'], …)` for the page policy and mounts its fetch-timeout effect itself (see *Fetch timeout dispatcher*) |
-| Host side effect | A process-wide undici dispatcher wrapper, installed only while at least one fetch value is a number; the previous dispatcher is restored on clear/dispose only while the wrapper is still the current dispatcher. With both values `unset` — the shipped default — nothing is installed. |
-| Client `inject` | `['slots', 'locale', 'configForms', 'remote']` (`client.js:2419`) |
-| Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:2441-2449`) |
-| Host ↔ Client wire | **No RPC channel of its own.** Reads and writes ride the shared settings form mirror (`configForms`), whose `mutate()` calls the Host `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:129-151`). The provider directory is read from the Client Remote namespace `llm` (`llm.listProviders()` + `llm.listConfigurableProviders()`). |
+| Host `name` export | `llm-api-call-tuning` (`index.js:633`) |
+| Host module surface | `name`, `Config`, `DEFAULT_TUNE`, `TUNE_KEYS`, `TUNE_OPTIONS`, `TUNE_PROBLEMS`, `RETRY_MODES`, `RETRYABLE_CODES`, `OFFERED_RETRYABLE_CODES`, `DEFAULT_FETCH`, `FETCH_KEYS`, `FETCH_OPTIONS`, `PROVIDER_TIMEOUT_FIELDS`, `PROVIDER_TIMEOUT_KEYS`, `PROVIDER_TIMEOUT_OPTIONS`, `schemaLibrary`, `validateTune`, `apply`; **no** default export |
+| Host `inject` | none exported — `apply()` calls `ctx.inject(['settings'], …)` for the page policy, mounts its fetch-timeout effect itself (see *Fetch timeout dispatcher*), registers the `agent/request-error` waterfall listener, and mounts the manual-retry Web route through `ctx.inject(['connection', 'webServer'], …)` |
+| Host side effect | A process-wide undici dispatcher wrapper, installed only while at least one fetch value is a number; the previous dispatcher is restored on clear/dispose only while the wrapper is still the current dispatcher. With both values `unset` — the shipped default — nothing is installed. Separately, one **in-memory** manual-retry desk per activation (no persisted state) and one authenticated prefix route on `/llm-api-call-tuning`. |
+| Client `inject` | `['slots', 'locale', 'configForms', 'remote', 'connection']` (`client.js:2724`) |
+| Settings slot | `settings.section`, `id: 'llm-api-call-tuning'`, `order: 45`, `locale: 'llm-api-call-tuning'`, `label: () => t('nav')` (`client.js:2771-2779`) |
+| Manual-retry dock | `conversation.input.dock`, `id: 'manual-retry'`, `order: 20`, `locale: 'llm-api-call-tuning'`, registered **before** the `configForms` guard (`client.js:2752-2758`) |
+| Manifest client injects | six entries in `package.json` `dsh.client.inject`: `dsh-client-connection`, `dsh-client-locale`, `dsh-client-ui-conversation` (dock slot), `dsh-client-ui-settings`, `dsh-client-ui-settings-general`, `dsh-api-remotes` |
+| Host ↔ Client wire | Settings reads/writes ride the shared settings form mirror (`configForms`), whose `mutate()` calls the Host `settings.mutate` (`packages/client/ui-settings/src/client/config-form.ts:129-151`). The provider directory is read from the Client Remote namespace `llm`. The **only** plugin-owned RPC is the authenticated manual-retry route (`/llm-api-call-tuning`, endpoints `state`/`decide`), called through `connection.rpc.call` and specified under *Manual same-turn retry → Wire contract*. |
 | Mount patch seed | **nothing**: the row carries no `config`, so the global defaults start on the upstream code defaults, both fetch timers start `unset`, and a fresh install changes no provider behavior |
 
 The host `Config` is registered with `settings.configure({ auto: false }, ctx.fiber)` so the
@@ -75,11 +84,13 @@ guarantee**: `autoGenerate` exists for clients that build pages from a namespace
 DSH client does so yet (`packages/settings/settings/README.md:39`), so that call is future-proofing. It
 is guarded: a policy conflict warns instead of failing boot.
 
-`apply(ctx, config)` has a **second, independent job** besides that page policy: it installs, updates,
-and restores the process-wide fetch-timeout dispatcher (see *Fetch timeout dispatcher*). That job lives
-in its own `ctx.effect`, so the wrapper and its two reload listeners are owned by this row's fiber.
-`apply()` therefore no longer "only suppresses the page"; it has exactly these two jobs and still owns no
-projection state.
+`apply(ctx, config)` has **two further, independent jobs** besides that page policy: it installs,
+updates, and restores the process-wide fetch-timeout dispatcher (see *Fetch timeout dispatcher*), and it
+registers the manual same-turn retry — the `agent/request-error` waterfall listener plus the
+authenticated `state`/`decide` route (see *Manual same-turn retry*). Each job lives in its own
+`ctx.effect`, so the wrapper, the listener, and the route are all owned by this row's fiber and a
+disposal declines every parked prompt. `apply()` still owns no projection state and never copies a
+retry value onto a provider.
 
 ## Config fields (this plugin's own namespace)
 
@@ -97,6 +108,13 @@ For the six retry rows, the *Code default* column is the upstream resolution fal
 pinned by `verify.mjs` against the upstream file text. The two fetch rows carry `unset` because their
 schema deliberately has no `.default()`: see *Fetch timeout fields (tri-state)*.
 
+`RETRYABLE_CODES` stays exactly the five upstream defaults, and every `.default()`, `DEFAULT_TUNE`,
+`DEFAULT_POLICY` and runtime fallback resolves to that array. `OFFERED_RETRYABLE_CODES` is the **ten**
+codes the schema's union and `validateTune()` accept: the same five followed by the opt-in extras
+`STREAM_CLOSED`, `MALFORMED_RESPONSE`, `PI_AI_ERROR`, `HTTP_408`, `HTTP_409`. The schema widening only
+changes what may be *written*; it never changes what an absent, empty, or unrecognized stored list
+resolves to.
+
 | Field | Schemastery shape | Code default | Range (enforced by) |
 | --- | --- | --- | --- |
 | `mode` | `union([const('normal'), const('always')]).default('normal').volatile()` | `'normal'` | `'normal'` or `'always'` (upstream `resolveRetryPolicy` switch, `retry-policy.ts:149-195`) |
@@ -104,7 +122,7 @@ schema deliberately has no `.default()`: see *Fetch timeout fields (tri-state)*.
 | `initialDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(500).volatile()` | `500` | finite and > 0, at most 2147483647; must not exceed maxDelayMs (upstream schema `retry-policy.ts:82`; load-time asserts `retry-policy.ts:127-135`; the order rule is cross-field and lives in `validateTune`) |
 | `maxDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(10000).volatile()` | `10000` | finite and > 0, at most 2147483647; must not be below initialDelayMs (upstream schema `retry-policy.ts:83`; load-time asserts `retry-policy.ts:130-135`) |
 | `jitterRatio` | `number().min(0).max(1).default(0.1).volatile()` | `0.1` | number in [0, 1] (upstream schema `retry-policy.ts:84`; load-time assert `retry-policy.ts:136-138`) |
-| `retryableCodes` | `array(union(five consts)).min(1).default(all five).volatile()` | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` | non-empty array of unique codes from the five upstream codes (upstream schema `retry-policy.ts:90`; load-time asserts `retry-policy.ts:170-178`; uniqueness is cross-field and lives in `validateTune`) |
+| `retryableCodes` | `array(union(ten consts)).min(1).default(the five upstream codes).volatile()` — the union is `OFFERED_RETRYABLE_CODES` | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` | non-empty array of unique codes from the ten offered codes; defaults to the five upstream codes (upstream schema `retry-policy.ts:90` is `z.array(z.string())` and validates shape only; the executor matches exact strings, `packages/llm/llm-retry/src/index.ts:212`; upstream load-time asserts `retry-policy.ts:170-178` cover non-empty, non-empty-string and uniqueness only; the membership narrowing and the uniqueness guard on this plugin's own row are cross-field and live in `validateTune`) |
 | `headersTimeoutMs` | `number().step(1).min(0).max(2147483647).volatile()` — deliberately **no** `.default()` | `unset` | `unset` (absent materializes as `undefined`; `null` in `DEFAULT_FETCH`), or integer `0..2147483647`; `0` disables the timer (Host schema; `.step(1)` refuses fractions, `.min(0)` allows disabled, `.max` is the timer cap) |
 | `bodyTimeoutMs` | `number().step(1).min(0).max(2147483647).volatile()` — deliberately **no** `.default()` | `unset` | `unset` (absent materializes as `undefined`; `null` in `DEFAULT_FETCH`), or integer `0..2147483647`; `0` disables the timer (same Host schema bounds) |
 
@@ -147,12 +165,14 @@ refusal, and the page's own pre-check uses the same `> 0` rule.
   duplicates", so `Config` accepts `['SERVER','SERVER']` and `validateTune()` is what refuses it. The
   page never submits duplicates, but a direct `settings.mutate` that bypasses the page can persist them
   in this plugin's own defaults row.
-- **The provider-owned schema is looser than this `Config`.** Upstream accepts any non-empty string as a
-  retryable code (`retry-policy.ts:90,170-178`); this plugin's allowlist is the five stable codes that
-  the upstream policy ships with, because those are the codes the retry classifier can match. A
-  hand-written provider `retryPolicy` naming another string is shown on the page as the five known
-  codes (unknown entries are dropped; an all-unknown list falls back to all five), and a page save then
-  writes the known subset.
+- **The provider-owned schema is looser than this `Config`.** Upstream's schema is
+  `retryableCodes: z.array(z.string())` (`retry-policy.ts:90`), so it validates the shape only (non-empty
+  strings, no duplicates — `retry-policy.ts:170-178`) and the executor compares the stored strings with
+  `includes` (`packages/llm/llm-retry/src/index.ts:212`). The five-code list is **this plugin's own
+  default**, not an upstream limit. This page offers the ten `OFFERED_RETRYABLE_CODES`; a hand-written
+  provider `retryPolicy` naming another string is shown as the offered subset (unknown entries are dropped
+  from the draft; an all-unknown list falls back to the five defaults), and the code list is only
+  rewritten when the user edits it.
 - **The fetch fields have no cross-field rule.** Their whole contract is the per-field tri-state above,
   so `validateTune()` does not cover them: the schema is the enforcement boundary, and `0` is valid.
 
@@ -171,7 +191,7 @@ the tune is safe to write:
 | `maxDelayMs` | must be finite, `> 0`, `<= 2147483647` |
 | `delayOrder` | `initialDelayMs` must not exceed `maxDelayMs` (only checked when both are individually valid) |
 | `jitterRatio` | must be finite and within `[0, 1]` |
-| `retryableCodes` | must be a non-empty array of unique strings from the five upstream codes |
+| `retryableCodes` | must be a non-empty array of unique strings from the ten offered codes (`OFFERED_RETRYABLE_CODES`); an absent value still falls back to the five upstream codes |
 
 Problem codes are emitted in that field order when several rules fail at once. A direct write of
 `{ initialDelayMs: 20000, maxDelayMs: 10000 }` is thus refused as `['delayOrder']`, not as two field
@@ -192,6 +212,12 @@ preset, never a fallback layer.
 - **The plugin's row is not a fallback.** A provider with no `retryPolicy` keeps resolving the upstream
   code defaults, not this plugin's stored defaults; the defaults are a value the user can copy, not a
   layer that silently feeds every route.
+- **The added retry codes are opt-in and off by default.** The page offers ten codes but every default,
+  every fallback and every untouched draft is the five upstream codes; an extra is written only after an
+  explicit tick. Route saves write only the leaves the user touched, so saving an untouched or default
+  route emits no `retryableCodes` op at all. The global card's preset starts on the five, and "Apply
+  defaults to all" projects that preset (five, unless the user explicitly ticked an extra on the global
+  card too).
 - **The listing is derived from effective values, not from stored state.** The per-route tier shows a
   route only when it **deviates**: its effective stored retry policy differs in at least one leaf from
   the plugin's global effective retry values (`normalizePolicy` of this plugin's own `snapshot.value`),
@@ -300,8 +326,11 @@ leaves). One card therefore writes one provider family with one save, at one rev
 
 The policy shape follows the upstream union (`retry-policy.ts:87-101`): `normal` carries `mode`,
 `maxRetries`, `retryableCodes`, `backoff`; `always` carries `mode` and `backoff`, and the other two
-leaves are inactive. A route card shows an `always` draft without the retry-limit/code controls and
-clears those leaves when saving.
+leaves are inactive. In an `always` draft the code checklist is **hidden**; the maximum-retries input
+stays visible and typable but is **ignored and not validated**, and a save clears any stored
+`retryPolicy.maxRetries` / `retryPolicy.retryableCodes`. `always` retries **every** model-request failure
+with no cap — permanent ones included (`AUTH`, `INVALID_REQUEST`, `QUOTA`,
+`CONTEXT_WINDOW_EXCEEDED`, `IMAGE_OFFLOAD_REQUIRED`) — until success, cancellation, or disposal.
 
 ## Provider timeout fields (per-route, provider-owned)
 
@@ -379,9 +408,11 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   ]
   ```
 
-  Both sub-groups travel in that ONE write at ONE revision fence. The global card's **Reset to system
-  defaults** is the fetch-only Reset documented below; the six retry defaults have no reset op (saving
-  the code-default values is the equivalent).
+  Both sub-groups travel in that ONE write at ONE revision fence. The global card always writes all
+  six retry leaves, so its `retryableCodes` leaf is the card's current draft: the five defaults on a
+  fresh or untouched card, and an extra only after the user explicitly ticks it here. The global card's
+  **Reset to system defaults** is the fetch-only Reset documented below; the six retry defaults have no
+  reset op (saving the code-default values is the equivalent).
 
 - **Route card Save, retry half** — the six managed leaves are
 
@@ -394,13 +425,16 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   [...settingsPath, 'retryPolicy', 'backoff', 'jitterRatio']
   ```
 
-  but they are written **relative to the global retry values** and to what the user layer stores: a leaf
-  whose validated value differs from the global value is `set`; a leaf that equals the global value is
-  `unset` when (and only when) the user layer stores it, so a stored-but-equal override is cleaned up
-  and an untouched leaf is never written. `retryableCodes` is compared as an ordered list of the five
-  known codes. In an `always` draft the two normal-only leaves are inactive, so a stored
-  `maxRetries`/`retryableCodes` is `unset` instead, keeping the upstream union's shape. When the
-  resulting list is non-empty and contains **only** unsets, it collapses into the single reset op:
+  but they are written **relative to the global retry values** and **only for leaves the user actually
+  touched** (`retryDraftDiff` against the seeded baseline): an untouched leaf emits no op at all, a
+  touched leaf whose validated value differs from the global value is `set`, and a touched leaf that
+  equals the global value is `unset` when (and only when) the user layer stores it. That is what keeps
+  the opt-in code list inert: an untouched `retryableCodes` list produces no op, so a default route can
+  never gain an extra code from Save. `retryableCodes` is compared as an ordered list over the ten
+  offered codes. In an `always` draft the two normal-only leaves are inactive, so a stored
+  `maxRetries`/`retryableCodes` is `unset` instead (regardless of dirtiness, because the mode change
+  deactivates them), keeping the upstream union's shape. When the resulting list is non-empty and
+  contains **only** unsets, it collapses into the single reset op:
 
   ```
   unset [...settingsPath, 'retryPolicy']
@@ -427,10 +461,10 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   Clearing a seeded leaf emits its unset instead, for example
   `{ "op": "unset", "path": ["providers", "<route>", "timeoutMs"] }`; an untouched field emits nothing.
 
-- **Route card Save, whole list** — one `mutate(ops, revision)` at one revision fence: the retry ops
-  (when the retry draft changed) followed by the changed timeout ops, in that order. A route with no
-  changed leaf at all emits an empty list and its Save stays disabled; a route whose retry draft is
-  unchanged contributes no retry ops.
+- **Route card Save, whole list** — one `mutate(ops, revision)` at one revision fence: the ops for the
+  touched retry leaves followed by the changed timeout leaves, in that order. A route with no touched
+  retry leaf and no changed timeout leaf emits an empty list and its Save stays disabled; a route whose
+  retry draft is untouched contributes no retry ops.
 
 - **Route card Reset** — one write: the whole `retryPolicy` unset followed by one unset per timeout leaf
   THIS card owns for the row's family, and nothing else:
@@ -520,6 +554,142 @@ exercises it as a unit test of the classification path, explicitly marked defens
   need a backend restart before the bundle patch is discovered. Neither is needed for a value change.
 - Uninstalling the bundle removes this plugin's row and page. It does **not** revert `retryPolicy`
   values already written into provider rows, and the plugin performs no automatic migration.
+- **The manual-retry desk is in-memory only.** Nothing about a prompt or the per-turn counter is
+  persisted; every parked prompt is settled (as "no retry") when the plugin is disposed, and a Host
+  restart simply loses the desk.
+
+## Manual same-turn retry
+
+A second, independent host/client feature: when a model request fails and the automatic recovery chain
+has already declined, a **Retry bar** above the composer offers the user one manual same-turn retry.
+Nothing is persisted and no setting is added; the feature is purely additive to the failure path.
+
+### Behavior
+
+- The failure must be **terminal after the automatic chain**: the listener calls the downstream
+  waterfall (`next()`) FIRST and only offers the bar when that chain returned no action. It therefore
+  never preempts `llm-retry`, and it never appears in `always` mode (that mode already retries every
+  failure; the desk also refuses to offer when the payload's resolved `retryPolicy.mode` is `always`).
+- The bar (`role="alert"`) renders above the composer on the Conversation page, in the session that
+  owns the failed request, only while that session is **running** and a browser is watching it. It shows
+  the failure code, the provider, the failure message, **Retry** / **Dismiss**, and a muted
+  **`Attempt n/5`** indicator.
+- **Retry** re-issues that model request in the **same turn and step**. The retry action returns to the
+  agent loop, which continues its attempt loop: it re-runs `prepareRequest()` (`agent/request` waterfall
+  plus `llm.prepareCall()`, so a fresh adapter call and a freshly captured retry policy), rebuilds the
+  request, and streams again. The user message is not appended again and `step/start` is emitted once
+  (the loop keeps one step and marks subsequent attempts as not-first), and earlier steps' tool results
+  stay durable session events.
+- **Dismiss** — like the 90 s deadline — settles the waterfall with no action, so the turn ends with
+  the normal error row. An abort or a plugin disposal settles it immediately; a page that stops
+  answering lets the 90 s deadline do it.
+- The manual decision **bypasses the retry-policy budget**: `maxRetries` and `retryableCodes` are not
+  consulted, and no `llm/retry` / `llm/retry-started` session event is logged (those belong to the
+  automatic executor). The only stops are the manual **per-turn cap of 5** and **one click per attempt**
+  (each new failure prompts once).
+- A save made between attempts **does** take effect on the next request: each attempt resolves
+  `prepareCall()` again, and provider plugins re-register their adapters when the loader reports a
+  changed volatile value. The settings page's global-defaults card is still only a preset; saving it
+  does not rewrite a provider route.
+
+### Wire contract
+
+The channel is a plugin-owned **prefix** Web route mounted on this plugin's own fiber (not
+`ctx.connection.rpc.handle()`, which on this Cordis version cannot resolve `webServer` through the
+Connection provider's def-site inject list):
+
+| Item | Value |
+| --- | --- |
+| Channel | `/llm-api-call-tuning` |
+| Endpoints | `state`, `decide` (each request targets `/llm-api-call-tuning/<endpoint>`) |
+| Client caller | `connection.rpc.call('/llm-api-call-tuning', endpoint, payload, signal)` |
+| Decision timeout | `90_000` ms |
+| Watcher window | `20_000` ms (a `state` poll this recent is what authorizes offering the bar) |
+| Manual retries per turn | `5` |
+| Client poll cadence | `2_000` ms while the session is running |
+| Body ceiling | `64 KiB` (`413` past it) |
+| Id caps | session id `256` chars, nonce `128` chars |
+| Failure-code prefix | `manual-retry` (so `manual-retry/stale`, `manual-retry/bad-request`) |
+| Invalid-rpc fallback id | `invalid-request` |
+
+Request envelope (POST, `content-type: application/json`):
+
+```json
+{ "type": "client-request", "rpcId": "<string>", "method": "state", "payload": { "sessionId": "<id>" } }
+```
+
+Response envelope (HTTP `200`):
+
+```json
+{ "type": "server-response", "rpcId": "<echoed>", "result": { "ok": true, "value": {} } }
+```
+
+`result` is `{ ok: true, value }` or `{ ok: false, error: { code, message, details } }`. Unknown envelope
+keys are ignored, like Connection's own schema.
+
+**Endpoint payloads and results**
+
+- `state` — payload `{ sessionId }`. Every call records the session's watcher heartbeat (that is the
+  only evidence a page is open) and answers
+  `{ "pending": null }` or
+  `{ "pending": { "nonce", "turn", "step", "provider", "code", "message", "expiresAt", "attemptsLeft" } }`.
+  The reply never includes the `settle` callback or any other live state.
+- `decide` — payload `{ sessionId, nonce, decision: "retry" | "dismiss" }`. The first valid decision
+  wins: it clears the pending entry and answers `{ "accepted": true }`. A decision that arrives after the
+  prompt was settled (timeout, dismiss, another tab, or a new prompt) or that carries the wrong nonce is
+  answered `manual-retry/stale`. A malformed payload is answered `manual-retry/bad-request`. Every
+  endpoint-level failure is carried in the HTTP `200` envelope (`ok: false`); only the request guards in
+  the next list answer a non-2xx status.
+
+**Guards, in order** (all before any endpoint work):
+
+1. `connection.requestRejection(req)` — Connection's Host/Origin fence and browser authentication; a
+   rejection answers its status (`401`/`403`) as plain text. This is the route's authentication: there is
+   no bearer token of this plugin's own.
+2. Endpoint segment: only `state` and `decide` under the channel prefix, exactly one segment matching
+   `[A-Za-z0-9_$.-]+`; anything else is `404`.
+3. Method: `POST` only; anything else is `405` with `allow: POST`.
+4. Media type: `application/json` (parameters such as `; charset=utf-8` allowed); anything else is `415`.
+5. Body ceiling `64 KiB`; past it is `413` (and the connection is closed).
+6. Body must parse as JSON; a parse/read failure is `400`.
+7. Envelope shape: a JSON object with `type: "client-request"`, string `rpcId`, string `method`, and a
+   present `payload`. A violation is still an HTTP `200` framed as
+   `{ "type": "server-response", "rpcId": <echoed or "invalid-request">, "result": { "ok": false, "error":
+   { "code": "manual-retry/bad-request", ... } } }`. The envelope `method` must equal the URL endpoint;
+   a mismatch is the same `bad-request` result.
+8. Payload validation (`state`: non-empty string `sessionId`; `decide`: also a non-empty string `nonce`
+   and `decision` exactly `retry` or `dismiss`) — `manual-retry/bad-request`.
+
+**Client dock registration**
+
+`ctx.slots.register({ name: 'conversation.input.dock', id: 'manual-retry', order: 20, locale:
+'llm-api-call-tuning', inject: () => ({ call: callHost }) }, ManualRetryDock)` — registered **before** the
+`configForms` guard, so a Host that serves no settings form still gets the bar. The component polls
+`state` every 2 000 ms only while the session reports `running`, posts `decide` once per click (both
+buttons disabled while the call is in flight), hides itself on `ok`/`manual-retry/stale`/
+`manual-retry/bad-request`, keeps the last offer across a transient transport failure, and renders
+nothing when no decision is pending.
+
+### Safety and failure modes
+
+- **Turn held open.** While the bar is up the turn stays open and `running`, so the composer is disabled;
+  the prompt holds the turn for at most 90 s. **Cancel** is the escape hatch.
+- **Browser-watcher requirement.** A prompt is offered only for a session whose page polled `state`
+  within the last 20 s. A headless/CLI run, a closed tab, a disconnected browser, or a page that never
+  polls never parks a turn: the listener declines at once and the failure behaves exactly as before.
+  Closing the page after the bar appears stops the heartbeat; the unanswered prompt then declines at its
+  90 s deadline.
+- **First decision wins.** One pending prompt per session (a turn runs one model request at a time).
+  Every later or foreign nonce is answered `manual-retry/stale`, so a stale tab cannot settle a newer
+  prompt and a replayed decision cannot retry again.
+- **Resolve as "no retry".** The turn's abort signal (Cancel), plugin disposal (`settleAll()`), and an
+  expired prompt all resolve the parked waterfall with no action, so the turn closes with the normal
+  error row. No path throws into the Host.
+- **A headless Host is never prompted**: the route needs `connection` and `webServer`, and the
+  listener's watcher gate needs a recent page poll, so the plugin still boots and degrades to the old
+  failure path.
+- **Crash-closed turns are out of reach.** A turn already closed by a Host crash/restart (`interrupted`)
+  or a headless run keeps today's behavior: there is no browser to prompt and no live waterfall to park.
 
 ## Known limitations
 
@@ -534,6 +704,23 @@ exercises it as a unit test of the classification path, explicitly marked defens
   managed classification is defensive-only; see *Refusal copy*). There is no force path and no way to
   see the overlay's value beyond the effective value the Host reports.
 - **In-flight requests keep the old policy**, as above.
+- **A manual-retry prompt holds the turn open.** While the bar is up the turn is still `running`, so the
+  composer is disabled and nothing else in that session can start. The prompt lasts at most 90 s, and
+  **Cancel** (the turn abort) is the escape hatch.
+- **Manual retry needs a browser watcher.** The bar is offered only for a session whose page polled
+  `state` within the last 20 s; a headless run, a CLI session, a closed tab, or a disconnected browser
+  never parks a turn and keeps today's failure behavior.
+- **Crash-closed turns and headless runs get no manual retry.** A turn already closed as `interrupted`
+  by a Host crash/restart, and every run without a live browser page, fall back to the automatic chain's
+  outcome: there is no waterfall left to park and no page to prompt.
+- **A manual retry can repeat side effects.** Earlier steps' tool results are durable session history
+  and are not re-sent as new steps, but the retried model call may re-issue the same tool calls, which
+  execute again. The feature does not deduplicate tool effects.
+- **The failure payload has no model field.** The bar shows the provider and the failure code/message
+  (`packages/core/agent/src/runtime-types.ts:389`); it cannot name the model.
+- **The manual decision ignores the retry policy budget.** The 5-per-turn manual cap and the 90 s
+  decision deadline are the only bounds; `maxRetries` and `retryableCodes` are not consulted and no
+  `llm/retry` event is logged, so this path is not part of the automatic retry accounting.
 - **Per route, not per model, and there is no per-model seam.** DSH captures one retry policy per
   **provider route** at adapter registration (`packages/llm/llm/src/retry-policy.ts:78,450-455`), and
   the agent/request-error payload carries the provider but no model
@@ -549,7 +736,7 @@ exercises it as a unit test of the classification path, explicitly marked defens
   a route's deviation cannot be proven, and writing a timeout leaf would materialize a partial provider
   profile and could activate a dormant route. Such a route therefore never appears and is never written.
 - **The provider directory is read once, when the section mounts.** `readProviders()` runs in one
-  mount effect (`client.js:2024-2033`) and the page does **not** subscribe to
+  mount effect (`client.js:2099-2108`) and the page does **not** subscribe to
   `llm/adapters-updated`, `settings/document-updated`, or `connection/reset` the way the Models page
   does (`packages/client/ui-settings-models/src/client/index.ts:122-128`). Provider **form** snapshots
   are subscribed, so the deviating list and the picker still recompute when a provider form changes;
@@ -558,10 +745,27 @@ exercises it as a unit test of the classification path, explicitly marked defens
 - **Only the deployment's own directory is addressable.** A provider route that is not returned by
   `llm.listProviders()` / `llm.listConfigurableProviders()` cannot be edited here; the page does not
   guess namespaces.
-- **The five-code allowlist is narrower than the provider schema.** Upstream accepts any non-empty
-  string code; this page only offers the five stable codes and normalizes an unknown stored list when
-  it saves. Codes outside the five can be stored by hand but the retry classifier would never match
-  them, so the narrowing is deliberate.
+- **The offered list is a page-level subset, and the five-code default is this plugin's own.** Upstream's
+  schema is `retryableCodes: z.array(z.string())` (`retry-policy.ts:90`) and the executor matches exact
+  string codes (`packages/llm/llm-retry/src/index.ts:212`), so upstream is not limited to five and does
+  not check membership. The page offers ten codes and defaults to the five upstream ones; a hand-stored
+  code outside the ten is not a Host error, is shown by normalizing the draft to the offered subset, and
+  is only dropped from the user layer when the code list is actually rewritten (a route save writes only
+  touched leaves, so an untouched exotic list survives; the global card's Save always rewrites its six
+  leaves and therefore normalizes the plugin's own preset). The narrowing is the page's UX choice, not an
+  upstream rule.
+- **The added retry codes are opt-in and off by default.** Ten codes are offered but the five upstream
+  codes are pre-selected; an extra is written only after an explicit tick. An untouched or default route
+  save writes no `retryableCodes` op, so merely visiting or saving the page cannot activate an extra. The
+  global card's preset is the five unless an extra is ticked there, and "Apply defaults to all" projects
+  that preset.
+- **`CONTEXT_WINDOW_EXCEEDED` and `IMAGE_OFFLOAD_REQUIRED` are deliberately not offered.** In `normal`
+  mode a listed code is retried by the retry executor **before** it delegates to `next()`
+  (`packages/llm/llm-retry/src/index.ts:212`), so retrying those failures would never reach the handlers
+  that actually fix them — `compaction-basic`
+  (`packages/compaction/compaction-basic/src/index.ts:213,217`) and `compaction-image-offload`
+  (`packages/compaction/compaction-image-offload/src/index.ts:27,28`). Adding them would burn retry
+  attempts instead of compacting or offloading the content. Do not add them.
 - **Duplicate codes are not a `Config` error.** Only `validateTune()` refuses them; a direct Host write
   can persist them in this plugin's own defaults row, and the page will refuse to submit that draft.
 - **`Config`'s numeric bounds do not reject `NaN`.** schemastery compares a value against `.min()`/`.max()`
@@ -569,8 +773,8 @@ exercises it as a unit test of the classification path, explicitly marked defens
   documented range says "finite". The page's own parser and `validateTune()` both refuse `NaN`, and
   `verify.mjs` pins this schemastery behaviour so a change in either direction is noticed.
 - **The runtime policy is read from the provider, not re-validated by this plugin.** A hand-written
-  provider `retryPolicy` is accepted if the provider's own schema accepts it; the page's five-code
-  allowlist and cross-field rules describe what the page will write, not a Host-side guarantee.
+  provider `retryPolicy` is accepted if the provider's own schema accepts it; the page's ten-code
+  offered list and cross-field rules describe what the page will write, not a Host-side guarantee.
 - **The page's local validation is not the Host schema.** A direct `settings.mutate` (or a hand-edited
   profile patch) can still write a provider policy that the provider's own loader will reject at load
   time; the page's refusal is a UX guard, not an enforcement boundary.
@@ -605,12 +809,14 @@ exercises it as a unit test of the classification path, explicitly marked defens
 
 ### Registration (immediate)
 
-`apply(ctx)` registers the dictionary and the section synchronously; there is no `whileServed` gate and
-no deferred registration. `configForms` is a **declared** client inject, so a composition without the
-settings service parks this fiber before `apply` runs: neither the dictionaries nor the section are
-registered and the page simply does not activate. The `forms === undefined` guard in `client.js:2436`
-is belt-and-braces for a direct harness/composition that calls `apply` regardless; in a real composition
-it is never reached.
+`apply(ctx)` registers the dictionary, the manual-retry dock, and the section synchronously; there is
+no `whileServed` gate and no deferred registration. The dock is registered **before** the settings-page
+guard (it is a Conversation-page contribution that must work on a Host that serves no settings form for
+this row). `configForms` is a **declared** client inject, so a composition without the settings service
+parks this fiber before `apply` runs: neither the dictionaries nor the section are registered and the
+page simply does not activate. The `forms === undefined` guard in `client.js:2766` is belt-and-braces
+for a direct harness/composition that calls `apply` regardless; in a real composition it is never
+reached.
 
 The section registration is:
 
@@ -637,6 +843,25 @@ and is the same bound function as the declared `locale` seat, so the duplication
 cards are a separate `RouteCard` child component rendered with `{ row, t, form, defaultsValues,
 globalRetryValues, bodyTimeoutMs, onSettled }`, so a bare root render shows the global card and the
 section notes only — a card's controls exist after the child mounts.
+
+### Manual-retry dock
+
+`ManualRetryDock` is the `conversation.input.dock` row (id `manual-retry`, order 20). It receives the
+session kit (`sessionId`, `useSession`, `t`) plus the injected `{ call }` and renders `null` unless the
+session reports `running` **and** the last `state` reply for that same session carried `pending`. The
+row is `role="alert"`: `manualRetry.title`, the failure `code` in a `<code>`, the `provider`, the
+failure `message`, an `Attempt n/5` indicator derived from `attemptsLeft` (the Host's remaining manual
+retries, `n = 5 - attemptsLeft + 1`, so the first offer is `1/5`), and **Retry** / **Dismiss**. A local
+expiry check (`expiresAt <= <reply time>`) replaces both buttons with a single **Dismiss** and renders
+`manualRetry.expired`.
+
+Polling: one `state` call immediately and then every 2 000 ms while the session is running; an
+`AbortController` cancels the in-flight call on unmount, session change, or stop, and a transient
+transport failure keeps the last offer instead of flickering the bar away. A click posts exactly one
+`decide` and disables both buttons while it is in flight; `ok` hides the bar,
+`manual-retry/stale` / `manual-retry/bad-request` drop the offer silently, and any other error leaves
+the bar to the next poll. The dock carries its own styles (`DOCK_STYLE_TEXT` in `client.js`) because the
+Conversation page does not inject the settings page's stylesheet.
 
 ### Provider directory read
 
@@ -694,14 +919,18 @@ deviating list and the picker.
 
 ### Page copy
 
-The en and zh dictionaries are inline in `client.js` and carry the **same 120 keys**. English copy never
+The en and zh dictionaries are inline in `client.js` and carry the **same 131 keys**. English copy never
 contains CJK text; every key has a non-empty Chinese value. The nav label is the `nav` key, the page
 header/title is the `title` key, and `intro` describes the two tiers (the global card, then the
 deviating-only per-route cards). The merged layout introduced `global.*` (card heading, description,
 `retries` sub-group title, Save copy, note), `routes.*` (picker label/placeholder/Add, empty and
 all-listed notes, the two sub-group titles, and the picked-card hint), `status.routeReset`,
-`apply.outcome.*`, and the per-field `field.*` copy shared by the global retry sub-group and every route
-card. The previous layout's separate `defaults.heading`/`defaults.note`, `fetch.save`/`fetch.saving`/
+`apply.outcome.*` (including `apply.outcome.skipped`), the per-field `field.*` copy shared by the global
+retry sub-group and every route card, and the five `code.*` labels for the opt-in extras
+(`code.STREAM_CLOSED`, `code.MALFORMED_RESPONSE`, `code.PI_AI_ERROR`, `code.HTTP_408`, `code.HTTP_409`).
+`field.retryableCodes.description` states the opt-in behaviour, and `provider.alwaysNote` /
+`mode.always` carry the corrected always-mode wording. The six `manualRetry.*` keys are the dock's
+copy: `aria`, `title`, `retry`, `dismiss`, `attempt`, and `expired`. The previous layout's separate `defaults.heading`/`defaults.note`, `fetch.save`/`fetch.saving`/
 `fetch.status.*`, and `timeouts.heading`/`timeouts.description`/`timeouts.note`/`timeouts.save*`/
 `timeouts.reset*` copy is gone; the remaining `timeouts.*` keys are the shared unit/hint/Unlimited/
 protocol/advisory copy.
@@ -712,8 +941,10 @@ The first card carries `global.heading` / `global.description` and two labeled s
 
 - **Retries** (`global.retriesHeading`, description `defaults.description`): the six retry controls from
   `renderRetryFields` — `mode`, `maxRetries`, `initialDelayMs`, `maxDelayMs`, `jitterRatio`, and the
-  five-code `retryableCodes` fieldset. They are seeded from this plugin's own `snapshot.value` and are a
-  preset: saving them changes no provider.
+  ten-checkbox `retryableCodes` fieldset, of which exactly the five upstream codes start checked. They
+  are seeded from this plugin's own `snapshot.value` and are a preset: saving them changes no provider.
+  The global card always renders the checklist, even in `always` mode, because it owns the preset rather
+  than a live policy.
 - **Fetch timeouts** (`fetch.heading`, description `fetch.description`): one text input per
   `FETCH_KEYS` field, built from the two **flat top-level** leaves of this plugin's own namespace. An
   absent/`null` leaf is painted **empty** (system default), `0` is painted as `0` (disabled), and a
@@ -724,12 +955,14 @@ The first card carries `global.heading` / `global.description` and two labeled s
 
 One **Save global settings** (`global.save`) validates both drafts and submits the combined op list
 documented in *Write operation shapes* at one revision fence; it is disabled while either draft is
-invalid, the form is not ready/writable, or this card's own save/Reset/apply is in flight. **Apply defaults to all
-active providers** (`defaults.applyAll`) copies the validated retry values into every target row (active,
-non-empty `settingsNs`, live form), re-gating each row immediately before its own write, and records
-`apply.outcome.saved` / `refused` / `managed` / `skipped` in a section-level summary. The card also
-renders `global.note` (retry values are a preset; the fetch halves are never projected) and
-`defaults.applyAllNote`.
+invalid, the form is not ready/writable, or this card's own save/Reset/apply is in flight. It always
+writes all six retry leaves, so the stored `retryableCodes` is the card's draft: the five defaults on a
+fresh or untouched card, and an extra only after the user explicitly ticks it here. **Apply defaults to
+all active providers** (`defaults.applyAll`) copies the validated retry values into every target row
+(active, non-empty `settingsNs`, live form) with the classic six-leaf `retryPolicyOps` write, re-gating
+each row immediately before its own write, and records `apply.outcome.saved` / `refused` / `managed` /
+`skipped` in a section-level summary. The card also renders `global.note` (retry values are a preset;
+the fetch halves are never projected) and `defaults.applyAllNote`.
 
 ### Per-route section and merged card
 
@@ -748,8 +981,11 @@ Each deviating (or picked) route renders one merged `RouteCard`:
   (`timeouts.protocol`; pi-ai reads `snapshot.value.providers.<route>.api` and falls back to
   `timeouts.protocol.catalog`, DeepSeek always renders `anthropic-messages`).
 - **Retry policy** sub-group (`routes.retryHeading`): the same six retry controls seeded from
-  `[...settingsPath, 'retryPolicy']`; an `always` draft hides the two normal-only controls and renders
-  `provider.alwaysNote`.
+  `[...settingsPath, 'retryPolicy']`. In `normal` mode the code fieldset renders the **ten** offered
+  checkboxes with the stored codes ticked (five on an untouched route); in an `always` draft the
+  checklist is hidden, the maximum-retries input stays visible but is ignored and not validated, and
+  `provider.alwaysNote` warns that always retries every failure including permanent ones with no limit.
+  Retry saves write only the leaves the user touched, so an untouched code list writes nothing.
 - **Timeouts** sub-group (`routes.timeoutsHeading`): the family's fields — a pi-ai card shows
   `streamIdleTimeoutMs` and `timeoutMs`, a DeepSeek card shows `streamIdleTimeoutMs` and
   `filesApiTimeoutMs`. Each is a text input seeded from the user layer, carries a per-field
@@ -779,11 +1015,17 @@ the fetch tri-state: unset/absent/null, `0` disabled, boundaries, and the refuse
 (no install when unset; install and nullish-fill when numeric; `0` pass-through; live re-read on
 `loader/volatile-update`/`app-boot/config-reload`; restore-on-clear; restore-on-dispose only while still
 current; `NODE_USE_ENV_PROXY`; missing-`undici` warn-once no-op in a child process), the en/zh copy
-parity (120 keys), the provider-timeout metadata and the upstream schema/defaults it mirrors, the client
-registration and the merged page contract (one global card first with both sub-groups; the old separate
-retry and timeout sections absent; the deviating-only listing rule including the stored-but-equal case;
-the picker's exclusion set and local-only Add; an empty state; revert-to-global emitting `unset` and the
-all-unset collapse; whole-list op shapes for global Save, route Save, and route Reset), the validation,
+parity (131 keys), the offered ten retryable codes vs the five defaults (the `OFFERED_RETRYABLE_CODES`
+order and export, `Config`'s union/default split, and `validateTune`'s membership check), the
+provider-timeout metadata and the upstream schema/defaults it mirrors, the client registration and the
+merged page contract (one global card first with both sub-groups; the old separate retry and timeout
+sections absent; the deviating-only listing rule including the stored-but-equal case; the picker's
+exclusion set and local-only Add; an empty state; revert-to-global emitting `unset` and the all-unset
+collapse; touched-leaf retry saves that never add an opt-in code; the hidden `always` checklist;
+whole-list op shapes for global Save, route Save, and route Reset), the manual same-turn retry (the
+listener awaiting `next()` first and passing an automatic action through, the desk's watcher window,
+timeout, per-turn cap and nonce/stale handling, the authenticated route's guard order, envelopes and
+error codes, and the dock's render/poll/decide behavior), the validation,
 refusal, per-write gate/skip, and revision-retry paths, the provider-directory join and its degradation,
 the route card (family visibility, user-layer seeding, protocol display, advisories, active-only gate,
 Unlimited preset, zero rejection), and the docs' field tables in both languages. The "managed
