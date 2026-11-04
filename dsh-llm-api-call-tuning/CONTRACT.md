@@ -206,9 +206,9 @@ preset, never a fallback layer.
   settings namespace resolves (`snapshot.value` of the provider's config form). The page paints that
   value; it owns no copy and projects nothing.
 - **The global defaults are presets only.** Saving them writes this plugin's own six fields and changes
-  no provider. They are applied only by an explicit **Use defaults** (one row, staged then Saved) or
-  **Apply defaults to all active providers** (each row written separately); a provider that refuses
-  keeps its policy.
+  no provider. They are applied only by an explicit **Use defaults** (one row, staged then Saved),
+  **Reset to global** (one row, written from the SAVED preset), or **Apply defaults to all active
+  providers** (each row written separately); a provider that refuses keeps its policy.
 - **The plugin's row is not a fallback.** A provider with no `retryPolicy` keeps resolving the upstream
   code defaults, not this plugin's stored defaults; the defaults are a value the user can copy, not a
   layer that silently feeds every route.
@@ -428,7 +428,12 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   but they are written **relative to the global retry values** and **only for leaves the user actually
   touched** (`retryDraftDiff` against the seeded baseline): an untouched leaf emits no op at all, a
   touched leaf whose validated value differs from the global value is `set`, and a touched leaf that
-  equals the global value is `unset` when (and only when) the user layer stores it. That is what keeps
+  equals the global value is `unset` only when that global value is itself the code default
+  (`CODE_RETRY_DEFAULTS`, the client mirror of the host's `DEFAULT_TUNE`) **and** the user layer stores
+  it. An `unset` falls back to the provider schema's code defaults, never to this plugin's saved preset,
+  so a touched leaf equal to a **non-default** global value is written as a `set` — that is what keeps a
+  Save stable after **Reset to global**, and it is why the all-unset collapse below stays sound (an
+  all-unset list means the route is at the code defaults). That is also what keeps
   the opt-in code list inert: an untouched `retryableCodes` list produces no op, so a default route can
   never gain an extra code from Save. `retryableCodes` is compared as an ordered list over the ten
   offered codes. In an `always` draft the two normal-only leaves are inactive, so a stored
@@ -481,6 +486,37 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   A picked card that stores nothing yet (no `retryPolicy` and no owned timeout leaf in the user layer)
   is closed **locally** by Reset: no operation at all is sent.
 
+- **Route card Reset to global** — one write that copies the **SAVED** global retry preset onto the
+  route and clears the timeout overrides, in that order. Every managed retry leaf is `set` (iterated
+  from `RETRY_FIELDS`, so all six are always covered; `retryableCodes` carries exactly the saved global
+  code list, never the offered ten unless the preset stores an extra). The paths are the same
+  `retryPolicy` / `backoff` paths Save uses, and in `always` mode the two normal-only leaves are still
+  written: the upstream union accepts them (`ALWAYS_POLICY_KEYS`) and ignores them until the route
+  returns to `normal`. The timeout half is the inherit-style `timeoutResetOps` list, because a timeout
+  has no per-provider global counterpart — inheriting the package/SDK default is its global-effective
+  state. For a saved preset of `{ mode: 'normal', maxRetries: 7, initialDelayMs: 800, maxDelayMs:
+  20000, jitterRatio: 0.2, retryableCodes: [the five defaults] }` the write is:
+
+  ```json
+  [
+    { "op": "set", "path": ["providers", "openrouter", "retryPolicy", "mode"], "value": "normal" },
+    { "op": "set", "path": ["providers", "openrouter", "retryPolicy", "maxRetries"], "value": 7 },
+    { "op": "set", "path": ["providers", "openrouter", "retryPolicy", "backoff", "initialDelayMs"], "value": 800 },
+    { "op": "set", "path": ["providers", "openrouter", "retryPolicy", "backoff", "maxDelayMs"], "value": 20000 },
+    { "op": "set", "path": ["providers", "openrouter", "retryPolicy", "backoff", "jitterRatio"], "value": 0.2 },
+    { "op": "set", "path": ["providers", "openrouter", "retryPolicy", "retryableCodes"], "value": ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"] },
+    { "op": "unset", "path": ["providers", "openrouter", "streamIdleTimeoutMs"] },
+    { "op": "unset", "path": ["providers", "openrouter", "timeoutMs"] }
+  ]
+  ```
+
+  For a DeepSeek route the retry paths drop the `providers.<route>` prefix and the last two paths are
+  `['streamIdleTimeoutMs']` and `['filesApiTimeoutMs']`. The read is of the plugin's **committed**
+  section (`normalizePolicy(snapshot.value)`), never of the global card's unsaved draft. Unlike Reset
+  this never short-circuits: a picked card that stores nothing is still written (the card exists
+  precisely so the user can start from the effective values). A route that ends up equal to the saved
+  preset stops deviating and is dropped from the listed set by the same `onSettled` path Reset uses.
+
 - **Picking a route** — **no write**. The card is materialized in local state from the effective values
   and persists nothing until a field is edited and the card is saved.
 
@@ -497,7 +533,8 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
 **Never:** a whole `retryPolicy` object set (that would materialize schema defaults over a hand-written
 profile), a whole `providers` dict set (that would clobber sibling provider fields), or a profile-object
 set. Every `set` op addresses one leaf; the only subtree unsets are Reset's `retryPolicy` and the
-route's own timeout leaves. The two fetch leaves are always **flat** (`['headersTimeoutMs']`,
+route's own timeout leaves; Reset to global sets the six retry leaves explicitly and only unsets the
+route's timeout leaves. The two fetch leaves are always **flat** (`['headersTimeoutMs']`,
 `['bodyTimeoutMs']`), never nested under a `fetchTimeouts` object, and they never appear in a route
 card's Save/Reset or in "Apply defaults to all". A route card's op list may carry retry and timeout ops
 together, but each op addresses one leaf of that route's own address; "Apply defaults to all" emits
@@ -919,12 +956,13 @@ deviating list and the picker.
 
 ### Page copy
 
-The en and zh dictionaries are inline in `client.js` and carry the **same 131 keys**. English copy never
+The en and zh dictionaries are inline in `client.js` and carry the **same 134 keys**. English copy never
 contains CJK text; every key has a non-empty Chinese value. The nav label is the `nav` key, the page
 header/title is the `title` key, and `intro` describes the two tiers (the global card, then the
 deviating-only per-route cards). The merged layout introduced `global.*` (card heading, description,
 `retries` sub-group title, Save copy, note), `routes.*` (picker label/placeholder/Add, empty and
 all-listed notes, the two sub-group titles, and the picked-card hint), `status.routeReset`,
+`status.resetToGlobal`, `provider.resetToGlobal` / `provider.resettingToGlobal`,
 `apply.outcome.*` (including `apply.outcome.skipped`), the per-field `field.*` copy shared by the global
 retry sub-group and every route card, and the five `code.*` labels for the opt-in extras
 (`code.STREAM_CLOSED`, `code.MALFORMED_RESPONSE`, `code.PI_AI_ERROR`, `code.HTTP_408`, `code.HTTP_409`).
@@ -1015,14 +1053,16 @@ the fetch tri-state: unset/absent/null, `0` disabled, boundaries, and the refuse
 (no install when unset; install and nullish-fill when numeric; `0` pass-through; live re-read on
 `loader/volatile-update`/`app-boot/config-reload`; restore-on-clear; restore-on-dispose only while still
 current; `NODE_USE_ENV_PROXY`; missing-`undici` warn-once no-op in a child process), the en/zh copy
-parity (131 keys), the offered ten retryable codes vs the five defaults (the `OFFERED_RETRYABLE_CODES`
+parity (134 keys), the offered ten retryable codes vs the five defaults (the `OFFERED_RETRYABLE_CODES`
 order and export, `Config`'s union/default split, and `validateTune`'s membership check), the
 provider-timeout metadata and the upstream schema/defaults it mirrors, the client registration and the
 merged page contract (one global card first with both sub-groups; the old separate retry and timeout
 sections absent; the deviating-only listing rule including the stored-but-equal case; the picker's
-exclusion set and local-only Add; an empty state; revert-to-global emitting `unset` and the all-unset
-collapse; touched-leaf retry saves that never add an opt-in code; the hidden `always` checklist;
-whole-list op shapes for global Save, route Save, and route Reset), the manual same-turn retry (the
+exclusion set and local-only Add; an empty state; revert to a DEFAULT global value emitting `unset` and
+the all-unset collapse while a NON-default match stays a `set`; the client `CODE_RETRY_DEFAULTS` /
+host `DEFAULT_TUNE` parity; `Reset to global` writing all six saved retry leaves plus the timeout
+unsets on pi-ai and DeepSeek paths, including a table that stores nothing; the hidden `always`
+checklist; whole-list op shapes for global Save, route Save, route Reset, and Reset to global), the manual same-turn retry (the
 listener awaiting `next()` first and passing an automatic action through, the desk's watcher window,
 timeout, per-turn cap and nonce/stale handling, the authenticated route's guard order, envelopes and
 error codes, and the dock's render/poll/decide behavior), the validation,

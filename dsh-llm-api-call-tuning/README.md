@@ -93,8 +93,9 @@ the last nav row (section order 45). The page renders exactly two tiers:
    The card also carries **Apply defaults to all active providers**.
 2. **Per-route overrides** — a native **route picker** and an **Add** button above the list, then **one
    merged card per deviating route**. A card carries its **Retry policy** and **Timeouts** sub-groups,
-   one **Save**, one **Reset**, and **Use defaults** (retry half). Only routes that deviate are listed;
-   the picker offers the remaining routes and excludes the ones already listed. Picking a route
+   one **Save**, one **Reset to global**, one **Reset**, and **Use defaults** (retry half). Only routes
+   that deviate are listed; the picker offers the remaining routes and excludes the ones already
+   listed. Picking a route
    materializes its card locally from the effective values and **writes nothing** until you edit a field
    and save. Editing a retry leaf back to its global value (or clearing a timeout) removes that override,
    so the card disappears once the route no longer deviates. An empty list says "No provider route
@@ -193,8 +194,11 @@ route's retry leaves and its changed timeout leaves together.
 
 The retry half is written **relative to the global retry values** and **only for the leaves you
 actually touched**: an untouched leaf produces no operation at all, a touched leaf whose draft differs
-from the global value is `set`, and a touched leaf turned back to the global value is `unset` (only when
-the user layer actually stores it). That is also what keeps the opt-in code list safe: an untouched
+from the global value is `set`, and a touched leaf turned back to the global value is `unset` only when
+that global value is the **code default** and the user layer actually stores it. An `unset` falls back
+to the provider schema's code defaults, never to this plugin's saved preset, so matching a **non-default**
+global value is written as a `set` — which is what keeps **Save** stable after a **Reset to global**.
+That is also what keeps the opt-in code list safe: an untouched
 `retryableCodes` list is never written, so a default route cannot be given an extra code by pressing
 Save. When the retry half's list is non-empty and every op in it is an `unset`, the page collapses it
 into the single `unset [...settingsPath, 'retryPolicy']`. In `normal` mode the touched leaves can be
@@ -213,10 +217,20 @@ value emits its `unset`, a typed value emits its `set`, and an untouched field e
 card that stores nothing yet has nothing to save (its **Save** stays disabled), and **Save** is also
 disabled while either draft is invalid or nothing changed.
 
-**Reset** removes everything the card stores for the route in one write: the whole `retryPolicy` plus
-this family's timeout leaves. On a picked card that stores no override yet, **Reset** closes the card
-locally with **no write at all**. **Use defaults** copies the validated global retry defaults into the
-retry draft; nothing is written until **Save**.
+**Reset to global** copies the **saved** global retry preset onto the route in one write: all six retry
+leaves, at the same leaf paths **Save** uses, carrying the global code list (the saved section, never
+the global card's unsaved draft). It then clears this family's timeout overrides, because timeouts have
+no per-provider global counterpart — inheriting the package/SDK default **is** their global-effective
+state. It covers every retry setting (nothing is hardcoded or skipped) and it writes even on a picked
+card that stores no override yet, unlike **Reset**. The provider rows stay the source of truth, so the
+global values are written explicitly; a route that ends up equal to the saved preset no longer deviates
+and closes.
+
+**Reset** is the inherit-style reset: it removes everything the card stores for the route in one write —
+the whole `retryPolicy` plus this family's timeout leaves — so the provider falls back to its own schema
+defaults. On a picked card that stores no override yet, **Reset** closes the card locally with **no
+write at all**. **Use defaults** copies the validated global retry defaults into the retry draft;
+nothing is written until **Save**.
 
 A write is attempted only when the route's form reports `ready`, is not read-only, and carries a numeric
 revision; that same read is the revision fence, so the page never sends an unconditional write. A route
@@ -430,15 +444,18 @@ network, no server, no file writes — and resolves the **real** `@deepseek-ai/s
 upstream `retry-policy.ts` through `$DSH_HARNESS_CHECKOUT`, so a schema or constant drift fails loudly.
 It checks the manifest and bundle patch, the Host `Config` accept/reject matrix, the `validateTune()`
 rules, `apply()`, the client registration (one section, id `llm-api-call-tuning`, order 45), the en/zh
-copy parity (131 keys), the offered ten retryable codes vs the five defaults (the exported offered-code
-order, the `Config` union/default split, and `validateTune` membership), the rendered two-tier layout
+copy parity (134 keys), the offered ten retryable codes vs the five defaults (the exported offered-code
+order, the `Config` union/default split, and `validateTune` membership), the client/host retry-default
+mirror (`CODE_RETRY_DEFAULTS` deep-equalled against the host `DEFAULT_TUNE`), the rendered two-tier layout
 (the single global card precedes the per-route
 section; both sub-groups are present; the old separate retry and timeout sections are gone), the
 deviating-only listing rule (a stored retry override equal to the global values is hidden, a route with
 only a stored timeout is listed, the picker excludes listed routes, picking adds one card, an empty
 state renders), the exact operation shapes (global Save carrying both the retry and fetch leaves,
-merged route Save and Reset, touched-leaf retry saves that never add an opt-in code, a leaf reverted to
-its global value emitting `unset`, the all-unset collapse, the hidden `always` checklist), the
+merged route Save, Reset, and Reset to global with its six explicit retry sets plus timeout unsets,
+touched-leaf retry saves that never add an opt-in code, a leaf reverted to a **default** global value
+emitting `unset` while a **non-default** match stays a `set`, the all-unset collapse, and the hidden
+`always` checklist), the
 provider-timeout metadata (frozen keys/defaults/bounds/scopes and the upstream schema +
 defaults they mirror), the validation, refusal, per-write gate/skip, and revision-retry paths, the
 provider directory join and every degradation path, the route-card behavior (family visibility,

@@ -81,7 +81,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
 node dsh-lead-agent-only-leads/verify.mjs    # 59/59 checks passed
-node dsh-llm-api-call-tuning/verify.mjs      # 154 passed, 0 failed, 0 skipped (154 checks)
+node dsh-llm-api-call-tuning/verify.mjs      # 161 passed, 0 failed, 0 skipped (161 checks)
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 

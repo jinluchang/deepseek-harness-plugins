@@ -162,8 +162,16 @@ window.__ModuleLoader__.load({
      * code list is deliberately the five upstream codes — NEVER the offered
      * ten — so an absent or unusable stored list cannot activate an opt-in
      * code.
+     *
+     * This is also an EXACT mirror of the host's `DEFAULT_TUNE`
+     * (`index.js:389`), exposed as `plugin.CODE_RETRY_DEFAULTS` so `verify.mjs`
+     * can deep-equal the two halves; the client cannot import the host module,
+     * and a silent divergence would change what "Reset" and "Save" mean.
+     * `retryPolicyDiffOps` uses it to decide whether an `unset` can express a
+     * global value: an unset falls back to THESE defaults, never to the saved
+     * global preset.
      */
-    const DEFAULT_POLICY = Object.freeze({
+    const CODE_RETRY_DEFAULTS = Object.freeze({
       mode: 'normal',
       maxRetries: 5,
       initialDelayMs: 500,
@@ -314,6 +322,8 @@ window.__ModuleLoader__.load({
       'provider.status.unavailable': 'This deployment does not serve this provider\u2019s settings namespace, so it is read-only here.',
       'provider.useDefaults': 'Use defaults',
       'provider.reset': 'Reset',
+      'provider.resetToGlobal': 'Reset to global',
+      'provider.resettingToGlobal': 'Resetting to global\u2026',
       'provider.save': 'Save',
       'provider.saving': 'Saving\u2026',
       'provider.resetting': 'Resetting\u2026',
@@ -385,6 +395,7 @@ window.__ModuleLoader__.load({
       'status.saved': 'Saved.',
       'status.reset': 'Reset. This provider no longer stores a retryPolicy override.',
       'status.routeReset': 'Reset. This route no longer stores the retry policy or timeout overrides shown here.',
+      'status.resetToGlobal': 'Reset to global. Every retry setting now carries the saved global values, and the timeout overrides were cleared so this route inherits the package/SDK defaults.',
       'status.fetchReset': 'Reset. The fetch timeouts return to the system defaults.',
       'error.refused': 'The host refused the write. The values shown are the ones the host reports now.',
       'error.managed': 'These values are managed elsewhere \u2014 a home patch or command-line overlay overrides them \u2014 so this page cannot change them.',
@@ -448,6 +459,8 @@ window.__ModuleLoader__.load({
       'provider.status.unavailable': '\u5f53\u524d\u90e8\u7f72\u672a\u63d0\u4f9b\u8be5\u63d0\u4f9b\u65b9\u7684\u8bbe\u7f6e\u547d\u540d\u7a7a\u95f4\uff0c\u56e0\u6b64\u5728\u6b64\u4e3a\u53ea\u8bfb\u3002',
       'provider.useDefaults': '\u4f7f\u7528\u9ed8\u8ba4\u503c',
       'provider.reset': '\u91cd\u7f6e',
+      'provider.resetToGlobal': '\u91cd\u7f6e\u4e3a\u5168\u5c40\u8bbe\u7f6e',
+      'provider.resettingToGlobal': '\u6b63\u5728\u91cd\u7f6e\u4e3a\u5168\u5c40\u8bbe\u7f6e\u2026',
       'provider.save': '\u4fdd\u5b58',
       'provider.saving': '\u6b63\u5728\u4fdd\u5b58\u2026',
       'provider.resetting': '\u6b63\u5728\u91cd\u7f6e\u2026',
@@ -519,6 +532,7 @@ window.__ModuleLoader__.load({
       'status.saved': '\u5df2\u4fdd\u5b58\u3002',
       'status.reset': '\u5df2\u91cd\u7f6e\u3002\u8be5\u63d0\u4f9b\u65b9\u4e0d\u518d\u4fdd\u5b58 retryPolicy \u8986\u76d6\u3002',
       'status.routeReset': '已重置。该路由不再保存此处显示的重试策略或超时覆盖。',
+      'status.resetToGlobal': '已重置为全局设置。所有重试设置现在都采用已保存的全局值，超时覆盖已清除，因此该路由继承包/SDK 默认值。',
       'status.fetchReset': '\u5df2\u91cd\u7f6e\u3002\u6293\u53d6\u8d85\u65f6\u6062\u590d\u4e3a\u7cfb\u7edf\u9ed8\u8ba4\u3002',
       'error.refused': '\u5bbf\u4e3b\u62d2\u7edd\u4e86\u672c\u6b21\u5199\u5165\u3002\u5f53\u524d\u663e\u793a\u7684\u662f\u5bbf\u4e3b\u73b0\u5728\u62a5\u544a\u7684\u503c\u3002',
       'error.managed': '\u8fd9\u4e9b\u503c\u7531\u5176\u4ed6\u4f4d\u7f6e\u7ba1\u7406\u2014\u2014\u5bb6\u5ead\u8865\u4e01\u6216\u547d\u4ee4\u884c\u8986\u76d6\u4e86\u5b83\u4eec\u2014\u2014\u56e0\u6b64\u672c\u9875\u9762\u65e0\u6cd5\u4fee\u6539\u3002',
@@ -804,16 +818,16 @@ window.__ModuleLoader__.load({
       const mode = policy.mode === 'always' ? 'always' : 'normal';
       const maxRetries = Number.isSafeInteger(policy.maxRetries) && policy.maxRetries >= 0
         ? policy.maxRetries
-        : DEFAULT_POLICY.maxRetries;
+        : CODE_RETRY_DEFAULTS.maxRetries;
       const initialDelayMs = validDelay(policy.initialDelayMs)
         ?? validDelay(backoff.initialDelayMs)
-        ?? DEFAULT_POLICY.initialDelayMs;
+        ?? CODE_RETRY_DEFAULTS.initialDelayMs;
       const maxDelayMs = validDelay(policy.maxDelayMs)
         ?? validDelay(backoff.maxDelayMs)
-        ?? DEFAULT_POLICY.maxDelayMs;
+        ?? CODE_RETRY_DEFAULTS.maxDelayMs;
       const jitterRatio = validJitter(policy.jitterRatio)
         ?? validJitter(backoff.jitterRatio)
-        ?? DEFAULT_POLICY.jitterRatio;
+        ?? CODE_RETRY_DEFAULTS.jitterRatio;
       return {
         mode,
         maxRetries,
@@ -1012,6 +1026,50 @@ window.__ModuleLoader__.load({
       return [{ op: 'unset', path: [...settingsPath, 'retryPolicy'] }];
     }
 
+    /**
+     * The ops "Reset to global" writes: EVERY managed retry leaf set to the
+     * SAVED global preset (the plugin's own committed section, never the
+     * global card's unsaved draft), then one unset per timeout leaf the row's
+     * family owns.
+     *
+     * Unlike {@link resetPolicyOps} this does not remove the override: the
+     * provider rows are the source of truth, so "use the global values" means
+     * copying them onto the route explicitly. The retry leaves are iterated
+     * from `RETRY_FIELDS` (all six, in field order, with the same
+     * `retryPolicy`/`backoff` path mapping Save uses), and `retryableCodes`
+     * carries exactly the global code list — never the offered ten unless the
+     * global preset itself stores an extra. In `always` mode the two
+     * normal-only leaves are still written: the upstream union accepts them
+     * (`ALWAYS_POLICY_KEYS`) and ignores them until the route returns to
+     * `normal`, which is what makes this card's six settings follow the saved
+     * global preset in either mode.
+     *
+     * Timeouts have no per-provider global counterpart, so their
+     * global-effective semantics IS "inherit the package/SDK default": the
+     * timeout half is the same {@link timeoutResetOps} the inherit-style Reset
+     * uses.
+     * @param settingsPath - the provider profile path inside its namespace.
+     * @param globalValues - the SAVED global retry preset, normalized to six leaves.
+     * @param family - `'pi-ai'` or `'deepseek'`.
+     * @returns ordered leaf-path ops: six retry sets, then the timeout unsets.
+     */
+    function resetToGlobalOps(settingsPath, globalValues, family) {
+      const base = [...settingsPath, 'retryPolicy'];
+      const backoffKeys = ['initialDelayMs', 'maxDelayMs', 'jitterRatio'];
+      const ops = [];
+      for (const field of RETRY_FIELDS) {
+        const path = backoffKeys.includes(field.key)
+          ? [...base, 'backoff', field.key]
+          : [...base, field.key];
+        const value = field.key === 'retryableCodes'
+          ? [...globalValues.retryableCodes]
+          : globalValues[field.key];
+        ops.push({ op: 'set', path, value });
+      }
+      for (const op of timeoutResetOps(settingsPath, family)) ops.push(op);
+      return ops;
+    }
+
     /** Whether two normalized retryable-code lists hold the same codes in order. */
     function sameRetryCodes(left, right) {
       return Array.isArray(left) && Array.isArray(right)
@@ -1047,15 +1105,23 @@ window.__ModuleLoader__.load({
 
     /**
      * The leaf ops that write one ROUTE's retry policy RELATIVE to the plugin's
-     * global effective retry values, which is what makes a merged per-route
-     * card disappear once it no longer deviates:
+     * global retry values, which is what makes a merged per-route card disappear
+     * once it no longer deviates:
      * - a leaf whose validated value DIFFERS from the global value is `set`;
      * - a leaf that reverts to the global value is `unset` — but only when the
      *   user layer actually STORES it (`presence`), so an untouched leaf is
-     *   never written;
+     *   never written — AND only when that global value IS the code default
+     *   (`CODE_RETRY_DEFAULTS`): an `unset` falls back to the provider schema's
+     *   code defaults, never to this plugin's saved global preset, so
+     *   unsetting a leaf equal to a NON-default global value would silently
+     *   change behavior. In that case the leaf is `set` to the global value
+     *   instead, which is what keeps a Save stable after "Reset to global";
      * - when every emitted op is an `unset`, the single `retryPolicy` unset
      *   from {@link resetPolicyOps} replaces them, so no empty
-     *   `{ backoff: {} }` shell is left in the user layer.
+     *   `{ backoff: {} }` shell is left in the user layer. That collapse stays
+     *   sound because an `unset` is only ever emitted when the global value is
+     *   the code default, so an all-unset list means the route is at the code
+     *   defaults.
      * With no ops at all the builder returns an empty list, so a picked but
      * untouched route never writes.
      *
@@ -1076,11 +1142,25 @@ window.__ModuleLoader__.load({
     function retryPolicyDiffOps(settingsPath, values, globalValues, presence, dirty) {
       const base = [...settingsPath, 'retryPolicy'];
       const ops = [];
+      /** Whether the global value of one leaf is expressible by an `unset`. */
+      const atCodeDefault = (key, globalValue, equal) => (equal === undefined
+        ? globalValue === CODE_RETRY_DEFAULTS[key]
+        : equal(globalValue, CODE_RETRY_DEFAULTS[key]));
       const leaf = (key, path, value, globalValue, equal) => {
         if (dirty === undefined || dirty[key] !== true) return;
         const same = equal === undefined ? value === globalValue : equal(value, globalValue);
-        if (!same) ops.push({ op: 'set', path, value });
-        else if (presence !== undefined && presence[key] === true) ops.push({ op: 'unset', path });
+        if (!same) {
+          ops.push({ op: 'set', path, value });
+          return;
+        }
+        // Equal to the global value. `unset` means "fall back to the provider
+        // schema's code defaults", so it only expresses that when the global
+        // value itself is the code default; otherwise store the value.
+        if (!atCodeDefault(key, globalValue, equal)) {
+          ops.push({ op: 'set', path, value });
+          return;
+        }
+        if (presence !== undefined && presence[key] === true) ops.push({ op: 'unset', path });
       };
       leaf('mode', [...base, 'mode'], values.mode, globalValues.mode);
       if (values.mode === 'always') {
@@ -1584,6 +1664,9 @@ window.__ModuleLoader__.load({
       if (outcome.kind === 'reset') {
         return h('p', { className: 'dlct-note', role: 'status' }, t(resetKey));
       }
+      if (outcome.kind === 'resetGlobal') {
+        return h('p', { className: 'dlct-note', role: 'status' }, t('status.resetToGlobal'));
+      }
       return h('p', { className: 'dlct-alert', role: 'alert' }, t(outcome.kind === 'managed' ? 'error.managed' : 'error.refused'));
     }
 
@@ -1951,6 +2034,30 @@ window.__ModuleLoader__.load({
         setOutcome(null);
       };
 
+      /**
+       * Copy the SAVED global retry preset onto this route in one write, and
+       * clear this family's timeout overrides so they inherit the package/SDK
+       * defaults. This is NOT the inherit-style Reset: it writes the global
+       * values instead of removing the override, so it also runs on a picked
+       * card that stores nothing yet (the `storedDeviation` short-circuit is
+       * deliberately absent). A route that ends up equal to the global preset
+       * stops deviating and is closed by `onSettled`.
+       */
+      const resetToGlobal = () => {
+        if (disabled || busy || pendingRef.current) return;
+        pendingRef.current = true;
+        setPending('resetGlobal');
+        setOutcome(null);
+        submitOps(form, resetToGlobalOps(row.settingsPath, globalRetryValues, family)).then((result) => {
+          pendingRef.current = false;
+          setPending(null);
+          setRetryEdits({});
+          setTimeoutEdits({});
+          setOutcome(result.kind === 'saved' ? { kind: 'resetGlobal' } : result);
+          if (result.kind === 'saved' && typeof onSettled === 'function') onSettled(row);
+        });
+      };
+
       const advisoryKeys = writable ? timeoutAdvisories(family, timeoutValues, bodyTimeoutMs) : [];
       const protocol = family === 'deepseek'
         ? 'anthropic-messages'
@@ -2022,6 +2129,13 @@ window.__ModuleLoader__.load({
             'aria-busy': pending === 'save' ? 'true' : undefined,
             onClick: save,
           }, pending === 'save' ? t('provider.saving') : t('provider.save')),
+          h('button', {
+            type: 'button',
+            className: 'dlct-button dlct-outline',
+            disabled: disabled || busy,
+            'aria-busy': pending === 'resetGlobal' ? 'true' : undefined,
+            onClick: resetToGlobal,
+          }, pending === 'resetGlobal' ? t('provider.resettingToGlobal') : t('provider.resetToGlobal')),
           h('button', {
             type: 'button',
             className: 'dlct-button dlct-outline',
@@ -2722,6 +2836,14 @@ window.__ModuleLoader__.load({
     const plugin = {
       name: 'dsh-llm-api-call-tuning',
       inject: ['slots', 'locale', 'configForms', 'remote', 'connection'],
+      /**
+       * The client's mirror of the host's `DEFAULT_TUNE` (`index.js:389`),
+       * exposed only so `verify.mjs` can deep-equal the two halves: the page
+       * falls back to these values and "Reset to global" decides with them
+       * whether an `unset` can express a global value. Not part of the plugin
+       * runtime contract.
+       */
+      CODE_RETRY_DEFAULTS,
       /**
        * Register the plugin dictionaries, the manual-retry dock, and the tuning
        * settings section. The provider directory is resolved lazily inside the

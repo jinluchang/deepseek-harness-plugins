@@ -2263,11 +2263,11 @@ await check('apply registers the dock FIRST, then exactly one settings.section, 
   assert.equal(ctx.state.dictionaries[0].ns, 'llm-api-call-tuning', 'the dictionary NS drifted')
 })
 
-await check('the en and zh dictionaries carry the same 131-key set and every statically referenced key resolves', () => {
+await check('the en and zh dictionaries carry the same 134-key set and every statically referenced key resolves', () => {
   const en = COPY.en
   const zh = COPY.zh
   assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), 'the en and zh dictionaries do not carry identical key SETS')
-  assert.equal(Object.keys(en).length, 131, `the per-language dictionary key count drifted to ${Object.keys(en).length}`)
+  assert.equal(Object.keys(en).length, 134, `the per-language dictionary key count drifted to ${Object.keys(en).length}`)
   /* Static audit: every key the client can hand to its translate helper must
    * resolve in BOTH languages. Three sources are unioned so a new call site
    * cannot slip through:
@@ -2309,7 +2309,7 @@ await check('the en and zh dictionaries carry the same 131-key set and every sta
   for (const match of clientSource.matchAll(/'([a-zA-Z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9_]+)+)'/g)) {
     if (!allowed.has(match[1])) referenced.add(match[1])
   }
-  assert.equal(referenced.size, 131, `the static reference set drifted to ${referenced.size} keys; update the audit when the page gains a call site`)
+  assert.equal(referenced.size, 134, `the static reference set drifted to ${referenced.size} keys; update the audit when the page gains a call site`)
   const missing = [...referenced].filter(key => typeof en[key] !== 'string' || typeof zh[key] !== 'string').sort()
   assert.deepEqual(missing, [], `the client references dictionary keys missing from en/zh: ${JSON.stringify(missing)}`)
   /* Copy quality: English carries no CJK; every value in both languages is a
@@ -2334,15 +2334,15 @@ await check('the en and zh dictionaries carry the same 131-key set and every sta
     'routes.retryHeading', 'routes.timeoutsHeading', 'routes.pickedHint',
     'provider.namespace', 'provider.source.override', 'provider.source.default',
     'provider.status.dormant', 'provider.status.noSettings', 'provider.status.unavailable',
-    'provider.useDefaults', 'provider.reset', 'provider.save', 'provider.saving',
-    'provider.resetting', 'provider.alwaysNote',
+    'provider.useDefaults', 'provider.reset', 'provider.resetToGlobal', 'provider.resettingToGlobal',
+    'provider.save', 'provider.saving', 'provider.resetting', 'provider.alwaysNote',
     'field.mode.label', 'field.maxRetries.label', 'field.initialDelayMs.label',
     'field.maxDelayMs.label', 'field.jitterRatio.label', 'field.retryableCodes.label',
     'mode.normal', 'mode.always',
     'code.EMPTY_RESPONSE', 'code.RATE_LIMIT', 'code.SERVER', 'code.TIMEOUT', 'code.TRANSPORT',
     'code.STREAM_CLOSED', 'code.MALFORMED_RESPONSE', 'code.PI_AI_ERROR', 'code.HTTP_408', 'code.HTTP_409',
     'status.loading', 'status.unavailable', 'status.readOnly', 'status.saved', 'status.reset',
-    'status.routeReset', 'status.fetchReset', 'error.refused', 'error.managed',
+    'status.routeReset', 'status.resetToGlobal', 'status.fetchReset', 'error.refused', 'error.managed',
     'fetch.heading', 'fetch.description', 'fetch.reset', 'fetch.resetting', 'fetch.placeholder',
     'fetch.hint', 'field.headersTimeoutMs.label', 'field.bodyTimeoutMs.label',
     'timeouts.unit', 'timeouts.hint', 'timeouts.unlimited', 'timeouts.protocol',
@@ -2356,6 +2356,24 @@ await check('the en and zh dictionaries carry the same 131-key set and every sta
     assert.ok(typeof en[key] === 'string' && en[key].length > 0, `en is missing the key "${key}"`)
     assert.ok(typeof zh[key] === 'string' && zh[key].length > 0, `zh is missing the key "${key}"`)
   }
+})
+
+await check('the client retry code defaults mirror the host DEFAULT_TUNE leaf for leaf', () => {
+  const clientDefaults = clientPlugin.CODE_RETRY_DEFAULTS
+  assert.ok(clientDefaults !== undefined, 'the client no longer exposes CODE_RETRY_DEFAULTS for this parity gate')
+  assert.deepEqual(plain(clientDefaults), plain(host.DEFAULT_TUNE), 'the client CODE_RETRY_DEFAULTS drifted from the host DEFAULT_TUNE')
+  assert.deepEqual(
+    Object.keys(plain(clientDefaults)).sort(),
+    [...host.TUNE_KEYS].sort(),
+    'CODE_RETRY_DEFAULTS does not carry exactly the six TUNE_KEYS',
+  )
+  assert.deepEqual(
+    plain(clientDefaults.retryableCodes),
+    plain(host.RETRYABLE_CODES),
+    'CODE_RETRY_DEFAULTS must carry exactly the five upstream codes, never the offered ten',
+  )
+  assert.equal(Object.isFrozen(clientDefaults), true, 'CODE_RETRY_DEFAULTS must stay frozen')
+  assert.equal(Object.isFrozen(clientDefaults.retryableCodes), true, 'the CODE_RETRY_DEFAULTS code list must stay frozen')
 })
 
 await check('the injected face carries exactly the four members, and the page ignores the shell close prop', () => {
@@ -2514,7 +2532,7 @@ await check('the ONE add-selector sits ABOVE the list, excludes listed routes, a
     'the merged card lost one of its two sub-groups',
   )
   assert.ok(renderedText(card.tree).includes(EN['provider.source.override']), 'the user-layer override badge is missing')
-  for (const key of ['provider.save', 'provider.reset', 'provider.useDefaults']) {
+  for (const key of ['provider.save', 'provider.resetToGlobal', 'provider.reset', 'provider.useDefaults']) {
     assert.ok(buttonWithText(card.tree, [EN[key]]) !== undefined, `the merged card is missing its "${key}" action`)
   }
   assert.equal(
@@ -3326,6 +3344,158 @@ await check('a route Save and the global Save never write each other namespace',
   }
 })
 
+await check('Reset to global writes all six retry leaves from the SAVED global preset plus the timeout unsets in one fenced write', async () => {
+  const forms = makeForms({
+    'llm-api-call-tuning': new BoundForm(
+      'llm-api-call-tuning',
+      readySnapshot({ ...tuneValue(), maxRetries: 9, jitterRatio: 0.25 }, 7),
+    ),
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  /* An UNSAVED global-card draft must be ignored: the reset copies the SAVED
+   * section, never what the global card currently shows. */
+  setRetryInput(page.tree, 0, '3')
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  buttonWithText(card.tree, [EN['provider.resetToGlobal']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, `expected one reset-to-global write, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 4, 'Reset to global did not use the row revision fence')
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'mode'], value: 'normal' },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 9 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'initialDelayMs'], value: 500 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'maxDelayMs'], value: 10_000 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'backoff', 'jitterRatio'], value: 0.25 },
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'retryableCodes'], value: [...TUNE_VALUE.retryableCodes] },
+    { op: 'unset', path: ['providers', 'openrouter', 'streamIdleTimeoutMs'] },
+    { op: 'unset', path: ['providers', 'openrouter', 'timeoutMs'] },
+  ], 'Reset to global must set all six saved global retry leaves and unset the family timeout leaves')
+  assert.ok(renderedText(card.tree).includes(EN['status.resetToGlobal']), 'the Reset to global confirmation is missing')
+  for (const ns of ['llm-api-call-tuning', 'llm-deepseek', 'llm-deepseek-account']) {
+    assert.equal(ctx.configForms.get(ns).calls.length, 0, `Reset to global wrote the unrelated namespace ${ns}`)
+  }
+  card.unmount()
+  page.unmount()
+})
+
+await check('Reset to global maps the retry leaves under providers.<route> for pi-ai and at the namespace root for DeepSeek', async () => {
+  const forms = deviationForms({
+    deepseek: {
+      value: { retryPolicy: { mode: 'normal', maxRetries: 7 } },
+      user: { retryPolicy: { maxRetries: 7 }, streamIdleTimeoutMs: 600_000 },
+    },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'deepseek-official')
+  buttonWithText(card.tree, [EN['provider.resetToGlobal']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-deepseek')
+  assert.equal(form.calls.length, 1, `expected one DeepSeek reset-to-global write, got ${form.calls.length}`)
+  assert.equal(form.calls[0].revision, 2, 'the DeepSeek reset did not use the namespace revision')
+  assertOps(form.calls[0].ops, [
+    { op: 'set', path: ['retryPolicy', 'mode'], value: 'normal' },
+    { op: 'set', path: ['retryPolicy', 'maxRetries'], value: 5 },
+    { op: 'set', path: ['retryPolicy', 'backoff', 'initialDelayMs'], value: 500 },
+    { op: 'set', path: ['retryPolicy', 'backoff', 'maxDelayMs'], value: 10_000 },
+    { op: 'set', path: ['retryPolicy', 'backoff', 'jitterRatio'], value: 0.1 },
+    { op: 'set', path: ['retryPolicy', 'retryableCodes'], value: [...TUNE_VALUE.retryableCodes] },
+    { op: 'unset', path: ['streamIdleTimeoutMs'] },
+    { op: 'unset', path: ['filesApiTimeoutMs'] },
+  ], 'the DeepSeek reset must address the namespace root and cover the Files API field')
+  assert.ok(renderedText(card.tree).includes(EN['status.resetToGlobal']), 'the DeepSeek Reset to global confirmation is missing')
+  card.unmount()
+  page.unmount()
+})
+
+await check('Reset to global writes the global preset even on a picked card that stores nothing', async () => {
+  const { page, ctx } = mountPage({ forms: deviationForms() })
+  await flush()
+  assert.equal(routeCardElements(page).length, 0, 'the picked-card fixture must start with no listed route')
+  pickerSelect(page.tree).props.onChange({ target: { value: 'llm-pi-ai|providers.openrouter|openrouter' } })
+  await flush()
+  buttonWithText(page.tree, [EN['routes.add']]).props.onClick()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  buttonWithText(card.tree, [EN['provider.resetToGlobal']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, 'Reset to global short-circuited on a card that stores nothing (unlike the inherit-style Reset)')
+  const ops = plain(form.calls[0].ops)
+  assert.equal(ops.filter(op => op.op === 'set').length, 6, 'Reset to global must still write all six retry leaves')
+  assert.deepEqual(ops.slice(-2).map(op => op.op), ['unset', 'unset'], 'Reset to global must still clear the two pi-ai timeout leaves')
+  card.unmount()
+  page.unmount()
+})
+
+await check('a Save that matches a NON-default global leaf writes a set, never an unset', async () => {
+  const forms = makeForms({
+    'llm-api-call-tuning': new BoundForm(
+      'llm-api-call-tuning',
+      readySnapshot({ ...tuneValue(), maxRetries: 9 }, 7),
+    ),
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '9')
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'set', path: ['providers', 'openrouter', 'retryPolicy', 'maxRetries'], value: 9 },
+  ], 'a touched leaf equal to a NON-default global value must be SET: an unset falls back to the code default, not to the saved preset')
+  card.unmount()
+  page.unmount()
+})
+
+await check('a Save that matches the DEFAULT global preset still collapses to ONE whole-retryPolicy unset', async () => {
+  const forms = deviationForms({
+    openrouter: {
+      value: { retryPolicy: { mode: 'normal', maxRetries: 7 } },
+      user: { retryPolicy: { mode: 'normal', maxRetries: 7 } },
+    },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, String(TUNE_VALUE.maxRetries))
+  await flush()
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
+    { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy'] },
+  ], 'a revert to the DEFAULT global value must still collapse into ONE whole-retryPolicy unset')
+  card.unmount()
+  page.unmount()
+})
+
+await check('both dictionaries carry the Reset-to-global copy, and the action renders on every route card', async () => {
+  for (const key of ['provider.resetToGlobal', 'provider.resettingToGlobal', 'status.resetToGlobal']) {
+    for (const language of ['en', 'zh']) {
+      assert.equal(typeof COPY[language][key], 'string', `${language} is missing the Reset-to-global copy ${key}`)
+      assert.ok(COPY[language][key].length > 0, `${language}.${key} is blank`)
+    }
+  }
+  assert.equal(EN['provider.resetToGlobal'], 'Reset to global', 'the Reset-to-global button copy drifted')
+  const { page } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  const resetToGlobal = buttonWithText(card.tree, [EN['provider.resetToGlobal']])
+  assert.ok(resetToGlobal !== undefined, 'the merged card is missing its Reset-to-global action')
+  assert.equal(resetToGlobal.props.disabled, false, 'Reset to global stayed disabled on a writable card')
+  assert.equal(resetToGlobal.props['aria-busy'], undefined, 'Reset to global rendered busy before any click')
+  assert.equal(
+    findAll(card.tree, node => node.type === 'div' && node.props.className === 'dlct-actions').length,
+    1,
+    'the Reset-to-global action must live in the card\'s single action row',
+  )
+  card.unmount()
+  page.unmount()
+})
+
 await check('a route card without a numeric revision or in a read-only namespace disables every action and never writes', async () => {
   const noRevision = makeForms({
     'llm-deepseek': new BoundForm('llm-deepseek', readySnapshot({ retryPolicy: { mode: 'normal', maxRetries: 7 } }, undefined, { retryPolicy: { maxRetries: 7 } })),
@@ -3333,13 +3503,14 @@ await check('a route card without a numeric revision or in a read-only namespace
   const noRev = mountPage({ forms: noRevision })
   await flush()
   const card = mountRouteCard(noRev.page, 'deepseek-official')
-  for (const key of ['provider.save', 'provider.reset', 'provider.useDefaults']) {
+  for (const key of ['provider.save', 'provider.resetToGlobal', 'provider.reset', 'provider.useDefaults']) {
     const button = buttonWithText(card.tree, [EN[key]])
     assert.ok(button !== undefined, `the ${key} action is missing`)
     assert.equal(button.props.disabled, true, `the ${key} action stayed enabled without a numeric revision`)
   }
   assert.equal(textInputs(card.tree).every(input => input.props.disabled === true), true, 'the card controls stayed editable without a numeric revision')
   buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  buttonWithText(card.tree, [EN['provider.resetToGlobal']]).props.onClick()
   buttonWithText(card.tree, [EN['provider.reset']]).props.onClick()
   await flush()
   assert.equal(noRev.ctx.configForms.get('llm-deepseek').calls.length, 0, 'a row without a numeric revision wrote its namespace')
