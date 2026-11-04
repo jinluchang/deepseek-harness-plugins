@@ -38,8 +38,8 @@ window.__ModuleLoader__.load({
      * The complete Lead tool universe, grouped by the mechanism a toggle uses.
      *
      * - `whitelist`: the allow list keeps it (`true`) or hides it (`false`).
-     * - `guard`: own-scope tools a restriction cannot reach; a guard refuses
-     *   them when `false`, so `true` means "not denied".
+     * - `guard`: kept on the Lead's list even when off; a guard refuses them
+     *   when `false`, so `true` means "not denied".
      * - `none`: not toggleable here (user commands, unmounted rows, child-only
      *   tools); `def` is fixed `false` by convention.
      */
@@ -67,7 +67,6 @@ window.__ModuleLoader__.load({
       { name: 'create_goal', klass: 'whitelist', def: false },
       { name: 'update_goal', klass: 'whitelist', def: false },
       { name: 'exit_plan_mode', klass: 'whitelist', def: true },
-      { name: 'subagent', klass: 'whitelist', def: false },
       { name: 'subagent_fork', klass: 'whitelist', def: false },
       { name: 'list_subagent_models', klass: 'whitelist', def: false },
       { name: 'workflow', klass: 'whitelist', def: false },
@@ -81,8 +80,8 @@ window.__ModuleLoader__.load({
       { name: 'session_trace', klass: 'whitelist', def: false },
       { name: 'ralph', klass: 'whitelist', def: false },
       { name: 'create_worktree', klass: 'whitelist', def: false },
-      // ── guard: own-scope tools (the Agent Teams tools) ──
-      { name: 'spawn_teammate', klass: 'guard', def: true },
+      // ── guard: kept on the list; an off toggle refuses instead of hides ──
+      { name: 'subagent', klass: 'guard', def: true },
       { name: 'send_message', klass: 'guard', def: true },
       { name: 'list_agents', klass: 'guard', def: true },
       { name: 'interrupt_agent', klass: 'guard', def: true },
@@ -129,8 +128,8 @@ window.__ModuleLoader__.load({
       'default.off': 'Default: off',
       'group.whitelist': 'Kept from the preset',
       'group.whitelist.note': 'The keep list is an allow list: a tool that is not on is hidden from the Lead entirely.',
-      'group.guard': 'Team tools (own scope)',
-      'group.guard.note': 'These tools live in the Lead\'s own scope, where the allow list cannot reach. Turning one off refuses it with a guard instead of hiding it.',
+      'group.guard': 'Team tools and delegation',
+      'group.guard.note': 'These tools stay on the Lead\'s list: turning one off refuses it with a guard instead of hiding it, so the Lead can still see why the call failed.',
       'group.none': 'Outside this page',
       'group.none.note': 'Listed so the page is honest about what it cannot change.',
       'none.command': 'A user command, not a tool — this page cannot change it, and the user can still type it.',
@@ -158,7 +157,7 @@ window.__ModuleLoader__.load({
       'tool.create_goal.desc': 'Creates a goal that keeps the session working across turns. Can keep a Lead busy instead of answering.',
       'tool.update_goal.desc': 'Updates the session goal.',
       'tool.exit_plan_mode.desc': 'Presents a plan for approval and leaves plan mode. Kept: a Lead may plan while execution stays delegated.',
-      'tool.subagent_fork.desc': 'Delegates to a one-shot subagent that inherits this conversation. The Lead cannot steer it afterwards; prefer spawn_teammate.',
+      'tool.subagent_fork.desc': 'Starts a teammate that inherits this conversation. Hidden by default: the Lead briefs a fresh teammate instead.',
       'tool.workflow.desc': 'Runs a multi-agent workflow script. Long orchestration the Lead would have to wait on.',
       'tool.web_search.desc': 'Searches the web.',
       'tool.web_fetch.desc': 'Fetches a web page.',
@@ -170,7 +169,6 @@ window.__ModuleLoader__.load({
       'tool.session_trace.desc': 'Traces session lineage.',
       'tool.ralph.desc': 'Runs fresh-agent rounds until an objective completes. Long-running; the Lead would have to wait.',
       'tool.create_worktree.desc': 'Creates a git worktree and switches the session directory.',
-      'tool.spawn_teammate.desc': 'Creates a named teammate. Turning this off leaves the Lead unable to delegate — its whole job.',
       'tool.send_message.desc': 'Messages a teammate, or wakes an inactive one. Turning this off strands the Team.',
       'tool.list_agents.desc': 'Lists the Team and each member\'s status. Turning this off blinds the Lead to who is running.',
       'tool.interrupt_agent.desc': 'Interrupts a teammate\'s current turn. Turning this off removes the Lead\'s stop control.',
@@ -179,8 +177,8 @@ window.__ModuleLoader__.load({
       'tool.team_task_get.desc': 'Reads one shared task.',
       'tool.team_task_update.desc': 'Claims, edits, completes, or deletes a shared task.',
       'tool.wait_agent.desc': 'Waits for a teammate status change. Refused by default: a non-blocking Lead ends its turn instead.',
-      'tool.subagent.desc': 'Delegates to a one-shot subagent the Lead can neither steer nor re-contact. Hidden by default; use spawn_teammate.',
-      'tool.list_subagent_models.desc': 'Lists routes for the one-shot delegation tool. Hidden by default.',
+      'tool.subagent.desc': 'Starts a teammate the Lead can steer and re-contact. Kept: handing work out is the Lead\'s job.',
+      'tool.list_subagent_models.desc': 'Lists routes for delegation tools the Lead does not keep. Hidden by default.',
       'cmd.goal.desc': 'The /goal command creates and manages the session goal.',
       'cmd.plan.desc': 'The /plan command enters or leaves plan mode.',
       'cmd.compact.desc': 'The /compact command compacts the conversation.',
@@ -205,8 +203,8 @@ window.__ModuleLoader__.load({
       'default.off': '默认：关闭',
       'group.whitelist': '从预设保留的工具',
       'group.whitelist.note': '保留列表是白名单：未开启的工具会完全对 Lead 隐藏。',
-      'group.guard': 'Team 工具（自有作用域）',
-      'group.guard.note': '这些工具注册在 Lead 自己的作用域中，白名单无法触及。关闭时会由 guard 拒绝调用，而不是隐藏。',
+      'group.guard': 'Team 工具与委派',
+      'group.guard.note': '这些工具始终保留在 Lead 的列表中：关闭时会由 guard 拒绝调用而不是隐藏，因此 Lead 仍能看到调用被拒的原因。',
       'group.none': '本页无法控制',
       'group.none.note': '列出这些项目，是为了如实说明本页无法改变的内容。',
       'none.command': '这是用户命令而非工具，本页无法改变；用户仍然可以输入它。',
@@ -234,7 +232,7 @@ window.__ModuleLoader__.load({
       'tool.create_goal.desc': '创建一个跨轮次持续推进的目标。可能让 Lead 忙于推进而不是回答。',
       'tool.update_goal.desc': '更新当前会话目标。',
       'tool.exit_plan_mode.desc': '提交计划以供批准并退出计划模式。默认开启：Lead 可以规划，执行仍由队友完成。',
-      'tool.subagent_fork.desc': '委派给一个继承本对话的一次性子代理。之后 Lead 无法再指导它；优先使用 spawn_teammate。',
+      'tool.subagent_fork.desc': '启动一个继承本对话的队友。默认关闭：Lead 改为向新队友下达任务。',
       'tool.workflow.desc': '运行多代理工作流脚本。属于 Lead 必须等待的长时编排。',
       'tool.web_search.desc': '搜索网页。',
       'tool.web_fetch.desc': '抓取网页内容。',
@@ -246,7 +244,6 @@ window.__ModuleLoader__.load({
       'tool.session_trace.desc': '追踪会话的继承关系。',
       'tool.ralph.desc': '循环启动全新代理轮次直到目标完成。耗时较长，Lead 必须等待。',
       'tool.create_worktree.desc': '创建 git worktree 并切换会话目录。',
-      'tool.spawn_teammate.desc': '创建一个具名队友。关闭后 Lead 将无法委派——而这正是它的全部职责。',
       'tool.send_message.desc': '给队友发消息，或唤醒空闲队友。关闭后 Team 会失去联络。',
       'tool.list_agents.desc': '列出 Team 成员及其状态。关闭后 Lead 无法得知谁在运行。',
       'tool.interrupt_agent.desc': '中断队友当前轮次。关闭后 Lead 失去中止手段。',
@@ -255,8 +252,8 @@ window.__ModuleLoader__.load({
       'tool.team_task_get.desc': '读取某一条共享任务。',
       'tool.team_task_update.desc': '认领、编辑、完成或删除共享任务。',
       'tool.wait_agent.desc': '等待队友状态变化。默认被拒绝：非阻塞 Lead 应结束本轮而不是等待。',
-      'tool.subagent.desc': '委派给一个 Lead 既不能指导也无法再联系的一次性子代理。默认隐藏；请使用 spawn_teammate。',
-      'tool.list_subagent_models.desc': '列出一次性委派工具的可用路由。默认隐藏。',
+      'tool.subagent.desc': '启动一个 Lead 可以继续指导和联系的队友。予以保留：把工作交出去正是 Lead 的职责。',
+      'tool.list_subagent_models.desc': '列出 Lead 并不保留的委派工具的可用路由。默认隐藏。',
       'cmd.goal.desc': '/goal 命令用于创建和管理会话目标。',
       'cmd.plan.desc': '/plan 命令用于进入或退出计划模式。',
       'cmd.compact.desc': '/compact 命令用于压缩对话。',
@@ -415,7 +412,7 @@ window.__ModuleLoader__.load({
       const refused = quoted.length === 0 ? '' : `${joinQuoted(quoted)} ${quoted.length === 1 ? 'is' : 'are'} refused`
       const followOn = [
         deny.includes('wait_agent') ? 'waiting' : undefined,
-        deny.includes('subagent') ? 'one-shot delegation' : undefined,
+        deny.includes('subagent') ? 'delegation' : undefined,
       ].filter(Boolean)
       const refusal = refused === '' || followOn.length === 0
         ? refused

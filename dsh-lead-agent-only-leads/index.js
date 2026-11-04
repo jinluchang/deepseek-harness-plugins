@@ -10,26 +10,27 @@
  *
  * Per-Agent scope is what makes the asymmetry safe:
  *
- * - Tools a preset mounts live in an ANCESTOR layer of the Agent's scope, so
- *   `tools.restrict()` on the Agent's own scope hides them for that Agent alone.
- *   The Lead loses the shell, the file readers and writers, delegation-to-
- *   subagents, the web, jobs, and scheduling; it keeps `exit_plan_mode` as an
- *   enabled tool, though this contract does not mention or encourage making a
- *   plan. Teammates keep all of it.
- * - The Agent's OWN layer is exempt from restrictions. The Agent Teams tools are
- *   registered there, which is why restricting the Lead cannot — and should not —
- *   hide `spawn_teammate`, `send_message`, `list_agents`, or the shared task
- *   board: handing work out is the Lead's entire job. `wait_agent` is the one
- *   own-scope tool a Lead must not keep, so a monotonic execution guard denies it
- *   instead of a restriction.
+ * - Tools a preset or the base bundle mounts live in the GLOBAL or an ANCESTOR
+ *   layer of the Agent's scope, so `tools.restrict()` on the Agent's own scope
+ *   hides them for that Agent alone. The Lead loses the shell, the file readers
+ *   and writers, one-shot delegation alternatives, the web, jobs, and
+ *   scheduling; it keeps `exit_plan_mode` as an enabled tool, though this
+ *   contract does not mention or encourage making a plan. Teammates keep all of
+ *   it.
+ * - The Agent's OWN layer is exempt from restrictions, but the current Host
+ *   registers the Team tools and the delegation tool (`subagent`) as ordinary
+ *   GLOBAL tools, not in the Agent's own layer. Handing work out is the Lead's
+ *   entire job, so `constrain()` always names every class-`guard` row the scope
+ *   mounts in the allow list: they stay on the Lead's list, and an OFF row is
+ *   refused at execution by the guard instead of vanishing. `wait_agent` is an
+ *   OFF guard row for the same reason.
  * - A guard only denies; it cannot re-allow. Nothing downstream can turn the
  *   Lead's refusal to wait back into a permission.
  *
- * The delegation tools are NOT own-scope: the preset mounts `tool-subagent` with
- * `modelSelection: true` and `modelDiscovery: true`, which registers `subagent`
- * and `list_subagent_models` in the preset generation scope — an ancestor layer
- * the Lead's restriction reaches. They are therefore ordinary `whitelist` rows:
- * OFF (the default) hides them and ON keeps them.
+ * Delegation is `subagent` (spawn) — the same tool that starts a teammate — so
+ * it is a class-`guard` row that defaults ON, not a `whitelist` row hidden by
+ * default. `subagent_fork` and `list_subagent_models` stay ordinary `whitelist`
+ * rows: OFF (the default) hides them and ON keeps them.
  *
  * The deny list is the CATALOG default, not a fixed law: a profile `tools`
  * override can re-enable a guard tool, so the prompt contract below is built
@@ -119,9 +120,9 @@ const DEFAULT_LEAD_TOOLS = Object.freeze([
 ])
 
 /**
- * Tools denied even though they stay listed. `wait_agent` is registered into the
- * Agent's own scope by the Agent Teams plugin, where a restriction cannot reach
- * it, so the guard is the only way to take it away.
+ * Tools denied even though they stay listed: the class-`guard` rows whose
+ * toggle is OFF. The Host registers the Team tools as ordinary global tools, so
+ * the allow list keeps them visible and the guard is what refuses them.
  */
 const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent'])
 
@@ -129,11 +130,13 @@ const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent'])
  * The tool universe the settings page toggles, in display order. One entry per
  * tool: `klass` is the only mechanism a toggle can use, `def` the default on/off.
  *
- * - `whitelist` — a preset- or global-layer tool (the delegation tools included).
- *   ON keeps the name in the Lead's allow list; OFF simply omits it (the allow
- *   list hides it).
- * - `guard` — an own-scope tool (the Team tools) that a restriction cannot
- *   reach. OFF denies it through the guard; ON removes the denial.
+ * - `whitelist` — a preset- or global-layer tool. ON keeps the name in the
+ *   Lead's allow list; OFF simply omits it (the allow list hides it).
+ * - `guard` — a tool that stays on the Lead's list even when it is OFF: the
+ *   Team tools and the delegation tool. Every class-`guard` name is ALWAYS in
+ *   the allow list (the current Host registers them as ordinary global tools,
+ *   so a restriction hides them like any other), and a name that is OFF is
+ *   refused at execution through the guard. ON removes the denial.
  * - `none` — not reachable by either mechanism (slash commands, `disabled` rows,
  *   a child-only tool). `def` is fixed `false`, the page renders the row
  *   inoperative, and this plugin ignores the name entirely.
@@ -142,7 +145,7 @@ const DEFAULT_DENIED_TOOLS = Object.freeze(['wait_agent'])
  * klass/def); `verify.mjs` deep-compares the two so they cannot drift.
  */
 export const LEAD_TOOL_CATALOG = Object.freeze([
-  // whitelist (36)
+  // whitelist (35)
   { name: 'read', klass: 'whitelist', def: false },
   { name: 'read_image', klass: 'whitelist', def: false },
   { name: 'glob', klass: 'whitelist', def: false },
@@ -165,7 +168,6 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'create_goal', klass: 'whitelist', def: false },
   { name: 'update_goal', klass: 'whitelist', def: false },
   { name: 'exit_plan_mode', klass: 'whitelist', def: true },
-  { name: 'subagent', klass: 'whitelist', def: false },
   { name: 'subagent_fork', klass: 'whitelist', def: false },
   { name: 'list_subagent_models', klass: 'whitelist', def: false },
   { name: 'workflow', klass: 'whitelist', def: false },
@@ -179,8 +181,8 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'session_trace', klass: 'whitelist', def: false },
   { name: 'ralph', klass: 'whitelist', def: false },
   { name: 'create_worktree', klass: 'whitelist', def: false },
-  // guard (9)
-  { name: 'spawn_teammate', klass: 'guard', def: true },
+  // guard (9) — always on the Lead's list; OFF refuses instead of hiding
+  { name: 'subagent', klass: 'guard', def: true },
   { name: 'send_message', klass: 'guard', def: true },
   { name: 'list_agents', klass: 'guard', def: true },
   { name: 'interrupt_agent', klass: 'guard', def: true },
@@ -197,6 +199,15 @@ export const LEAD_TOOL_CATALOG = Object.freeze([
   { name: 'plugin_market', klass: 'none', def: false },
   { name: 'structured_output', klass: 'none', def: false },
 ])
+
+/**
+ * Every class-`guard` name, in catalog order. These stay on the Lead's list even
+ * when they are OFF — the guard refuses an OFF one at execution — so `constrain()`
+ * always adds the ones this scope mounts to the allow list.
+ */
+const GUARD_TOOL_NAMES = Object.freeze(
+  LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'guard').map(entry => entry.name),
+)
 
 /**
  * Row config. `tools` is the per-tool toggle map the settings page writes; it is
@@ -231,8 +242,8 @@ const SECTION_ORDER = 650
 /** Denial text per denied tool; the model reads this instead of a result. */
 const DENIALS = Object.freeze({
   wait_agent: 'wait_agent is disabled for a non-blocking Lead: end your turn instead. A teammate report or the next user message starts a new turn; use send_message to steer or wake a teammate.',
-  subagent: 'subagent is disabled for a non-blocking Lead: hand the work to a teammate with spawn_teammate instead, and use send_message to steer it.',
-  list_subagent_models: 'list_subagent_models is disabled for a non-blocking Lead: it only describes routes for the delegation tools this preset refuses. Use spawn_teammate to start a teammate.',
+  subagent: 'subagent is disabled for a non-blocking Lead in this preset: it is the only way to start a teammate, so this Lead cannot hand work out until the toggle is back on.',
+  list_subagent_models: 'list_subagent_models is disabled for a non-blocking Lead: it only describes routes for a delegation tool this preset does not keep.',
 })
 
 /**
@@ -294,9 +305,10 @@ function joinQuoted(names) {
  *
  * The closing sentence of the claim paragraph names the Lead's ACTUAL tools,
  * derived from the resolved allow list rather than hardcoded, so the text cannot
- * go stale when the catalog changes. The Team tools stay a generic trailing
- * phrase: they are the Lead's own-scope coordination surface, already governed by
- * the refusal clause, not preset tools to enumerate.
+ * go stale when the catalog changes. The class-`guard` rows (the Team tools and
+ * the delegation tool) stay a generic trailing phrase: they are the Lead's
+ * coordination surface, already governed by the refusal clause, not preset tools
+ * to enumerate.
  *
  * Every argument falls back to the catalog default, so a call with NO arguments
  * returns the frozen catalog-default text byte for byte, and a fact the caller
@@ -330,7 +342,7 @@ export function leadContract(options = {}) {
   const refused = quoted.length === 0 ? '' : `${joinQuoted(quoted)} ${quoted.length === 1 ? 'is' : 'are'} refused`
   const followOn = [
     deny.includes('wait_agent') ? 'waiting' : undefined,
-    deny.includes('subagent') ? 'one-shot delegation' : undefined,
+    deny.includes('subagent') ? 'delegation' : undefined,
   ].filter(Boolean)
   const refusal = refused === '' || followOn.length === 0
     ? refused
@@ -381,7 +393,7 @@ export function nameList(value, fallback) {
  * Keep only the configured names this scope can actually restrict.
  *
  * A name the scope does not know makes `tools.restrict()` throw, and a name the
- * scope registers itself (the Agent Teams tools) is not restrictable at all, so
+ * scope registers itself (an Agent-scope tool) is not restrictable at all, so
  * both are dropped here. Names that are absent are absent for a reason the Lead
  * does not need: a tool it never had needs no rule.
  * @param {readonly string[]} configured - requested tools for the Lead.
@@ -603,8 +615,10 @@ function presetServiceExpected(ctx) {
  * Decide whether an Agent is the Lead of this preset.
  *
  * Teammates inherit the Lead's preset, so the preset alone cannot tell them
- * apart; the Team roster can. When no Team service is mounted there is no roster
- * to ask and a root Session is the Lead by construction.
+ * apart; a Team service that can answer a membership probe can. When no Team
+ * service is mounted, or the mounted one exposes no such probe (the current
+ * Agent Teams service does not), the root Session is the Lead by construction —
+ * teammates are its descendants.
  * @param {object} agent - the Agent to classify.
  * @param {object|undefined} teams - the Agent Teams service, when mounted.
  * @returns {boolean} true only for a Lead that may be shrunk.
@@ -619,6 +633,43 @@ export function isTeamLead(agent, teams) {
     // A membership probe that cannot answer must not shrink an Agent: a
     // teammate has to keep its ordinary tools.
     return false
+  }
+}
+
+/**
+ * Turn Team mode on for a constrained Lead's root Session.
+ *
+ * The contract hands the Lead the shared task board, and the current DSH admits
+ * `team_task_*` only while the root Session has Team mode on (the base bundle
+ * mounts `agent-team` with `defaultEnabled: false`). The Host used to register
+ * those tools unconditionally, so a Lead whose user never touched the mode was
+ * still told to record tasks it could not create. Enabling the mode here keeps
+ * the preset self-sufficient; a profile that wants plain delegation without a
+ * board should pick another preset.
+ *
+ * Best effort by construction: the service may be absent, still mounting, or
+ * refuse the write, and none of those may fail the Lead's constraint. A failure
+ * is logged once per constrain and the Lead still delegates with `subagent`,
+ * `send_message`, and `list_agents`.
+ * @param {object} agent - the constrained Lead (the tree root).
+ * @param {object} ctx - the plugin context.
+ */
+function ensureTeamMode(agent, ctx) {
+  const teams = ctx.get('agentTeams')
+  if (teams === undefined || typeof teams.isEnabled !== 'function' || typeof teams.setEnabled !== 'function') return
+  let enabled
+  try {
+    enabled = teams.isEnabled(agent)
+  } catch (error) {
+    warn(ctx, `${name}: Team mode could not be read, so the shared task board may stay unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+  if (enabled) return
+  const failed = error => warn(ctx, `${name}: Team mode could not be enabled, so the shared task board stays unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  try {
+    Promise.resolve(teams.setEnabled(agent, true)).catch(failed)
+  } catch (error) {
+    failed(error)
   }
 }
 
@@ -650,7 +701,14 @@ function constrain(agent, config, ctx) {
   try {
     const available = scopedTools.schemas(agent).map(schema => schema.name)
     reachable = available
-    const allow = selectLeadTools(policy.keep, available)
+    // The class-`guard` rows (the Team tools and the delegation tool) are
+    // ordinary inherited tools in the current Host, so a restriction hides them
+    // unless they are named. They are always named — an OFF one is refused by
+    // the guard below instead of vanishing from the Lead's list — except under a
+    // legacy `leadTools`, which wins wholesale.
+    const kept = selectLeadTools(policy.keep, available)
+    const guardKeep = policy.keepConfigured ? [] : selectLeadTools(GUARD_TOOL_NAMES, available)
+    const allow = [...kept, ...guardKeep]
     const restrictToNothing = () => {
       // `restrict({ allow: [] })` is legal and hides the whole inherited surface
       // (the registry rejects only `{}`), which is the fail-closed outcome for
@@ -658,48 +716,50 @@ function constrain(agent, config, ctx) {
       disposers.push(scopedTools.restrict({ allow: [] }))
       reachable = []
     }
-    if (policy.keep.length === 0) {
-      // Branch 1 — "keep nothing" by intent: every class-`whitelist` toggle is
-      // off, or the legacy `leadTools` was configured as an empty array.
-      // Skipping the restriction here is the fail-open that once left an all-off
-      // Lead holding every tool, so restrict to nothing instead.
-      restrictToNothing()
-    } else if (allow.length === 0) {
-      // Branch 2 — the keep list is non-empty but EVERY name in it is absent
-      // from this scope, so nothing can be kept. What that means depends on who
-      // authored the list:
-      if (policy.keepConfigured) {
-        // LEGACY explicit `leadTools`: the user named tools for a scope the
-        // plugin did not choose, so the scope may simply not be what the config
-        // describes. This is the ONE retained warn-and-keep path.
+    if (allow.length === 0) {
+      if (policy.keepConfigured && policy.keep.length > 0) {
+        // LEGACY explicit `leadTools` naming only tools this scope does not
+        // mount: the user wrote the list for another scope, so this is the ONE
+        // retained warn-and-keep path.
         warn(ctx, `${name}: no configured Lead tool exists in this scope; the Lead keeps its preset tools`)
       } else {
-        // CATALOG toggles: the page authored this list against the tool
-        // universe, so a list resolving to nothing means "keep nothing" — fail
-        // CLOSED. Reached by turning every default off except a tool this scope
-        // does not mount (e.g. `pwsh` on Linux); warning and leaving the Lead
-        // unrestricted would hand it bash, write and edit again.
+        // "Keep nothing" by intent: an explicit empty legacy list, or catalog
+        // toggles that name nothing this scope mounts. Skipping the restriction
+        // here is the fail-open that once left an all-off Lead holding every
+        // tool, so restrict to nothing instead.
         const absent = policy.keep.filter(entry => !available.includes(entry))
         restrictToNothing()
-        warn(ctx, `${name}: ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not mounted in this scope; the Lead keeps none of its preset tools`)
+        if (absent.length > 0) {
+          warn(ctx, `${name}: ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not mounted in this scope; the Lead keeps none of its preset tools`)
+        }
       }
-    } else if (allow.length < available.length) {
-      // Branch 3 — at least one requested name is restrictable; a mixed
-      // known+absent list lands here and restricts to the known names only.
-      try {
-        disposers.push(restrictPruning(scopedTools, agent, allow))
-        reachable = allow
-      } catch (error) {
-        // Branch 4 — non-empty by user intent yet zero RESTRICTABLE names:
-        // every requested tool is own-scope (the Team tools) or otherwise
-        // unreachable by `restrict()`. Keep nothing rather than fail open.
-        restrictToNothing()
-        warn(ctx, `${name}: none of ${allow.length} configured tools for the Lead is restrictable; the Lead keeps none of its preset tools (${error instanceof Error ? error.message : String(error)})`)
+    } else {
+      if (!policy.keepConfigured && kept.length === 0 && policy.keep.length > 0) {
+        // The whitelist toggles named tools this scope does not mount (e.g.
+        // `pwsh` on Linux); the Lead still keeps the Team tools, but say so.
+        const absent = policy.keep.filter(entry => !available.includes(entry))
+        warn(ctx, `${name}: ${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not mounted in this scope; the Lead keeps only the Team tools`)
+      }
+      if (allow.length < available.length) {
+        // At least one kept name is restrictable; a mixed known+absent list
+        // lands here and restricts to the known names only.
+        try {
+          disposers.push(restrictPruning(scopedTools, agent, allow))
+          reachable = allow
+        } catch (error) {
+          // Non-empty by user intent yet zero RESTRICTABLE names: every kept
+          // tool is registered in this Agent's own scope or is otherwise
+          // unreachable by `restrict()`. Keep nothing rather than fail open.
+          restrictToNothing()
+          warn(ctx, `${name}: none of ${allow.length} configured tools for the Lead is restrictable; the Lead keeps none of its preset tools (${error instanceof Error ? error.message : String(error)})`)
+        }
       }
     }
   } catch (error) {
     warn(ctx, `${name}: restricting the Lead failed, so it keeps its preset tools: ${error instanceof Error ? error.message : String(error)}`)
   }
+
+  ensureTeamMode(agent, ctx)
 
   if (policy.deny.length > 0) {
     const denied = policy.deny
@@ -725,11 +785,18 @@ function constrain(agent, config, ctx) {
     : !reachable.includes('read') && !reachable.includes('read_image')
       && !reachable.includes('glob') && !reachable.includes('grep')
 
+  // The Team tools (and the delegation tool) stay a generic trailing phrase in
+  // the contract, so the named list excludes every class-`guard` row the allow
+  // list keeps visible.
+  const named = reachable === undefined
+    ? undefined
+    : reachable.filter(entry => !GUARD_TOOL_NAMES.includes(entry))
+
   try {
     disposers.push(prompt.section({
       name: SECTION_NAME,
       order: SECTION_ORDER,
-      text: leadContract({ deny: policy.deny, shellHidden, writersHidden, readersHidden, tools: reachable }),
+      text: leadContract({ deny: policy.deny, shellHidden, writersHidden, readersHidden, tools: named }),
     }))
   } catch (error) {
     warn(ctx, `${name}: the Lead contract section was not registered: ${error instanceof Error ? error.message : String(error)}`)

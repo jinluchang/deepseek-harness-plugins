@@ -59,28 +59,21 @@ const {
 } = await import('./index.js')
 
 /**
- * Tool names the `standard` preset mounts, which an Agent of it inherits. The
- * plan-mode row registers only `exit_plan_mode`: plan mode itself is session
- * state the user enters (the `/plan` command or the composer), not a tool.
- * `subagent` and `list_subagent_models` are preset-mounted too: the delegation
- * row sets `modelSelection: true` and `modelDiscovery: true`, and both tools are
- * registered in the preset generation scope, which is an ancestor of every
- * Agent scope — so a restriction reaches them.
+ * Tool names an Agent of this profile inherits — every row a restriction can
+ * reach: the preset rows AND the base bundle's global rows. The current Host
+ * registers the Team tools and the delegation tools globally (the Agent Teams
+ * package mounts `tool-agent-team` and `tool-subagent-control` in the base
+ * bundle, not in an Agent scope), so `tools.restrict({ allow })` hides them
+ * exactly like a preset tool. The plan-mode row registers only
+ * `exit_plan_mode`: plan mode itself is session state the user enters (the
+ * `/plan` command or the composer), not a tool.
  */
-const PRESET_SURFACE = [
+const INHERITED_SURFACE = [
   'bash', 'pwsh', 'read', 'read_image', 'write', 'edit', 'glob', 'grep',
   'job_list', 'job_output', 'job_kill', 'schedule_create', 'schedule_list',
   'subagent', 'subagent_fork', 'list_subagent_models', 'workflow', 'todo_write',
   'ask_user_question', 'web_search', 'web_fetch', 'present', 'skill', 'exit_plan_mode',
-]
-
-/**
- * Tool names registered into an Agent's own layer, which a restriction cannot
- * reach: the Agent Teams tools (including `wait_agent`). The guard has to deny
- * the ones a Lead cannot keep; only `wait_agent` is denied by default.
- */
-const AGENT_LAYER = [
-  'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
+  'send_message', 'list_agents', 'interrupt_agent', 'wait_agent',
   'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',
 ]
 
@@ -90,6 +83,16 @@ const AGENT_LAYER = [
  * plan; it cannot read, search, write, or run anything.
  */
 const KEPT_BY_DEFAULT = ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present']
+
+/**
+ * Every class-`guard` name, in catalog order: the delegation tool and the Team
+ * tools. `constrain()` always names these in the allow list, so an OFF row stays
+ * on the Lead's list and is refused by the guard instead of disappearing.
+ */
+const GUARD_NAMES = LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'guard').map(entry => entry.name)
+
+/** The allow list a fresh Lead gets: the catalog keep list, then every guard name. */
+const DEFAULT_ALLOW = [...KEPT_BY_DEFAULT, ...GUARD_NAMES]
 
 /** The catalog's guard-off defaults, i.e. the deny list a fresh Lead gets. */
 const DENIED_BY_DEFAULT = ['wait_agent']
@@ -111,14 +114,15 @@ function makeAgent({ preset = 'lead-agent-only-leads', role = 'lead', header = {
   const guards = []
   const sections = new Map()
   const agent = { id: `session-${sequence += 1}`, __role: role, session: { header: { agentPreset: preset, ...header } } }
-  // The Agent's view: what it inherits (filtered by any restriction) plus what
-  // its own layer registers, which no restriction can reach.
-  const visible = () => [...(allow ?? PRESET_SURFACE), ...AGENT_LAYER]
+  // The Agent's view: everything it inherits, filtered by any restriction. The
+  // current Host registers the Team tools globally, so the model keeps no
+  // Agent-layer exemption; `constrain()` names them in the allow list instead.
+  const visible = () => (allow ?? INHERITED_SURFACE)
   const tools = {
     schemas: () => visible().map(name => ({ name })),
     restrict: filter => {
       const names = filter.allow ?? []
-      const restrictable = new Set(PRESET_SURFACE)
+      const restrictable = new Set(INHERITED_SURFACE)
       const rejected = names.filter(name => !restrictable.has(name))
       if (rejected.length > 0) {
         const quoted = rejected.map(name => `"${name}"`).join(', ')
@@ -368,7 +372,7 @@ check('leadContract({ deny: [] }) states no refusal clause at all', () => {
 check('leadContract({ deny: ["subagent"] }) names only subagent and keeps the delegation clause', () => {
   const text = leadContract({ deny: ['subagent'] })
   assert.match(text, /`subagent` is refused/)
-  assert.match(text, /do not count on one-shot delegation/)
+  assert.match(text, /do not count on delegation/)
   assert.equal(text.includes('wait_agent'), false, 'a tool outside `deny` must not be named')
   assert.equal(text.includes('list_subagent_models'), false)
   assert.equal(text.includes('count on waiting'), false, 'waiting is only refused while wait_agent is denied')
@@ -395,7 +399,7 @@ check('leadContract defaults follow the catalog; deny grammar and hidden flags a
 check('the catalog defaults keep the user-facing tools, the planner, and present, in catalog order', () => {
   const catalog = catalogDefaults()
   assert.deepEqual(catalog.keep, ['ask_user_question', 'todo_write', 'exit_plan_mode', 'present'])
-  assert.deepEqual(catalog.deny, ['wait_agent'], 'only the own-scope Team tool is denied by default')
+  assert.deepEqual(catalog.deny, ['wait_agent'], 'only the wait tool is denied by default')
   const onRows = LEAD_TOOL_CATALOG.filter(entry => entry.klass === 'whitelist' && entry.def).map(entry => entry.name)
   assert.deepEqual(catalog.keep, onRows, 'the keep list must follow catalog order')
   const resolved = resolveToolPolicy({})
@@ -489,23 +493,26 @@ check('selectLeadTools drops exit_plan_mode when the scope does not mount it', (
 check('the registered contract follows the resolved policy (delegation opt-in shape)', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
-  // A profile `tools` override re-enables the two preset-scope delegation tools:
-  // they join the allow list, only `wait_agent` is denied, and the prompt names
-  // the tools the Lead actually keeps.
-  apply(host, { tools: { subagent: true, list_subagent_models: true } })
+  // The delegation tool is a guard row that defaults ON, so it stays visible and
+  // allowed without a profile override; a profile `tools` override adds the
+  // hidden `list_subagent_models` route tool, only `wait_agent` is denied, and
+  // the prompt names the preset tools the Lead actually keeps (the Team tools and
+  // the delegation tool stay the generic trailing phrase).
+  apply(host, { tools: { list_subagent_models: true } })
   assert.deepEqual(lead.activeAllow(), [
-    'ask_user_question', 'todo_write', 'exit_plan_mode', 'subagent', 'list_subagent_models', 'present',
+    'ask_user_question', 'todo_write', 'exit_plan_mode', 'list_subagent_models', 'present',
+    ...GUARD_NAMES,
   ])
-  assert.equal(lead.deny('subagent'), undefined, 'a whitelisted delegation tool is not denied')
+  assert.equal(lead.deny('subagent'), undefined, 'the delegation tool defaults on, so it is not denied')
   assert.equal(lead.deny('list_subagent_models'), undefined)
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
   const text = lead.sections.get('lead-agent-only-leads:contract').text
   assert.match(text, /`wait_agent` is refused — do not count on waiting\./)
-  assert.match(text, /`subagent`/, 'the prompt names a delegation tool this policy keeps')
+  assert.equal(text.includes('`subagent`'), false, 'the delegation tool stays a generic trailing phrase')
   assert.match(text, /`list_subagent_models`/)
   assert.match(text, /cannot run shell commands/, 'the resolved allow list still hides bash/pwsh')
   assert.match(text, /you cannot read files, search the workspace, or view images/, 'the resolved allow list hides the reading tools')
-  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, `subagent`, `list_subagent_models`, and `present`, plus the Team tools;/, 'the named list is the resolved allow list')
+  assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, `exit_plan_mode`, `list_subagent_models`, and `present`, plus the Team tools;/, 'the named list is the resolved keep list')
   // `exit_plan_mode` stays in the resolved allow list, but the contract text
   // never mentions it or planning at all.
   assert.equal(lead.activeAllow().includes('exit_plan_mode'), true, 'making a plan stays allowed')
@@ -515,10 +522,10 @@ check('the registered contract follows the resolved policy (delegation opt-in sh
 
 check('a scope that does not mount exit_plan_mode names only the tools it really keeps', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
-  lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'exit_plan_mode'), ...AGENT_LAYER].map(name => ({ name }))
+  lead.agent.ctx.tools.schemas = () => INHERITED_SURFACE.filter(name => name !== 'exit_plan_mode').map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, {})
-  assert.deepEqual(lead.activeAllow(), ['ask_user_question', 'todo_write', 'present'], 'the unmounted planner is pruned from the keep list')
+  assert.deepEqual(lead.activeAllow(), ['ask_user_question', 'todo_write', 'present', ...GUARD_NAMES], 'the unmounted planner is pruned from the keep list')
   const text = lead.sections.get('lead-agent-only-leads:contract').text
   assert.match(text, /Your own tools are `ask_user_question`, `todo_write`, and `present`, plus the Team tools;/, 'the pruned tool is not named')
   assert.equal(text.includes('exit_plan_mode'), false, 'the contract must not offer a tool this scope does not mount')
@@ -566,11 +573,20 @@ check('Config declares a volatile tools dict and default-free volatile legacy ke
 })
 
 check('LEAD_TOOL_CATALOG has the frozen shape, classes, defaults, and order', () => {
-  assert.equal(LEAD_TOOL_CATALOG.length, 51)
+  assert.equal(LEAD_TOOL_CATALOG.length, 50)
   const by = klass => LEAD_TOOL_CATALOG.filter(entry => entry.klass === klass)
-  assert.equal(by('whitelist').length, 36)
+  assert.equal(by('whitelist').length, 35)
   assert.equal(by('guard').length, 9)
   assert.equal(by('none').length, 6)
+  // The delegation tool is a guard row: the current Host starts a teammate with
+  // `subagent`, so hiding it would leave the Lead unable to hand work out, and a
+  // guard row stays visible and is REFUSED when its toggle is off.
+  assert.deepEqual(by('guard').map(entry => entry.name), [
+    'subagent', 'send_message', 'list_agents', 'interrupt_agent',
+    'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update', 'wait_agent',
+  ])
+  assert.equal(LEAD_TOOL_CATALOG.find(entry => entry.name === 'subagent').def, true, 'the delegation tool must default ON')
+  assert.equal(LEAD_TOOL_CATALOG.some(entry => entry.name === 'spawn_teammate'), false, 'spawn_teammate no longer exists in the Host')
   for (const entry of LEAD_TOOL_CATALOG) {
     assert.deepEqual(Object.keys(entry).sort(), ['def', 'klass', 'name'], `entry ${entry.name} must be exactly {name, klass, def}`)
     assert.equal(typeof entry.def, 'boolean')
@@ -589,10 +605,11 @@ check('resolveToolPolicy maps toggles to keep/deny and leaves none rows inert', 
     keepConfigured: false,
     denyConfigured: false,
   })
-  const flipped = resolveToolPolicy({ tools: { bash: true, wait_agent: true, spawn_teammate: false } })
+  const flipped = resolveToolPolicy({ tools: { bash: true, wait_agent: true, team_task_list: false } })
   assert.ok(flipped.keep.includes('bash'), 'a whitelist tool toggled ON must join the keep list')
   assert.ok(!flipped.deny.includes('wait_agent'), 'a guard tool toggled ON must leave the deny list')
-  assert.ok(flipped.deny.includes('spawn_teammate'), 'a guard tool toggled OFF must join the deny list')
+  assert.ok(flipped.deny.includes('team_task_list'), 'a guard tool toggled OFF must join the deny list')
+  assert.ok(!flipped.keep.includes('team_task_list'), 'a guard row never joins the whitelist keep list')
   const none = resolveToolPolicy({
     tools: { '/goal': true, '/plan': true, '/compact': true, plugin_manager: true, plugin_market: true, structured_output: true },
   })
@@ -616,25 +633,25 @@ check('toolToggleMap reads through a live volatile wrapper on every call', () =>
 
 // --- behaviour on a Lead ----------------------------------------------------
 
-check('Lead of this preset: preset tools hidden, hand-off tools kept, own-scope tools denied', () => {
+check('Lead of this preset: preset tools hidden, Team tools kept, wait_agent refused', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, {})
 
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the restriction is the configured keep list')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'the restriction is the configured keep list')
   const names = lead.names()
-  for (const hidden of ['bash', 'pwsh', 'write', 'edit', 'read', 'read_image', 'glob', 'grep', 'subagent', 'subagent_fork', 'list_subagent_models', 'workflow']) {
+  for (const hidden of ['bash', 'pwsh', 'write', 'edit', 'read', 'read_image', 'glob', 'grep', 'subagent_fork', 'list_subagent_models', 'workflow']) {
     assert.equal(names.includes(hidden), false, `${hidden} must be hidden from the Lead`)
   }
-  for (const kept of [...KEPT_BY_DEFAULT, ...AGENT_LAYER]) {
+  for (const kept of DEFAULT_ALLOW) {
     assert.equal(names.includes(kept), true, `${kept} must stay visible`)
   }
-  assert.equal(names.includes('wait_agent'), true, 'wait_agent is an Agent-layer tool, so the restriction cannot hide it')
+  assert.equal(names.includes('subagent'), true, 'the delegation tool must stay visible: it starts the teammate')
+  assert.equal(names.includes('wait_agent'), true, 'wait_agent stays listed and is refused at execution')
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/)
-  assert.equal(lead.deny('subagent'), undefined, 'subagent is restricted away by the allow list, not denied')
+  assert.equal(lead.deny('subagent'), undefined, 'the delegation tool defaults ON, so it is not denied')
   assert.equal(lead.deny('list_subagent_models'), undefined, 'list_subagent_models is restricted away by the allow list, not denied')
   assert.equal(lead.deny('read'), undefined, 'the guard denies one tool, not every tool')
-  assert.equal(lead.deny('spawn_teammate'), undefined)
 
   const section = lead.sections.get('lead-agent-only-leads:contract')
   assert.notEqual(section, undefined, 'the Lead gets its own contract section')
@@ -657,7 +674,7 @@ check('Teammate inherits the full standard surface, untouched', () => {
   const { host } = makeHost({ agents: [mate.agent], presets: presetRegistry, teams: roster })
   apply(host, {})
   assert.equal(mate.activeAllow(), undefined)
-  assert.deepEqual(mate.names(), [...PRESET_SURFACE, ...AGENT_LAYER])
+  assert.deepEqual(mate.names(), INHERITED_SURFACE)
   assert.deepEqual([...mate.sections.keys()], [])
   assert.equal(mate.guards.length, 0)
   assert.equal(mate.deny('subagent'), undefined, 'the guard is per constrained Lead, so a teammate keeps subagent')
@@ -681,7 +698,7 @@ check('A live re-preset applies and lifts the contract', () => {
 
   agent.agent.ctx.__preset = 'lead-agent-only-leads'
   host.emit('agent-preset/selected', agent.agent.id)
-  assert.deepEqual(agent.activeAllow(), KEPT_BY_DEFAULT)
+  assert.deepEqual(agent.activeAllow(), DEFAULT_ALLOW)
 
   agent.agent.ctx.__preset = 'standard'
   host.emit('agent-preset/selected', agent.agent.id)
@@ -695,7 +712,7 @@ check('Without a Team service, only a root Session is a Lead', () => {
   const child = makeAgent({ preset: 'lead-agent-only-leads', header: { parentSession: 'session-0' } })
   const { host } = makeHost({ agents: [root.agent, child.agent], presets: presetRegistry })
   apply(host, {})
-  assert.deepEqual(root.activeAllow(), KEPT_BY_DEFAULT)
+  assert.deepEqual(root.activeAllow(), DEFAULT_ALLOW)
   assert.equal(child.activeAllow(), undefined)
 })
 
@@ -707,10 +724,13 @@ check('Config can narrow the keep list and drop the guard', () => {
   assert.equal(lead.guards.length, 0)
 })
 
-check('A keep list naming a scope-registered tool is pruned, not fatal', () => {
+check('A keep list naming a tool the registry rejects is pruned, not fatal', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
+  // An Agent-scope tool: `tools.restrict()` cannot name it, so the candidate
+  // list is pruned from the registry's own rejection instead of giving up.
+  lead.agent.ctx.tools.schemas = () => [...INHERITED_SURFACE, 'action_card'].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
-  apply(host, { leadTools: ['read', 'list_agents', 'glob'] })
+  apply(host, { leadTools: ['read', 'action_card', 'glob'] })
   assert.deepEqual(lead.activeAllow(), ['read', 'glob'])
   assert.equal(warnings.length, 0)
 })
@@ -725,7 +745,7 @@ check('A keep list naming a scope-registered tool is pruned, not fatal', () => {
 
 check('(b) LEGACY leadTools naming only absent tools keeps the preset tools and warns', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
-  lead.agent.ctx.tools.schemas = () => [...AGENT_LAYER].map(name => ({ name }))
+  lead.agent.ctx.tools.schemas = () => [].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { leadTools: ['pwsh'] })
   assert.equal(lead.activeAllow(), undefined, 'an explicit legacy keep list is the ONE retained warn-and-keep path')
@@ -733,50 +753,55 @@ check('(b) LEGACY leadTools naming only absent tools keeps the preset tools and 
   assert.equal(lead.names().includes('bash'), true, 'this path deliberately leaves the preset surface intact')
 })
 
-check('(a) TOGGLE-derived keep list of only absent tools restricts the Lead to nothing', () => {
+check('(a) TOGGLE-derived keep list of only absent tools keeps only the Team tools and warns', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
-  // A scope without `pwsh` (platform-conditional row) alongside the own-scope tools.
-  lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'pwsh'), ...AGENT_LAYER].map(name => ({ name }))
+  // A scope without `pwsh` (platform-conditional row); every whitelist toggle is
+  // off, so the only kept names are the always-named guard rows.
+  lead.agent.ctx.tools.schemas = () => INHERITED_SURFACE.filter(name => name !== 'pwsh').map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { ...ALL_WHITELIST_OFF, pwsh: true } })
-  assert.deepEqual(lead.activeAllow(), [], 'a toggle-derived list resolving to nothing must fail closed')
+  assert.deepEqual(lead.activeAllow(), GUARD_NAMES, 'a toggle-derived list resolving to no preset tool still fails closed onto the Team tools')
   const names = lead.names()
-  assert.equal(names.includes('bash'), false, 'bash must not survive: the Lead keeps nothing')
+  assert.equal(names.includes('bash'), false, 'bash must not survive')
   assert.equal(names.includes('write'), false, 'write must not survive either')
-  for (const own of AGENT_LAYER) {
-    assert.equal(names.includes(own), true, `own-scope ${own} cannot be hidden by a restriction`)
+  assert.equal(names.includes('subagent_fork'), false, 'a hidden whitelist tool stays hidden')
+  for (const own of GUARD_NAMES) {
+    assert.equal(names.includes(own), true, `${own} must stay visible`)
   }
   assert.match(warnings.join(' | '), /pwsh is not mounted in this scope/, 'the warning must name the absent tool')
+  assert.match(warnings.join(' | '), /keeps only the Team tools/, 'the warning must state what the Lead still keeps')
 })
 
 check('(c) MIXED toggle list of known and absent tools restricts to the known name only', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
-  lead.agent.ctx.tools.schemas = () => [...PRESET_SURFACE.filter(name => name !== 'pwsh'), ...AGENT_LAYER].map(name => ({ name }))
+  lead.agent.ctx.tools.schemas = () => INHERITED_SURFACE.filter(name => name !== 'pwsh').map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { ...ALL_WHITELIST_OFF, read: true, pwsh: true } })
-  assert.deepEqual(lead.activeAllow(), ['read'], 'the known name is kept and the absent one is dropped')
+  assert.deepEqual(lead.activeAllow(), ['read', ...GUARD_NAMES], 'the known name is kept, the absent one is dropped, and the guard rows stay')
   assert.equal(warnings.length, 0, `the mixed case must not warn; got: ${warnings.join(' | ')}`)
 })
 
-check('ALL-OFF intent: an empty keep list restricts to nothing instead of failing open', () => {
+check('ALL-WHITELIST-OFF intent: every preset tool hidden, the Team tools kept, no fail-open', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: ALL_WHITELIST_OFF })
-  assert.deepEqual(lead.activeAllow(), [], 'a user-intent keep list resolving to zero names must call restrict({ allow: [] })')
+  assert.deepEqual(lead.activeAllow(), GUARD_NAMES, 'the restriction still runs; it keeps exactly the always-named guard rows')
   const names = lead.names()
   for (const kept of KEPT_BY_DEFAULT) {
-    assert.equal(names.includes(kept), false, `${kept} must be hidden when nothing is kept`)
+    assert.equal(names.includes(kept), false, `${kept} must be hidden when its toggle is off`)
   }
-  for (const own of AGENT_LAYER) {
-    assert.equal(names.includes(own), true, `own-scope ${own} cannot be hidden by a restriction`)
+  for (const own of GUARD_NAMES) {
+    assert.equal(names.includes(own), true, `${own} must stay visible`)
   }
   assert.equal(warnings.length, 0, `the all-off case must not warn; got: ${warnings.join(' | ')}`)
 })
 
 check('ZERO RESTRICTABLE: a keep list of only own-scope names keeps none of the preset tools', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
+  // Two tools the Agent's own scope registers: `restrict()` cannot name either.
+  lead.agent.ctx.tools.schemas = () => [...INHERITED_SURFACE, 'action_card', 'structured_output'].map(name => ({ name }))
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
-  apply(host, { leadTools: ['list_agents', 'wait_agent'] })
+  apply(host, { leadTools: ['action_card', 'structured_output'] })
   assert.deepEqual(lead.activeAllow(), [], 'non-empty intent with zero restrictable names must keep nothing')
   assert.match(warnings.join(' | '), /none of 2 configured tools for the Lead is restrictable/)
 })
@@ -802,16 +827,47 @@ check('a whitelist toggle ON joins the keep list and OFF leaves it', () => {
 check('a guard toggle ON removes the denial and OFF adds it', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
-  apply(host, { tools: { wait_agent: true, spawn_teammate: false } })
+  apply(host, { tools: { wait_agent: true, team_task_list: false } })
   assert.equal(lead.deny('wait_agent'), undefined, 'wait_agent toggled ON must not be denied')
-  assert.match(lead.deny('spawn_teammate'), /spawn_teammate is disabled/, 'spawn_teammate toggled OFF must be denied')
+  assert.match(lead.deny('team_task_list'), /team_task_list is disabled/, 'an OFF guard row must be denied through the guard')
+  assert.equal(lead.activeAllow().includes('team_task_list'), true, 'an OFF guard row must stay on the Lead list so the refusal is visible')
+})
+
+check('constraining a Lead turns Team mode on for its root Session, once', () => {
+  const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
+  const calls = []
+  let enabled = false
+  const teams = {
+    tryMembership: () => ({ role: 'lead' }),
+    isEnabled: () => enabled,
+    setEnabled: (agent, value) => {
+      calls.push([agent.id, value])
+      enabled = value
+      return Promise.resolve()
+    },
+  }
+  const { host, warnings } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams })
+  apply(host, {})
+  assert.deepEqual(calls, [[lead.agent.id, true]], 'a fresh Lead Session must get Team mode on so the board tools exist')
+  assert.equal(warnings.length, 0, `no warnings expected, got: ${warnings.join(' | ')}`)
+
+  // Already on: no second write when the Agent is reconciled again.
+  host.emit('agent/created', { agent: lead.agent })
+  assert.deepEqual(calls, [[lead.agent.id, true]], 'an enabled Session must not be written again')
+
+  // A Team service without the mode controls (or no service at all) is left alone.
+  const plain = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
+  const bare = makeHost({ agents: [plain.agent], presets: presetRegistry, teams: roster })
+  apply(bare.host, {})
+  assert.deepEqual(plain.activeAllow(), DEFAULT_ALLOW, 'the Lead is still constrained without the mode controls')
+  assert.equal(bare.warnings.length, 0, `no warnings expected, got: ${bare.warnings.join(' | ')}`)
 })
 
 check('a class-none toggle has no effect on either list', () => {
   const lead = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   const { host } = makeHost({ agents: [lead.agent], presets: presetRegistry, teams: roster })
   apply(host, { tools: { '/plan': true, plugin_manager: true, structured_output: true } })
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT)
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW)
   assert.match(lead.deny('wait_agent'), /disabled for a non-blocking Lead/, 'guard defaults still apply')
 })
 
@@ -822,11 +878,11 @@ check('a volatile toggle edit reaches a Lead created afterwards, without a remou
   const agents = [first.agent]
   const { host } = makeHost({ agents, presets: presetRegistry, teams: roster })
   apply(host, config)
-  assert.deepEqual(first.activeAllow(), KEPT_BY_DEFAULT, 'precondition: the first Lead got the defaults')
+  assert.deepEqual(first.activeAllow(), DEFAULT_ALLOW, 'precondition: the first Lead got the defaults')
   // A settings-page write commits into the running config in place; `apply` is
   // not re-run, so the running Lead must keep its surface.
   live = { bash: true }
-  assert.deepEqual(first.activeAllow(), KEPT_BY_DEFAULT, 'a running Lead must not be re-reconciled')
+  assert.deepEqual(first.activeAllow(), DEFAULT_ALLOW, 'a running Lead must not be re-reconciled')
   const second = makeAgent({ preset: 'lead-agent-only-leads', role: 'lead' })
   agents.push(second.agent)
   host.emit('agent/created', { agent: second.agent })
@@ -886,12 +942,12 @@ check('a preset registry that activates after apply re-reconciles the Lead', () 
   const { host, warnings } = makeHost({ agents: [lead.agent], teams: roster })
   apply(host, {})
   // No registry yet: an unresolvable preset must not read as "not ours".
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'an unresolvable preset must keep a possible Lead restricted')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'an unresolvable preset must keep a possible Lead restricted')
   assert.match(warnings.join(' | '), /not resolvable yet/, 'the unresolved path must warn instead of falling back silently')
   // The registry activates; its projection names this Lead.
   lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
   host.provide('agentPresets', projectionRegistry)
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the resolved projection must keep the restriction')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'the resolved projection must keep the restriction')
   assert.equal(lead.guards.length, 1, 're-reconciling must not duplicate the guard')
   assert.equal(lead.sections.size, 1, 're-reconciling must not duplicate the section')
 })
@@ -900,7 +956,7 @@ check('a late-arriving registry releases a genuine non-Lead', () => {
   const other = makeAgent({ preset: 'standard', role: 'lead' })
   const { host } = makeHost({ agents: [other.agent], teams: roster })
   apply(host, {})
-  assert.deepEqual(other.activeAllow(), KEPT_BY_DEFAULT, 'precondition: fail-closed while the preset is unresolved')
+  assert.deepEqual(other.activeAllow(), DEFAULT_ALLOW, 'precondition: fail-closed while the preset is unresolved')
   other.agent.session.__projectedPreset = 'standard'
   host.provide('agentPresets', projectionRegistry)
   assert.equal(other.activeAllow(), undefined, 'a resolved non-Lead preset must be released')
@@ -915,7 +971,7 @@ check('the projection decides the first turn, not the creation header', () => {
   lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
   const { host, warnings } = makeHost({ agents: [lead.agent], presets: projectionRegistry, teams: roster })
   apply(host, {})
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the projected Lead must be constrained on its first turn')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'the projected Lead must be constrained on its first turn')
   assert.equal(lead.guards.length, 1)
   assert.equal(warnings.length, 0, `no warnings expected once the projection answers; got: ${warnings.join(' | ')}`)
 })
@@ -931,20 +987,20 @@ check('a genuine non-Lead is never restricted', () => {
   const teamHost = makeHost({ agents: [teammate.agent], presets: projectionRegistry, teams: roster })
   apply(teamHost.host, {})
   assert.equal(teammate.activeAllow(), undefined, 'a teammate keeps the full preset surface')
-  assert.deepEqual(teammate.names(), [...PRESET_SURFACE, ...AGENT_LAYER])
+  assert.deepEqual(teammate.names(), INHERITED_SURFACE)
 })
 
 check('the agent-preset/selected payload classifies while the projection is unreadable', () => {
   const agent = makeAgent({ preset: 'standard', role: 'lead' })
   const { host } = makeHost({ agents: [agent.agent], teams: roster })
   apply(host, {})
-  assert.deepEqual(agent.activeAllow(), KEPT_BY_DEFAULT, 'precondition: fail-closed without a projection')
+  assert.deepEqual(agent.activeAllow(), DEFAULT_ALLOW, 'precondition: fail-closed without a projection')
   // The registry re-emits `(sessionId, agentPreset)`; without a projection the
   // payload is the secondary signal.
   host.emit('agent-preset/selected', agent.agent.id, 'standard')
   assert.equal(agent.activeAllow(), undefined, 'a payload naming another preset must release')
   host.emit('agent-preset/selected', agent.agent.id, 'lead-agent-only-leads')
-  assert.deepEqual(agent.activeAllow(), KEPT_BY_DEFAULT, 'a payload naming the Lead preset must constrain')
+  assert.deepEqual(agent.activeAllow(), DEFAULT_ALLOW, 'a payload naming the Lead preset must constrain')
 })
 
 check('session/event reconciles a selection recorded in the session log', () => {
@@ -954,7 +1010,7 @@ check('session/event reconciles a selection recorded in the session log', () => 
   assert.equal(lead.activeAllow(), undefined, 'precondition: not constrained yet')
   lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
   host.emit('session/event', { id: lead.agent.id }, { type: 'agent-preset/selected', data: { agentPreset: 'lead-agent-only-leads' } })
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the session event must reconcile the Agent')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'the session event must reconcile the Agent')
 })
 
 check('a selection observed before the Agent is published applies at creation', () => {
@@ -966,7 +1022,7 @@ check('a selection observed before the Agent is published applies at creation', 
   assert.equal(lead.activeAllow(), undefined, 'the Agent does not exist yet')
   agents.push(lead.agent)
   host.emit('agent/created', { agent: lead.agent })
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the early selection must be applied when the Agent appears')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'the early selection must be applied when the Agent appears')
 })
 
 // --- per-Agent bookkeeping: bounded, pruned, and capability-aware -------------
@@ -993,11 +1049,11 @@ check('unresolved warnings are one-shot per episode and re-armed by a resolved d
   // Resolving ends the episode; a fresh unresolved one warns again.
   lead.agent.session.__projectedPreset = 'lead-agent-only-leads'
   host.provide('agentPresets', projectionRegistry)
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT)
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW)
   host.retract('agentPresets')
   host.emit('agent/created', { agent: lead.agent })
   assert.equal(unresolvedWarnings(), 2, 'a resolved decision must re-arm the warning entry')
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'the fresh episode fails closed again')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'the fresh episode fails closed again')
 })
 
 check('a disposed Agent leaves no bookkeeping behind', () => {
@@ -1026,7 +1082,7 @@ check('remembered pre-publication selections stay bounded and are consumed once'
   host.emit('agent-preset/selected', lead.agent.id, 'lead-agent-only-leads')
   agents.push(lead.agent)
   host.emit('agent/created', { agent: lead.agent })
-  assert.deepEqual(lead.activeAllow(), KEPT_BY_DEFAULT, 'a remembered selection must still classify at publication')
+  assert.deepEqual(lead.activeAllow(), DEFAULT_ALLOW, 'a remembered selection must still classify at publication')
 
   // Consumed, not merely read: the first publication resolves to the payload,
   // and a second reconcile has no hint left (so the unresolved state returns).
@@ -1036,7 +1092,7 @@ check('remembered pre-publication selections stay bounded and are consumed once'
   host.emit('agent/created', { agent: second.agent })
   assert.equal(second.activeAllow(), undefined, 'the remembered non-Lead selection releases at publication')
   host.emit('agent/created', { agent: second.agent })
-  assert.deepEqual(second.activeAllow(), KEPT_BY_DEFAULT, 'a second publication must not see a stale remembered selection')
+  assert.deepEqual(second.activeAllow(), DEFAULT_ALLOW, 'a second publication must not see a stale remembered selection')
 })
 
 // The Loader entry tree is the composition, so the harness can model the two
@@ -1069,7 +1125,7 @@ check('fail-closed follows composition capability, so a registry-less Host is no
   const webLead = makeAgent({ preset: 'standard', role: 'lead' })
   const web = makeHost({ agents: [webLead.agent], teams: roster, loader: WEB_LOADER })
   apply(web.host, {})
-  assert.deepEqual(webLead.activeAllow(), KEPT_BY_DEFAULT, 'a composed-but-pending registry must keep the first-turn guarantee')
+  assert.deepEqual(webLead.activeAllow(), DEFAULT_ALLOW, 'a composed-but-pending registry must keep the first-turn guarantee')
   assert.equal(web.warnings.filter(message => /not resolvable yet/.test(message)).length, 1)
 
   // A disabled registry row never starts, so it is not a capability either.
@@ -1161,10 +1217,12 @@ if (yaml === undefined) {
 // with the host's, so the two halves cannot drift. A stub React suffices —
 // nothing renders here.
 const CLIENT_PATH = join(HERE, 'client.js')
+/** Label for the catalog-parity result below. */
+const CATALOG_PARITY_LABEL = `Host and client LEAD_TOOL_CATALOG are deep-equal (${LEAD_TOOL_CATALOG.length} entries, same order)`
 /** Label for the client-side contract-preview parity result below. */
 const CONTRACT_PREVIEW_LABEL = 'the client contract preview mirrors the host builder (5 selection cases)'
 if (!existsSync(CLIENT_PATH)) {
-  results.push({ label: 'Host and client LEAD_TOOL_CATALOG are deep-equal (skipped: client.js is absent)', ok: true, skipped: true })
+  results.push({ label: `${CATALOG_PARITY_LABEL} (skipped: client.js is absent)`, ok: true, skipped: true })
 } else {
   const stub = new Proxy(function () {}, {
     get: (_target, property) => property === 'then' ? undefined : stub,
@@ -1192,7 +1250,7 @@ if (!existsSync(CLIENT_PATH)) {
     assert.ok(required.includes('react'), `the client must take React from the module table; required: ${required.join(', ') || 'nothing'}`)
     assert.notEqual(face?.LEAD_TOOL_CATALOG, undefined, 'the client module face must expose LEAD_TOOL_CATALOG')
     assert.deepEqual(face.LEAD_TOOL_CATALOG, LEAD_TOOL_CATALOG, 'the host and client catalogs must be identical')
-    results.push({ label: 'Host and client LEAD_TOOL_CATALOG are deep-equal (51 entries, same order)', ok: true })
+    results.push({ label: CATALOG_PARITY_LABEL, ok: true })
     // The page quotes the contract, so the client mirror must reproduce the host
     // builder byte for byte, and its selection resolution must match the host's
     // (the host derives the three hides from its live `reachable` scope; the
@@ -1228,7 +1286,7 @@ if (!existsSync(CLIENT_PATH)) {
     }
   } catch (error) {
     results.push({
-      label: 'Host and client LEAD_TOOL_CATALOG are deep-equal (51 entries, same order)',
+      label: CATALOG_PARITY_LABEL,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     })
