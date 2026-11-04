@@ -742,10 +742,10 @@ function providersCard(page) {
 
 await check('the manifest declares the frozen identity, bundle patch, engines, and web client', () => {
   assert.equal(manifest.name, 'dsh-llm-api-call-tuning', `package name drifted to ${String(manifest.name)}`)
-  assert.equal(manifest.version, '0.2.2-alpha.2', `version drifted to ${String(manifest.version)}`)
+  assert.equal(manifest.version, '0.2.2-rc.1', `version drifted to ${String(manifest.version)}`)
   assert.equal(manifest.private, false, 'the package must be publicly publishable')
   assert.equal(manifest.type, 'module', `type drifted to ${String(manifest.type)}`)
-  assert.equal(manifest.engines?.dsh, '^0.2.2-alpha.2', `engines.dsh drifted to ${String(manifest.engines?.dsh)}`)
+  assert.equal(manifest.engines?.dsh, '^0.2.2-rc.1', `engines.dsh drifted to ${String(manifest.engines?.dsh)}`)
   assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml', `dsh.bundle.patch drifted to ${String(manifest.dsh?.bundle?.patch)}`)
   assert.equal(manifest.dsh?.client?.platform, 'web', `dsh.client.platform drifted to ${String(manifest.dsh?.client?.platform)}`)
   assert.deepEqual(

@@ -14,12 +14,12 @@
 
 ## 要求
 
-- **DSH `^0.2.2-alpha.2`** —— 在每个 manifest 中都声明为 `engines.dsh`，因此超出该范围的 DSH 宿主会拒绝安装。
+- **DSH `^0.2.2-rc.1`** —— 在每个 manifest 中都声明为 `engines.dsh`，因此超出该范围的 DSH 宿主会拒绝安装。
 - 这些包没有单独声明 Node.js 版本。它们的校验脚本是普通 ESM，用你运行 DSH 时已经在用的 `node` 二进制即可执行。
 
 ## 安装
 
-插件包就是一个 npm 包，其 `package.json` 声明了 `dsh.bundle.patch`；安装它会把那一层补丁加入当前 DSH profile。目前有三条可用的安装路径。只有路径/`link:` 这条路线不需要 registry：`dsh-lead-agent-only-leads` 的 tarball 或 Git 安装还会从 registry 解析它唯一声明的依赖 `@deepseek-ai/schemastery@3.18.6-alpha.1`，因此那条路线需要可达的 registry，或宿主上已存在该依赖。
+插件包就是一个 npm 包，其 `package.json` 声明了 `dsh.bundle.patch`；安装它会把那一层补丁加入当前 DSH profile。目前有三条可用的安装路径。只有路径/`link:` 这条路线不需要 registry：`dsh-lead-agent-only-leads` 的 tarball 或 Git 安装还会从 registry 解析它唯一声明的依赖 `@deepseek-ai/schemastery@3.19.0`，因此那条路线需要可达的 registry，或宿主上已存在该依赖。
 
 ### 从本地检出安装（绝对路径）
 
@@ -45,11 +45,11 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 ```sh
 cd dsh-backend-restart
-npm pack    # -> dsh-backend-restart-0.2.2-alpha.2.tgz
+npm pack    # -> dsh-backend-restart-0.2.2-rc.1.tgz
 ```
 
 ```js
-plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-alpha.2.tgz" })
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.1.tgz" })
 ```
 
 ### 从 Git 安装（子目录选择器）
@@ -81,7 +81,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
 node dsh-lead-agent-only-leads/verify.mjs    # 59/59 checks passed
-node dsh-llm-api-call-tuning/verify.mjs      # 127 passed, 0 failed, 0 skipped (127 checks)
+node dsh-llm-api-call-tuning/verify.mjs      # 154 passed, 0 failed, 0 skipped (154 checks)
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 

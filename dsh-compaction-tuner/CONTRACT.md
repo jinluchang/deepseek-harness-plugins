@@ -154,9 +154,9 @@ The tuner then projects the same values into the preset rows the resolved editor
 `entry.options.name === '@deepseek-ai/dsh-agent-preset'`. "Push" means a whole-config replacement:
 
 - A patch **replaces a row's entire `config`** — the patch loop copies each override key onto the row,
-  so a `config` override is not merged (`overrides` `vendor/include/src/index.ts:120-123`).
+  so a `config` override is not merged (`overrides` `vendor/include/src/patch.ts:63-105`).
 - Preset **children are not addressable**: the include recursion only indexes rows where
-  `entry.group && Array.isArray(entry.config)` (`vendor/include/src/index.ts:69-71`), so a nested
+  `entry.group && Array.isArray(entry.config)` (`vendor/include/src/patch.ts:55`), so a nested
   `compaction-basic` row is never a patch target.
 - `withTune()` therefore returns a deep clone of the preset's config in which the existing
   `compaction-basic` child's config is replaced by `{...existing, ...projectedTune(values)}`, with both

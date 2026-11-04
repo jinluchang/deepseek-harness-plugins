@@ -383,7 +383,7 @@ values change again.
 
 ## Maintenance cost
 
-A patch replaces a row's **whole** config (`overrides` `vendor/include/src/index.ts:120-123`) and preset children
+A patch replaces a row's **whole** config (`overrides` `vendor/include/src/patch.ts:63-105`) and preset children
 are not addressable, so the tuner must restate each preset's entire `plugins` list in the replacement
 config. Any later upstream edit to a shipped preset is silently hidden behind that restatement until the
 preset row is reset. Treat the tuner's copies as a fork of the preset patches and run the drift check
