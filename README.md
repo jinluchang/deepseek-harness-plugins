@@ -16,7 +16,7 @@ README, and ships a hermetic verification suite that runs without a live Host.
 
 ## Requirements
 
-- **DSH `^0.2.2-rc.1`** — declared as `engines.dsh` in every manifest, so a DSH host outside that range
+- **DSH `^0.2.2-rc.2`** — declared as `engines.dsh` in every manifest, so a DSH host outside that range
   refuses the install.
 - These packages declare no separate Node.js version. Their verification scripts are plain ESM and run
   with the `node` binary you already use for DSH.
@@ -56,11 +56,11 @@ full page load.
 
 ```sh
 cd dsh-backend-restart
-npm pack    # -> dsh-backend-restart-0.2.2-rc.1.tgz
+npm pack    # -> dsh-backend-restart-0.2.2-rc.2.tgz
 ```
 
 ```js
-plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.1.tgz" })
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.2.tgz" })
 ```
 
 ### From Git (subdirectory selector)
@@ -102,7 +102,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
 node dsh-lead-agent-only-leads/verify.mjs    # 59/59 checks passed
-node dsh-llm-api-call-tuning/verify.mjs      # 161 passed, 0 failed, 0 skipped (161 checks)
+node dsh-llm-api-call-tuning/verify.mjs      # 164 passed, 0 failed, 0 skipped (164 checks)
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 

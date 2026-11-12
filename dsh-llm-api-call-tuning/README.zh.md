@@ -71,7 +71,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 | `headersTimeoutMs` | 进程级 HTTP 响应头超时，单位毫秒，由宿主应用到所有提供方、联网搜索与 HTTP MCP 服务器共用的 fetch 调度器上。 | `unset`（保持系统/DSH 默认不变），或 0..2147483647 的整数；`0` 表示禁用该计时器 | `unset`（未设置） |
 | `bodyTimeoutMs` | 同一 fetch 调度器上的进程级 HTTP 响应正文（分块）超时，单位毫秒。 | `unset`（保持系统/DSH 默认不变），或 0..2147483647 的整数；`0` 表示禁用该计时器 | `unset`（未设置） |
 
-重试行的**代码默认值**列是上游解析回退值（`retry-policy.ts:14-22`），也是未配置的提供方路由实际运行的值。bundle 不写入任何初始值，因此页面从这些值开始。两个抓取行的代码默认值是 **`unset`**，而不是数字：schema 刻意没有 `.default()`，所以全新安装不会物化任何计时器，宿主自己的调度器默认值继续生效。`unset` 表示不改变行为；`0` 是真实取值，表示禁用该计时器；正整数表示设置该值。
+重试行的**代码默认值**列是上游解析回退值（`retry-policy.ts:15-25`），也是未配置的提供方路由实际运行的值。bundle 不写入任何初始值，因此页面从这些值开始。两个抓取行的代码默认值是 **`unset`**，而不是数字：schema 刻意没有 `.default()`，所以全新安装不会物化任何计时器，宿主自己的调度器默认值继续生效。`unset` 表示不改变行为；`0` 是真实取值，表示禁用该计时器；正整数表示设置该值。
 
 ### 可重试错误码（可选扩展）
 
@@ -87,7 +87,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 **可选语义。** 未勾选的扩展码不属于策略。页面只在你勾选并保存后才记住某个扩展码；已经存有扩展码的列表会保持勾选。若已存列表为空或不包含本页面认识的任何错误码，则回退到五个默认值——绝不会回退到十个。未改动的列表不会被路由卡片重写，因此保存不会悄悄启用某个错误码。
 
-**上游并不限于五个。** 重试 schema 是 `retryableCodes: z.array(z.string())`（`packages/llm/llm/src/retry-policy.ts:90`）：schema 只校验条目是字符串，解析器另外拒绝空数组、空字符串与重复项（`retry-policy.ts:170-178`）——任何一层都不校验成员资格。执行器按精确字符串比较错误码（`packages/llm/llm-retry/src/index.ts:212`）。五个错误码的默认值是本插件自己的策略，不是上游限制；十个错误码是本页面提供的列表，手工存储的列表外错误码只会在错误码列表真正被重写时才从草稿中丢弃（路由卡片只写改动过的叶子；全局卡片的保存总是重写它的六个默认叶子，因此会把本插件自己的预设规范化）。
+**上游并不限于五个。** 重试 schema 是 `retryableCodes: z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)), z.string().min(1)])).min(1)`（`packages/llm/llm/src/retry-policy.ts:95-96`）：常量分支把内建错误码发布给表单，字符串分支仍接受任意非空的自定义错误码，`.min(1)` 拒绝空数组；解析器另外拒绝空字符串与重复项（`retry-policy.ts:176-184`）——任何一层都不校验成员资格。执行器按精确字符串比较错误码（`packages/llm/llm-retry/src/index.ts:212`）。五个错误码的默认值是本插件自己的策略，不是上游限制；十个错误码是本页面提供的列表，手工存储的列表外错误码只会在错误码列表真正被重写时才从草稿中丢弃（路由卡片只写改动过的叶子；全局卡片的保存总是重写它的六个默认叶子，因此会把本插件自己的预设规范化）。
 
 **绝不要加入 `CONTEXT_WINDOW_EXCEEDED` 或 `IMAGE_OFFLOAD_REQUIRED`。** `normal` 模式下，命中列表的错误码会在执行器委托给 `next()` **之前**就被重试，因此该失败永远不会到达真正修复它们的处理器——`compaction-basic`（`packages/compaction/compaction-basic/src/index.ts:213,217`）与 `compaction-image-offload`（`packages/compaction/compaction-image-offload/src/index.ts:27,28`）。重试它们只会浪费重试次数，而不是压缩或卸载内容；因此页面刻意不提供它们。
 
@@ -215,7 +215,7 @@ DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/veri
 - **崩溃关闭的回合与无头运行不会获得手动重试。** 已被 Host 崩溃/重启标记为 `interrupted` 的回合，以及任何没有活动浏览器页面的运行，都回退到自动链的结果。
 - **手动重试可能重复副作用。** 之前的工具结果仍保留在历史中，但重试的调用可能再次发起相同工具调用并再次执行；本功能不做去重。
 - **失败负载没有模型字段。** 重试条显示提供方与失败错误码/消息，而不是模型。
-- **按路由，而不是按模型。** DSH 在适配器注册时按**提供方路由**捕获一份重试策略（`packages/llm/llm/src/retry-policy.ts:78,450-455`），而 agent/request-error 负载只携带提供方、不携带模型（`packages/core/agent/src/runtime-types.ts:389`）。按模型覆盖会被存储和渲染，但永远不会生效，因此页面不提供该能力。
+- **按路由，而不是按模型。** DSH 在适配器注册时按**提供方路由**捕获一份重试策略（`packages/llm/llm/src/index.ts:465-471`、`packages/llm/llm/src/retry-policy.ts:79-80`），而 agent/request-error 负载只携带提供方、不携带模型（`packages/core/agent/src/runtime-types.ts:390`）。按模型覆盖会被存储和渲染，但永远不会生效，因此页面不提供该能力。
 - **休眠路由、没有设置命名空间的路由，以及命名空间不可用的路由不会被列出，也无法选择。** 没有生效的配置表单就无法证明其偏离，而写入超时叶子会生成不完整的提供方配置并可能激活休眠路由。
 - **与全局值相同的已存覆盖会被隐藏。** 列表是偏离列表，而不是存储状态列表：与全局重试值完全相同的 `retryPolicy`（或只存有等于包默认值的超时叶子）不会生成卡片。超时叶子仍按存在性视为偏离，因为没有全局对应值可比较。
 - **提供方目录每次挂载只读取一次**，没有实时刷新：页面保持打开时新增或移除的提供方需要刷新页面。

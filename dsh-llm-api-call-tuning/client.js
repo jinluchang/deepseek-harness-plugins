@@ -46,7 +46,8 @@
  * value out of the provider form's snapshot and writes leaf-path operations
  * back through the same form. The entity is the PROVIDER ROUTE, never a model:
  * DSH resolves retry and timeout policy once per route, with no per-model hook
- * (`packages/llm/llm/src/retry-policy.ts:78,450-455`), so no per-model config
+ * (`packages/llm/llm/src/index.ts:465-471`,
+ * `packages/llm/llm/src/retry-policy.ts:79-80`), so no per-model config
  * dict is stored or rendered.
  *
  * Every write is a list of LEAF path operations at the shared form's current
@@ -55,7 +56,7 @@
  * hand-written profile) and the whole `providers` dict is never set (that would
  * clobber sibling provider fields). `mode: 'always'` additionally clears the
  * two normal-mode-only leaves, because the upstream union schema ignores them
- * once the mode is `always` (`packages/llm/llm/src/retry-policy.ts:105-112`).
+ * once the mode is `always` (`packages/llm/llm/src/retry-policy.ts:111-118`).
  * A blank timeout field is the unset state and writes an `unset` (or is skipped
  * when it already was blank), so the package/SDK default stays in force; `0` is
  * refused on all three timeout leaves (the package schemas reject it for the
@@ -114,15 +115,17 @@ window.__ModuleLoader__.load({
 
     /**
      * The two retry modes of the upstream policy
-     * (`packages/llm/llm/src/retry-policy.ts:36-54`).
+     * (`packages/llm/llm/src/retry-policy.ts:37-55`).
      */
     const MODES = Object.freeze(['normal', 'always']);
 
     /**
      * The five failure codes the upstream retry policy ships with
-     * (`retry-policy.ts:18-24`), and this page's DEFAULT code list. Upstream
+     * (`retry-policy.ts:19-25`), and this page's DEFAULT code list. Upstream
      * does not restrict the array to them — its schema is
-     * `z.array(z.string())` and the executor matches exact code strings — so
+     * `z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)),
+     * z.string().min(1)])).min(1)` and the executor matches exact code
+     * strings — so
      * the narrowing is this plugin's own and widening the offered list never
      * changes the default.
      */
@@ -155,8 +158,8 @@ window.__ModuleLoader__.load({
     ]);
 
     /**
-     * Upstream code defaults (`retry-policy.ts:14-24`), also what an
-     * unconfigured provider route resolves to (`:151-158`). They are the
+     * Upstream code defaults (`retry-policy.ts:15-25`), also what an
+     * unconfigured provider route resolves to (`:159-165`). They are the
      * fallback the page shows when a namespace has not answered yet, and the
      * values "Reset" restores through the provider's own schema defaults. The
      * code list is deliberately the five upstream codes — NEVER the offered
@@ -182,7 +185,7 @@ window.__ModuleLoader__.load({
 
     /**
      * Largest timer delay upstream accepts (`@deepseek-ai/dsh-timeout`
-     * `MAX_TIMER_DELAY_MS`, used by `retry-policy.ts:82-84,127-135`). The fetch
+     * `MAX_TIMER_DELAY_MS`, used by `retry-policy.ts:85-87,133-141`). The fetch
      * timers use the same bound.
      */
     const MAX_TIMER_DELAY_MS = 2147483647;
@@ -885,7 +888,7 @@ window.__ModuleLoader__.load({
 
     /**
      * Validate one draft against the rules the upstream resolver enforces
-     * (`retry-policy.ts:127-178`) plus the cross-field order the schema cannot
+     * (`retry-policy.ts:133-184`) plus the cross-field order the schema cannot
      * express. In a provider row whose mode is `always` the retry limit and
      * the code list are inactive: they are not validated, and the write
      * unsets them. The defaults card always owns both, so it validates them

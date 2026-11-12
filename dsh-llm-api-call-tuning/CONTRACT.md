@@ -103,8 +103,8 @@ because `volatileForm()` only descends object roots
 whole settings section.
 
 For the six retry rows, the *Code default* column is the upstream resolution fallback
-(`retry-policy.ts:14-22`), also the value an unconfigured provider route resolves to
-(`retry-policy.ts:149-158`). It is recorded once in `index.js` (`DEFAULT_TUNE`, `TUNE_OPTIONS`) and
+(`retry-policy.ts:15-25`), also the value an unconfigured provider route resolves to
+(`retry-policy.ts:159-165`). It is recorded once in `index.js` (`DEFAULT_TUNE`, `TUNE_OPTIONS`) and
 pinned by `verify.mjs` against the upstream file text. The two fetch rows carry `unset` because their
 schema deliberately has no `.default()`: see *Fetch timeout fields (tri-state)*.
 
@@ -117,12 +117,12 @@ resolves to.
 
 | Field | Schemastery shape | Code default | Range (enforced by) |
 | --- | --- | --- | --- |
-| `mode` | `union([const('normal'), const('always')]).default('normal').volatile()` | `'normal'` | `'normal'` or `'always'` (upstream `resolveRetryPolicy` switch, `retry-policy.ts:149-195`) |
-| `maxRetries` | `number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(5).volatile()` | `5` | integer 0..9007199254740991 (upstream `number().step(1).min(0).max(Number.MAX_SAFE_INTEGER)`, `retry-policy.ts:89`; load-time `Number.isSafeInteger` assert `retry-policy.ts:167-169`) |
-| `initialDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(500).volatile()` | `500` | finite and > 0, at most 2147483647; must not exceed maxDelayMs (upstream schema `retry-policy.ts:82`; load-time asserts `retry-policy.ts:127-135`; the order rule is cross-field and lives in `validateTune`) |
-| `maxDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(10000).volatile()` | `10000` | finite and > 0, at most 2147483647; must not be below initialDelayMs (upstream schema `retry-policy.ts:83`; load-time asserts `retry-policy.ts:130-135`) |
-| `jitterRatio` | `number().min(0).max(1).default(0.1).volatile()` | `0.1` | number in [0, 1] (upstream schema `retry-policy.ts:84`; load-time assert `retry-policy.ts:136-138`) |
-| `retryableCodes` | `array(union(ten consts)).min(1).default(the five upstream codes).volatile()` — the union is `OFFERED_RETRYABLE_CODES` | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` | non-empty array of unique codes from the ten offered codes; defaults to the five upstream codes (upstream schema `retry-policy.ts:90` is `z.array(z.string())` and validates shape only; the executor matches exact strings, `packages/llm/llm-retry/src/index.ts:212`; upstream load-time asserts `retry-policy.ts:170-178` cover non-empty, non-empty-string and uniqueness only; the membership narrowing and the uniqueness guard on this plugin's own row are cross-field and live in `validateTune`) |
+| `mode` | `union([const('normal'), const('always')]).default('normal').volatile()` | `'normal'` | `'normal'` or `'always'` (upstream `resolveRetryPolicy` switch, `retry-policy.ts:168-201`) |
+| `maxRetries` | `number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(5).volatile()` | `5` | integer 0..9007199254740991 (upstream `number().step(1).min(0).max(Number.MAX_SAFE_INTEGER)`, `retry-policy.ts:92`; load-time `Number.isSafeInteger` assert `retry-policy.ts:173-175`) |
+| `initialDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(500).volatile()` | `500` | finite and > 0, at most 2147483647; must not exceed maxDelayMs (upstream schema `retry-policy.ts:85`; load-time asserts `retry-policy.ts:133-141`; the order rule is cross-field and lives in `validateTune`) |
+| `maxDelayMs` | `number().min(Number.MIN_VALUE).max(2147483647).default(10000).volatile()` | `10000` | finite and > 0, at most 2147483647; must not be below initialDelayMs (upstream schema `retry-policy.ts:86`; load-time asserts `retry-policy.ts:136-141`) |
+| `jitterRatio` | `number().min(0).max(1).default(0.1).volatile()` | `0.1` | number in [0, 1] (upstream schema `retry-policy.ts:87`; load-time assert `retry-policy.ts:142-144`) |
+| `retryableCodes` | `array(union(ten consts)).min(1).default(the five upstream codes).volatile()` — the union is `OFFERED_RETRYABLE_CODES` | `'EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'` | non-empty array of unique codes from the ten offered codes; defaults to the five upstream codes (upstream schema `retry-policy.ts:95-96` is `z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)), z.string().min(1)])).min(1)`: the const branches publish the built-in choices to forms while the string branch admits any non-empty provider-specific code, and `.min(1)` rejects an empty array; the executor matches exact strings, `packages/llm/llm-retry/src/index.ts:212`; upstream load-time asserts `retry-policy.ts:176-184` cover non-empty, non-empty-string and uniqueness only; the membership narrowing and the uniqueness guard on this plugin's own row are cross-field and live in `validateTune`) |
 | `headersTimeoutMs` | `number().step(1).min(0).max(2147483647).volatile()` — deliberately **no** `.default()` | `unset` | `unset` (absent materializes as `undefined`; `null` in `DEFAULT_FETCH`), or integer `0..2147483647`; `0` disables the timer (Host schema; `.step(1)` refuses fractions, `.min(0)` allows disabled, `.max` is the timer cap) |
 | `bodyTimeoutMs` | `number().step(1).min(0).max(2147483647).volatile()` — deliberately **no** `.default()` | `unset` | `unset` (absent materializes as `undefined`; `null` in `DEFAULT_FETCH`), or integer `0..2147483647`; `0` disables the timer (same Host schema bounds) |
 
@@ -151,23 +151,27 @@ unset default lives; flipping it to a number would seed a timer and is not the s
 
 ### Why the delay floor is `Number.MIN_VALUE`
 
-schemastery has **no exclusive minimum**, while upstream rejects `0` and negatives
-(`retry-policy.ts:127-132`). `Number.MIN_VALUE` is the smallest positive double, so
+schemastery has **no exclusive minimum**. Upstream states the same floor in its own schema
+(`initialDelayMs` / `maxDelayMs`: `z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS)`,
+`retry-policy.ts:85-86`) and its `resolveBackoff` rejects non-finite values and `<= 0`
+(`retry-policy.ts:133-138`). `Number.MIN_VALUE` is the smallest positive double, so
 `0 < Number.MIN_VALUE`: `0` and every negative value are refused by `Config` while any positive
 configured delay passes. A delay of exactly `0` is therefore a Host-schema refusal, not a page-only
 refusal, and the page's own pre-check uses the same `> 0` rule.
 
 ### Rules the schema cannot express
 
-- **`initialDelayMs <= maxDelayMs`** (`retry-policy.ts:133-135`). Both fields are individually in range
+- **`initialDelayMs <= maxDelayMs`** (`retry-policy.ts:139-141`). Both fields are individually in range
   and schemastery accepts the tuple; `validateTune()` (Host) and `validateDraft()` (page) refuse it.
-- **Unique `retryableCodes`** (`retry-policy.ts:176-178`). A schemastery array cannot express "no
+- **Unique `retryableCodes`** (`retry-policy.ts:182-184`). A schemastery array cannot express "no
   duplicates", so `Config` accepts `['SERVER','SERVER']` and `validateTune()` is what refuses it. The
   page never submits duplicates, but a direct `settings.mutate` that bypasses the page can persist them
   in this plugin's own defaults row.
 - **The provider-owned schema is looser than this `Config`.** Upstream's schema is
-  `retryableCodes: z.array(z.string())` (`retry-policy.ts:90`), so it validates the shape only (non-empty
-  strings, no duplicates — `retry-policy.ts:170-178`) and the executor compares the stored strings with
+  `retryableCodes: z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)), z.string().min(1)])).min(1)`
+  (`retry-policy.ts:95-96`), so it publishes the built-in choices as constants, admits any non-empty
+  string, and rejects an empty array; the resolver's load-time asserts still reject empty strings and
+  duplicates (`retry-policy.ts:176-184`) and the executor compares the stored strings with
   `includes` (`packages/llm/llm-retry/src/index.ts:212`). The five-code list is **this plugin's own
   default**, not an upstream limit. This page offers the ten `OFFERED_RETRYABLE_CODES`; a hand-written
   provider `retryPolicy` naming another string is shown as the offered subset (unknown entries are dropped
@@ -324,7 +328,7 @@ path**, which is what makes the merge sound: for an `llm-pi-ai` route the retry 
 for the two DeepSeek routes both sit at the namespace root (`retryPolicy.*` and the flat timeout
 leaves). One card therefore writes one provider family with one save, at one revision fence.
 
-The policy shape follows the upstream union (`retry-policy.ts:87-101`): `normal` carries `mode`,
+The policy shape follows the upstream union (`retry-policy.ts:37-58`): `normal` carries `mode`,
 `maxRetries`, `retryableCodes`, `backoff`; `always` carries `mode` and `backoff`, and the other two
 leaves are inactive. In an `always` draft the code checklist is **hidden**; the maximum-retries input
 stays visible and typable but is **ignored and not validated**, and a save clears any stored
@@ -759,14 +763,14 @@ nothing when no decision is pending.
   and are not re-sent as new steps, but the retried model call may re-issue the same tool calls, which
   execute again. The feature does not deduplicate tool effects.
 - **The failure payload has no model field.** The bar shows the provider and the failure code/message
-  (`packages/core/agent/src/runtime-types.ts:389`); it cannot name the model.
+  (`packages/core/agent/src/runtime-types.ts:390`); it cannot name the model.
 - **The manual decision ignores the retry policy budget.** The 5-per-turn manual cap and the 90 s
   decision deadline are the only bounds; `maxRetries` and `retryableCodes` are not consulted and no
   `llm/retry` event is logged, so this path is not part of the automatic retry accounting.
 - **Per route, not per model, and there is no per-model seam.** DSH captures one retry policy per
-  **provider route** at adapter registration (`packages/llm/llm/src/retry-policy.ts:78,450-455`), and
+  **provider route** at adapter registration (`packages/llm/llm/src/index.ts:465-471`, `packages/llm/llm/src/retry-policy.ts:79-80`), and
   the agent/request-error payload carries the provider but no model
-  (`packages/core/agent/src/runtime-types.ts:389`). A per-model override would be stored and rendered
+  (`packages/core/agent/src/runtime-types.ts:390`). A per-model override would be stored and rendered
   but never applied, so the page deliberately does not offer one and does not relabel routes as models.
 - **A stored retry override equal to the global values is hidden.** The list is a list of deviations,
   not of stored state, so a `retryPolicy` identical to the global retry values produces no card and a
@@ -788,7 +792,7 @@ nothing when no decision is pending.
   `llm.listProviders()` / `llm.listConfigurableProviders()` cannot be edited here; the page does not
   guess namespaces.
 - **The offered list is a page-level subset, and the five-code default is this plugin's own.** Upstream's
-  schema is `retryableCodes: z.array(z.string())` (`retry-policy.ts:90`) and the executor matches exact
+  schema is `retryableCodes: z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)), z.string().min(1)])).min(1)` (`retry-policy.ts:95-96`) and the executor matches exact
   string codes (`packages/llm/llm-retry/src/index.ts:212`), so upstream is not limited to five and does
   not check membership. The page offers ten codes and defaults to the five upstream ones; a hand-stored
   code outside the ten is not a Host error, is shown by normalizing the draft to the offered subset, and

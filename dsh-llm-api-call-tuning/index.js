@@ -29,27 +29,30 @@
  * point of a preset.
  *
  * `Config` bounds mirror the upstream schema and load-time asserts
- * (`retry-policy.ts:81-91` and `:127-138`):
+ * (`retry-policy.ts:82-109` and `:133-147`):
  *
  * - `mode`: `'normal'` | `'always'`, default `'normal'` (resolved default of an
- *   omitted policy, `retry-policy.ts:151-158`);
+ *   omitted policy, `retry-policy.ts:159-165`);
  * - `maxRetries`: integer `0..Number.MAX_SAFE_INTEGER`, default `5`
- *   (`retry-policy.ts:89,14`);
+ *   (`retry-policy.ts:92,15`);
  * - `initialDelayMs` / `maxDelayMs`: finite and positive, at most
  *   `MAX_TIMER_DELAY_MS` = `2147483647`, defaults `500` / `10000`
- *   (`retry-policy.ts:82-83,15-16,127-132`);
- * - `jitterRatio`: `0..1`, default `0.1` (`retry-policy.ts:84,17`);
+ *   (`retry-policy.ts:85-86,15-16,133-138`);
+ * - `jitterRatio`: `0..1`, default `0.1` (`retry-policy.ts:87,18`);
  * - `retryableCodes`: non-empty array drawn from the codes this plugin OFFERS
  *   (the five upstream codes plus five opt-in extras, see
  *   `OFFERED_RETRYABLE_CODES`), defaulting to exactly the five upstream codes
- *   (`retry-policy.ts:90,18-22,170-177`). Upstream accepts any string here
- *   (`z.array(z.string())`) and matches exact strings at retry time, so the
- *   narrowing is this plugin's own; offering more codes cannot change the
- *   default policy, because the extras are opt-in checkboxes that only an
- *   explicit user tick can add.
+ *   (`retry-policy.ts:95-96,19-25,176-184`). Upstream accepts any non-empty
+ *   string here (`z.array(z.union([...RETRY_CODE_CHOICES.map(code =>
+ *   z.const(code)), z.string().min(1)])).min(1)`): the const branches publish
+ *   the stored built-in choices to forms, but a provider-specific string is
+ *   still legal. It matches exact strings at retry time, so the narrowing is
+ *   this plugin's own; offering more codes cannot change the default policy,
+ *   because the extras are opt-in checkboxes that only an explicit user tick
+ *   can add.
  *
  * One upstream rule cannot be expressed in a schema: `initialDelayMs` must not
- * exceed `maxDelayMs` (`retry-policy.ts:133-135`). It is enforced by
+ * exceed `maxDelayMs` (`retry-policy.ts:139-141`). It is enforced by
  * `validateTune()`, which the settings page uses before every write and which
  * `verify.mjs` exercises directly.
  *
@@ -237,22 +240,24 @@ function resolveUndici(extraAnchors = []) {
 /**
  * Largest delay `setTimeout` accepts, matching `@deepseek-ai/dsh-timeout`
  * `MAX_TIMER_DELAY_MS` (`packages/util/timeout/src/index.ts:25`) and the
- * upstream retry-policy schema (`retry-policy.ts:82-83`).
+ * upstream retry-policy schema (`retry-policy.ts:85-86`).
  */
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
-/** Retry modes DSH accepts (`retry-policy.ts:53-73`). */
+/** Retry modes DSH accepts (`retry-policy.ts:37-58`). */
 export const RETRY_MODES = Object.freeze(['normal', 'always'])
 
 /**
  * The failure codes the upstream retry policy ships with
- * (`retry-policy.ts:18-22`), and this plugin's global DEFAULT code list.
+ * (`retry-policy.ts:19-25`), and this plugin's global DEFAULT code list.
  * `EMPTY_RESPONSE` is `EMPTY_RESPONSE_CODE` in
  * `packages/llm/llm/src/error.ts`; the other four are literal strings.
  *
  * Upstream does NOT restrict the array to these five: its schema is
- * `z.array(z.string())` (`retry-policy.ts:90`) and the executor matches exact
- * code strings (`packages/llm/llm-retry/src/index.ts:212`). The narrowing lives
+ * `z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)),
+ * z.string().min(1)])).min(1)` (`retry-policy.ts:95-96`) and the executor
+ * matches exact code strings (`packages/llm/llm-retry/src/index.ts:212`). The
+ * narrowing lives
  * only in this plugin, so it can widen what the page offers without changing
  * what an unconfigured policy resolves to.
  */
@@ -299,16 +304,18 @@ const OFFERED_RETRYABLE_CODE_SET = new Set(OFFERED_RETRYABLE_CODES)
  *
  * `build(lib)` returns the exact schemastery field, `.volatile()` included.
  * `default` is the upstream retry-policy code default recorded by
- * `retry-policy.ts:14-22`; `range` is the upstream schema bound plus the
+ * `retry-policy.ts:15-25`; `range` is the upstream schema bound plus the
  * load-time assertion when the two differ.
  *
  * The delay fields use `.min(Number.MIN_VALUE)` — the smallest positive double
- * — because schemastery has no exclusive minimum and upstream rejects `0` and
- * negatives (`retry-policy.ts:127-132`): `0 < Number.MIN_VALUE`, so `0` and
- * every negative value are refused while any positive configured delay passes.
+ * — matching upstream's own schema bound (`retry-policy.ts:85-86`) and its
+ * `resolveBackoff` rejection of non-finite values and `<= 0`
+ * (`retry-policy.ts:133-138`): schemastery has no exclusive minimum, and
+ * `0 < Number.MIN_VALUE`, so `0` and every negative value are refused while any
+ * positive configured delay passes.
  * `retryableCodes` uses a union of consts for the allowlist and `.min(1)` for
  * "must not be empty"; duplicates are not expressible in the schema and are
- * left to `validateTune()` (`retry-policy.ts:176-178`).
+ * left to `validateTune()` (`retry-policy.ts:182-184`).
  */
 const TUNE_FIELDS = Object.freeze([
   {
@@ -381,8 +388,8 @@ export const TUNE_OPTIONS = Object.freeze(TUNE_FIELDS.map(field => Object.freeze
 })))
 
 /**
- * Upstream retry-policy code defaults (`retry-policy.ts:14-22`), also the
- * values an unconfigured provider route resolves to (`:151-158`). Frozen, and
+ * Upstream retry-policy code defaults (`retry-policy.ts:15-25`), also the
+ * values an unconfigured provider route resolves to (`:159-165`). Frozen, and
  * `retryableCodes` is a frozen copy, so a consumer cannot mutate the preset
  * through this object.
  */
@@ -651,7 +658,7 @@ export const TUNE_PROBLEMS = Object.freeze({
  *
  * This is the cross-field half of the contract the schema cannot express. The
  * rules are exactly the upstream load-time asserts
- * (`retry-policy.ts:127-138,167-178`): a mode of `'normal'` or `'always'`, a
+ * (`retry-policy.ts:133-147,173-184`): a mode of `'normal'` or `'always'`, a
  * non-negative safe-integer `maxRetries`, two finite positive delays no larger
  * than `2147483647` with `initialDelayMs <= maxDelayMs`, a `jitterRatio` within
  * `[0, 1]`, and a non-empty, duplicate-free `retryableCodes` array drawn from

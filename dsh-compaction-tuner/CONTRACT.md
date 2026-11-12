@@ -542,7 +542,7 @@ copy with the action disabled. The manifest declares the connection client in `d
   `@deepseek-ai/dsh-compaction-tool-result-pruner` (`thresholdChars`, `headChars`, `tailChars`, defaults
   `8192` / `4096` / `1024`, with `headChars + 39-codepoint PRUNE_MARKER + tailChars <= thresholdChars`)
   is a different plugin with its own `Config`; shipped presets already set those values
-  (`tailChars` `standard.patch.yml:82-85`), and it is a second row family. This contract never matches, reads or
+  (`tailChars` `standard.patch.yml:85-88`), and it is a second row family. This contract never matches, reads or
   writes a pruner row — `withTune()` targets only the `compaction-basic` child
   (`COMPACTION_ROW_ID` / `COMPACTION_PLUGIN`). Making it tunable is a separate change with its own
   contract, not an omission here.

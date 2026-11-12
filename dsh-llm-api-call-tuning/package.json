@@ -1,6 +1,6 @@
 {
   "name": "dsh-llm-api-call-tuning",
-  "version": "0.2.2-rc.1",
+  "version": "0.2.2-rc.2",
   "private": false,
   "type": "module",
   "description": "One settings page that tunes every model API call: the global retry-policy defaults (mode, max retries, backoff delays, jitter, and retryable failure codes), the two process-wide HTTP fetch timeouts (response headers and response body), and the per-route provider timeouts (stream idle watchdog, SDK request timeout, and Files API timeout).",
@@ -16,7 +16,7 @@
   },
   "homepage": "https://github.com/jinluchang/deepseek-harness-plugins/tree/main/dsh-llm-api-call-tuning",
   "bugs": { "url": "https://github.com/jinluchang/deepseek-harness-plugins/issues" },
-  "engines": { "dsh": "^0.2.2-rc.1" },
+  "engines": { "dsh": "^0.2.2-rc.2" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

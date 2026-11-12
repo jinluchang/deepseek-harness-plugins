@@ -134,7 +134,7 @@ follow:
 | `bodyTimeoutMs` | Process-wide HTTP response-body (chunk) timeout, in milliseconds, on that same fetch dispatcher. | `unset` (leave the system/DSH default untouched), or integer 0..2147483647; `0` disables the timer | `unset` |
 
 The **Code default** column for the retry rows is the upstream resolution fallback
-(`retry-policy.ts:14-22`), also what an unconfigured provider route runs. The bundle seeds nothing, so
+(`retry-policy.ts:15-25`), also what an unconfigured provider route runs. The bundle seeds nothing, so
 the page starts on those values. For the two fetch rows the code default is **`unset`**, not a number:
 the schema deliberately has no `.default()`, so a fresh install materializes no timer and the Host's own
 dispatcher defaults apply. `unset` means no behavior change; `0` is a real value that disables that one
@@ -158,10 +158,12 @@ after you tick it and save, and a stored list that already names an extra stays 
 is empty or contains no code this page recognizes, it falls back to the five defaults — never to the
 ten. An untouched list is never rewritten by a route card, so a save cannot silently activate a code.
 
-**Upstream is not limited to five.** The retry schema is `retryableCodes: z.array(z.string())`
-(`packages/llm/llm/src/retry-policy.ts:90`): the schema checks only that the entries are strings, and the
-resolver additionally rejects an empty array, empty strings and duplicates
-(`retry-policy.ts:170-178`) — no layer checks membership. The executor compares exact code strings
+**Upstream is not limited to five.** The retry schema is
+`retryableCodes: z.array(z.union([...RETRY_CODE_CHOICES.map(code => z.const(code)), z.string().min(1)])).min(1)`
+(`packages/llm/llm/src/retry-policy.ts:95-96`): the const branches publish the built-in choices to forms
+while the string branch admits any non-empty provider-specific code, and `.min(1)` rejects an empty array;
+the resolver additionally rejects empty strings and duplicates (`retry-policy.ts:176-184`) — no layer
+checks membership. The executor compares exact code strings
 (`packages/llm/llm-retry/src/index.ts:212`). The five-code default is this plugin's own policy, not an
 upstream limit; the ten-code list is what this page offers, and a hand-stored code outside it is dropped
 from the draft only when the code list is actually rewritten (a route card writes only touched leaves; the
@@ -512,8 +514,8 @@ The full list is in [CONTRACT.md](CONTRACT.md); the ones a user is most likely t
 - **The failure payload has no model field.** The bar shows the provider plus the failure code and
   message, not the model.
 - **Per route, not per model.** DSH captures one retry policy per **provider route** when the adapter
-  registers it (`packages/llm/llm/src/retry-policy.ts:78,450-455`), and the agent/request-error payload
-  carries the provider but no model (`packages/core/agent/src/runtime-types.ts:389`). A per-model
+  registers it (`packages/llm/llm/src/index.ts:465-471`, `packages/llm/llm/src/retry-policy.ts:79-80`), and the agent/request-error payload
+  carries the provider but no model (`packages/core/agent/src/runtime-types.ts:390`). A per-model
   override would be stored and rendered but never applied, so the page does not offer one.
 - **Dormant routes, routes without a settings namespace, and routes whose namespace is not served are
   not listed and not pickable.** Without a live config form their deviation cannot be proven, and

@@ -742,10 +742,10 @@ function providersCard(page) {
 
 await check('the manifest declares the frozen identity, bundle patch, engines, and web client', () => {
   assert.equal(manifest.name, 'dsh-llm-api-call-tuning', `package name drifted to ${String(manifest.name)}`)
-  assert.equal(manifest.version, '0.2.2-rc.1', `version drifted to ${String(manifest.version)}`)
+  assert.equal(manifest.version, '0.2.2-rc.2', `version drifted to ${String(manifest.version)}`)
   assert.equal(manifest.private, false, 'the package must be publicly publishable')
   assert.equal(manifest.type, 'module', `type drifted to ${String(manifest.type)}`)
-  assert.equal(manifest.engines?.dsh, '^0.2.2-rc.1', `engines.dsh drifted to ${String(manifest.engines?.dsh)}`)
+  assert.equal(manifest.engines?.dsh, '^0.2.2-rc.2', `engines.dsh drifted to ${String(manifest.engines?.dsh)}`)
   assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml', `dsh.bundle.patch drifted to ${String(manifest.dsh?.bundle?.patch)}`)
   assert.equal(manifest.dsh?.client?.platform, 'web', `dsh.client.platform drifted to ${String(manifest.dsh?.client?.platform)}`)
   assert.deepEqual(
@@ -1152,8 +1152,10 @@ await check('the upstream retry-policy code defaults parse to exactly DEFAULT_TU
   assert.equal(defaults.initialDelayMs, host.DEFAULT_TUNE.initialDelayMs, `upstream initialDelayMs ${defaults.initialDelayMs} != DEFAULT_TUNE ${host.DEFAULT_TUNE.initialDelayMs}`)
   assert.equal(defaults.maxDelayMs, host.DEFAULT_TUNE.maxDelayMs, `upstream maxDelayMs ${defaults.maxDelayMs} != DEFAULT_TUNE ${host.DEFAULT_TUNE.maxDelayMs}`)
   assert.equal(defaults.jitterRatio, host.DEFAULT_TUNE.jitterRatio, `upstream jitterRatio ${defaults.jitterRatio} != DEFAULT_TUNE ${host.DEFAULT_TUNE.jitterRatio}`)
-  // The code list is entries of EMPTY_RESPONSE_CODE plus four literals.
-  const block = /DEFAULT_RETRYABLE_CODES\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\)/.exec(upstreamSource())
+  // The code list is entries of EMPTY_RESPONSE_CODE plus four literals. The
+  // declaration carries a `: readonly BuiltinLlmFailureCode[]` annotation before
+  // the `=`, so the match admits (but does not require) that annotation.
+  const block = /DEFAULT_RETRYABLE_CODES(?:\s*:\s*readonly\s+BuiltinLlmFailureCode\[\])?\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\)/.exec(upstreamSource())
   assert.ok(block !== null, 'the upstream DEFAULT_RETRYABLE_CODES block is missing')
   const upstreamCodes = [...block[1].matchAll(/'([A-Z_]+)'/g)].map(match => match[1])
   assert.equal(upstreamCodes.length, 4, `the upstream code list has ${upstreamCodes.length} string literals: ${JSON.stringify(upstreamCodes)}`)
@@ -1167,8 +1169,13 @@ await check('the upstream schema and load-time asserts still match the values an
     ['the normal-mode const', /z\.const\('normal'\)/],
     ['the always-mode const', /z\.const\('always'\)/],
     ['maxRetries bounds', /maxRetries: z\.number\(\)\.step\(1\)\.min\(0\)\.max\(Number\.MAX_SAFE_INTEGER\)/],
-    ['the retryable-code array default', /retryableCodes: z\.array\(z\.string\(\)\)\.default\(\[\.\.\.DEFAULT_RETRYABLE_CODES\]\)/],
-    ['the delay max bound', /initialDelayMs: z\.number\(\)\.max\(MAX_TIMER_DELAY_MS\)/],
+    // The code array is a union: the built-in choices as constants (so settings
+    // forms can render them) plus a free string branch for provider-specific
+    // codes. `.min(1)` is the non-empty bound; `.default(...)` still seeds the
+    // five upstream defaults.
+    ['the retryable-code array default', /retryableCodes: z\.array\(z\.union\(\[\.\.\.RETRY_CODE_CHOICES\.map\(code => z\.const\(code\)\), z\.string\(\)\.min\(1\)\]\)\)\s*\.min\(1\)\.default\(\[\.\.\.DEFAULT_RETRYABLE_CODES\]\)/],
+    ['the initial-delay schema bounds', /initialDelayMs: z\.number\(\)\.min\(Number\.MIN_VALUE\)\.max\(MAX_TIMER_DELAY_MS\)\.default\(DEFAULT_INITIAL_DELAY_MS\)/],
+    ['the max-delay schema bounds', /maxDelayMs: z\.number\(\)\.min\(Number\.MIN_VALUE\)\.max\(MAX_TIMER_DELAY_MS\)\.default\(DEFAULT_MAX_DELAY_MS\)/],
     ['the jitter bounds', /jitterRatio: z\.number\(\)\.min\(0\)\.max\(1\)/],
     ['the positive-delay assert', /must be a positive finite number no greater than/],
     ['the delay-order assert', /must be less than or equal to maxDelayMs/],
@@ -1180,13 +1187,19 @@ await check('the upstream schema and load-time asserts still match the values an
   ]) {
     assert.match(upstreamSource(), pattern, `the upstream retry-policy source no longer has ${label}`)
   }
-  // The delay schema has NO lower bound (only resolveBackoff rejects <= 0). The
-  // plugin encodes that gap as `.min(Number.MIN_VALUE)`, and CONTRACT.md says so.
-  assert.doesNotMatch(
-    /initialDelayMs: z\.number\(\)[^,]/.exec(upstreamSource())?.[0] ?? '',
-    /\.min\(/,
-    'the upstream delay schema gained a lower bound: revisit the Number.MIN_VALUE rationale in CONTRACT.md',
-  )
+  // Both delays now carry a `.min(Number.MIN_VALUE)` lower bound: schemastery has
+  // no exclusive minimum, so the smallest positive double is how the schema
+  // refuses `0` and every negative while admitting any positive delay. The
+  // load-time `<= 0` assert in resolveBackoff is the second layer. The plugin
+  // mirrors the bound; CONTRACT.md explains it instead of calling it "no lower
+  // bound".
+  for (const field of ['initialDelayMs', 'maxDelayMs']) {
+    assert.match(
+      upstreamSource(),
+      new RegExp(`${field}: z\\.number\\(\\)\\.min\\(Number\\.MIN_VALUE\\)\\.max\\(MAX_TIMER_DELAY_MS\\)`),
+      `the upstream ${field} schema no longer carries the Number.MIN_VALUE lower bound: revisit the Number.MIN_VALUE rationale in CONTRACT.md`,
+    )
+  }
 })
 
 await check('the three provider retry-policy addresses still exist in the DSH sources', () => {

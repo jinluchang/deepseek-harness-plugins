@@ -15,7 +15,7 @@
 #
 # This patch seeds NOTHING: the inserted row carries no `config`, so the page
 # starts from the upstream retry-policy code defaults (normal / 5 / 500 /
-# 10000 / 0.1 / all five codes; `packages/llm/llm/src/retry-policy.ts:12-19`) —
+# 10000 / 0.1 / all five codes; `packages/llm/llm/src/retry-policy.ts:15-25`) —
 # the same values index.js `DEFAULT_TUNE` records and README "Defaults"
 # documents. Nothing reaches the profile patch until the user saves a value.
 #

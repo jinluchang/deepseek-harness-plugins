@@ -14,7 +14,7 @@
 
 ## 要求
 
-- **DSH `^0.2.2-rc.1`** —— 在每个 manifest 中都声明为 `engines.dsh`，因此超出该范围的 DSH 宿主会拒绝安装。
+- **DSH `^0.2.2-rc.2`** —— 在每个 manifest 中都声明为 `engines.dsh`，因此超出该范围的 DSH 宿主会拒绝安装。
 - 这些包没有单独声明 Node.js 版本。它们的校验脚本是普通 ESM，用你运行 DSH 时已经在用的 `node` 二进制即可执行。
 
 ## 安装
@@ -45,11 +45,11 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 ```sh
 cd dsh-backend-restart
-npm pack    # -> dsh-backend-restart-0.2.2-rc.1.tgz
+npm pack    # -> dsh-backend-restart-0.2.2-rc.2.tgz
 ```
 
 ```js
-plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.1.tgz" })
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.2.tgz" })
 ```
 
 ### 从 Git 安装（子目录选择器）
@@ -81,7 +81,7 @@ export DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness
 node dsh-backend-restart/verify.mjs          # 13 checks passed
 node dsh-compaction-tuner/verify.mjs         # 99 passed, 0 failed, 0 skipped (99 checks)
 node dsh-lead-agent-only-leads/verify.mjs    # 59/59 checks passed
-node dsh-llm-api-call-tuning/verify.mjs      # 161 passed, 0 failed, 0 skipped (161 checks)
+node dsh-llm-api-call-tuning/verify.mjs      # 164 passed, 0 failed, 0 skipped (164 checks)
 node dsh-use-repo-tmp/verify.mjs             # 14 checks passed
 ```
 
