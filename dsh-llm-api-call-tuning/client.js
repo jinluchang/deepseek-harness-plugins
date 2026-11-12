@@ -1116,6 +1116,9 @@ window.__ModuleLoader__.load({
      *   unsetting a leaf equal to a NON-default global value would silently
      *   change behavior. In that case the leaf is `set` to the global value
      *   instead, which is what keeps a Save stable after "Reset to global";
+     * - `mode` is never unset as a leaf: the host's union schema requires it on
+     *   both arms, so a pure mode revert is left to the whole-node collapse
+     *   below and a mixed save writes it with `set`;
      * - when every emitted op is an `unset`, the single `retryPolicy` unset
      *   from {@link resetPolicyOps} replaces them, so no empty
      *   `{ backoff: {} }` shell is left in the user layer. That collapse stays
@@ -1162,7 +1165,18 @@ window.__ModuleLoader__.load({
         }
         if (presence !== undefined && presence[key] === true) ops.push({ op: 'unset', path });
       };
-      leaf('mode', [...base, 'mode'], values.mode, globalValues.mode);
+      // `retryPolicy.mode` is REQUIRED by both arms of the host's union schema,
+      // so it is never unset on its own: a pure revert collapses to the
+      // whole-node unset below, and a mixed save persists it with `set`.
+      const modePath = [...base, 'mode'];
+      let modeRevert = false;
+      if (dirty !== undefined && dirty.mode === true) {
+        if (values.mode !== globalValues.mode || !atCodeDefault('mode', globalValues.mode)) {
+          ops.push({ op: 'set', path: modePath, value: values.mode });
+        } else if (presence !== undefined && presence.mode === true) {
+          modeRevert = true;
+        }
+      }
       if (values.mode === 'always') {
         if (presence !== undefined && presence.maxRetries === true) {
           ops.push({ op: 'unset', path: [...base, 'maxRetries'] });
@@ -1177,6 +1191,12 @@ window.__ModuleLoader__.load({
       leaf('initialDelayMs', [...base, 'backoff', 'initialDelayMs'], values.initialDelayMs, globalValues.initialDelayMs);
       leaf('maxDelayMs', [...base, 'backoff', 'maxDelayMs'], values.maxDelayMs, globalValues.maxDelayMs);
       leaf('jitterRatio', [...base, 'backoff', 'jitterRatio'], values.jitterRatio, globalValues.jitterRatio);
+      if (modeRevert) {
+        if (ops.length === 0) return resetPolicyOps(settingsPath);
+        if (ops.some(op => op.op === 'set')) {
+          ops.unshift({ op: 'set', path: modePath, value: values.mode });
+        }
+      }
       if (ops.length === 0 || !ops.every(op => op.op === 'unset')) return ops;
       return resetPolicyOps(settingsPath);
     }

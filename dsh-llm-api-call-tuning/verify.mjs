@@ -1073,6 +1073,30 @@ function upstreamConstant(pattern, name) {
   return Number(match[1].replace(/_/g, ''))
 }
 
+/**
+ * The REAL upstream `RetryPolicySchema` — the exact union the Host validates a
+ * provider route's `retryPolicy` with, loaded straight from
+ * `$DSH_HARNESS_CHECKOUT/packages/llm/llm/src/retry-policy.ts`. Node's built-in
+ * TypeScript type stripping evaluates that `.ts` source in place, so the
+ * regression below never mirrors the schema by hand. Loaded lazily (and
+ * cached) so an unset checkout fails only the check that needs the schema.
+ * @returns the upstream `RetryPolicySchema` function.
+ */
+let upstreamRetryPolicySchemaCache
+async function upstreamRetryPolicySchema() {
+  if (upstreamRetryPolicySchemaCache === undefined) {
+    assert.ok(existsSync(retryPolicyPath), `DSH_HARNESS_CHECKOUT does not contain ${retryPolicyPath}`)
+    const upstream = await import(pathToFileURL(retryPolicyPath).href)
+    assert.equal(
+      typeof upstream.RetryPolicySchema,
+      'function',
+      'the upstream retry-policy module no longer exports a RetryPolicySchema function',
+    )
+    upstreamRetryPolicySchemaCache = upstream.RetryPolicySchema
+  }
+  return upstreamRetryPolicySchemaCache
+}
+
 await check('$DSH_HARNESS_CHECKOUT resolves the real schemastery and the upstream retry-policy source', () => {
   assert.ok(checkout !== '', 'DSH_HARNESS_CHECKOUT is unset; run: DSH_HARNESS_CHECKOUT=/path/to/deepseek-harness node dsh-llm-api-call-tuning/verify.mjs')
   assert.ok(host.schemaLibrary !== undefined, `the host half could not resolve @deepseek-ai/schemastery from ${checkout}`)
@@ -3468,6 +3492,197 @@ await check('a Save that matches the DEFAULT global preset still collapses to ON
   assertOps(ctx.configForms.get('llm-pi-ai').calls[0].ops, [
     { op: 'unset', path: ['providers', 'openrouter', 'retryPolicy'] },
   ], 'a revert to the DEFAULT global value must still collapse into ONE whole-retryPolicy unset')
+  card.unmount()
+  page.unmount()
+})
+
+/* ── regression: the required `mode` leaf is never unset ─────────────────── */
+
+/*
+ * The Host re-validates the COMPLETE candidate Config on every settings write
+ * (`packages/boot/config-editor/src/index.ts`), and BOTH arms of the upstream
+ * retry-policy union require `mode` (`retry-policy.ts`). A leaf
+ * `{op:'unset', path:[...,'retryPolicy','mode']}` therefore makes the whole
+ * write a `settings/rejected` refusal the page can only answer with a generic
+ * alert. The `BoundForm` double accepts every write, so the checks above
+ * cannot see that; these three drive the REAL route-card Save path, apply the
+ * RECORDED ops to the fixture policy the page seeded from, and validate the
+ * result with the real upstream schema.
+ */
+
+/** The settings path of the route the regression below drives. */
+const REGRESSION_ROUTE_PATH = Object.freeze(['providers', 'openrouter'])
+/** The whole-retryPolicy path of that route. */
+const REGRESSION_RETRY_PATH = Object.freeze([...REGRESSION_ROUTE_PATH, 'retryPolicy'])
+/**
+ * A stored always-mode route policy with every retry leaf stored, so the page
+ * has a leaf to `unset` for each field. `mode:'always'` plus normal-only
+ * leaves is exactly what the layering comment in `retry-policy.ts` allows; the
+ * mixed-save check below asserts the real union accepts it before the write.
+ */
+const ALWAYS_STORED_POLICY = Object.freeze({
+  mode: 'always',
+  maxRetries: 2,
+  retryableCodes: Object.freeze(['RATE_LIMIT']),
+  backoff: Object.freeze({ initialDelayMs: 250, maxDelayMs: 5_000, jitterRatio: 0.2 }),
+})
+
+/** Whether `value` is a plain (non-array) object. */
+const isPlainRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/**
+ * Apply one recorded retry-op list to a fixture policy exactly like the
+ * settings layer folds a write into the user layer: a `set` writes the leaf
+ * (or the whole policy), an `unset` removes it. The fixture is detached first,
+ * so the snapshot fixture is never mutated.
+ * @param policy - the stored/effective retryPolicy to start from (undefined = absent).
+ * @param ops - the recorded op list (paths include the route settings path).
+ * @param settingsPath - the route's settings path.
+ * @returns the candidate retryPolicy after the write.
+ */
+function applyRetryOps(policy, ops, settingsPath = REGRESSION_ROUTE_PATH) {
+  const whole = [...settingsPath, 'retryPolicy']
+  const samePath = (left, right) => left.length === right.length && left.every((part, index) => part === right[index])
+  let next = policy === undefined ? undefined : plain(policy)
+  for (const op of plain(ops)) {
+    if (samePath(op.path, whole)) {
+      next = op.op === 'unset' ? undefined : plain(op.value)
+      continue
+    }
+    if (next === undefined) next = {}
+    const relative = op.path.slice(whole.length)
+    let cursor = next
+    for (const key of relative.slice(0, -1)) {
+      if (!isPlainRecord(cursor[key])) cursor[key] = {}
+      cursor = cursor[key]
+    }
+    const leaf = relative[relative.length - 1]
+    if (op.op === 'unset') delete cursor[leaf]
+    else cursor[leaf] = plain(op.value)
+  }
+  return next
+}
+
+/**
+ * Assert one emitted op list never unsets `retryPolicy.mode`, and — generally —
+ * never unsets a leaf the upstream union requires in BOTH arms: applying each
+ * leaf unset on its own to the fixture must still satisfy the real schema. The
+ * whole-policy unset is exempt because an absent `retryPolicy` is schema-legal.
+ * @param schema - the real upstream `RetryPolicySchema`.
+ * @param fixture - the stored/effective retryPolicy the draft was seeded from.
+ * @param ops - the recorded op list.
+ * @param label - which scenario this is, for the failure message.
+ */
+function assertNoRequiredLeafUnset(schema, fixture, ops, label) {
+  const detached = plain(ops)
+  const modePath = [...REGRESSION_RETRY_PATH, 'mode'].join('.')
+  assert.equal(
+    detached.some(op => op.op === 'unset' && op.path.join('.') === modePath),
+    false,
+    `${label}: emitted an unset of the required mode leaf: ${JSON.stringify(detached)}`,
+  )
+  for (const op of detached) {
+    if (op.op !== 'unset' || op.path.length === REGRESSION_RETRY_PATH.length) continue
+    const candidate = applyRetryOps(fixture, [op])
+    assert.doesNotThrow(
+      () => schema(candidate),
+      `${label}: emitted ${JSON.stringify(op)} (full list ${JSON.stringify(detached)}), and the resulting retryPolicy ${JSON.stringify(candidate)} is rejected by the real upstream RetryPolicySchema`,
+    )
+  }
+}
+
+await check('a mixed save reverting always mode to normal while changing another retry leaf emits NO mode unset and yields a schema-valid retryPolicy', async () => {
+  const schema = await upstreamRetryPolicySchema()
+  const stored = plain(ALWAYS_STORED_POLICY)
+  /* The union accepts an always policy that still carries normal-only leaves
+   * (layered-configuration support), so this fixture is schema-legal before
+   * the save — the write must not make it illegal. */
+  assert.doesNotThrow(() => schema(plain(stored)), 'the always-mode fixture itself is not schema-legal')
+  const forms = deviationForms({
+    openrouter: { value: { retryPolicy: plain(stored) }, user: { retryPolicy: plain(stored) } },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  /* Same save: revert the stored mode to the inherited/global `normal` AND
+   * change another retry leaf. The global preset here is the page default
+   * (`TUNE_VALUE`, mode `normal` = the upstream code default). */
+  setMode(card.tree, 'normal')
+  await flush()
+  setRetryInput(card.tree, 0, '7')
+  await flush()
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, `expected one mixed mode-revert write, got ${form.calls.length}`)
+  const ops = plain(form.calls[0].ops)
+  assertNoRequiredLeafUnset(schema, stored, ops, 'mixed mode revert')
+  const candidate = applyRetryOps(stored, ops)
+  assert.doesNotThrow(
+    () => schema(candidate),
+    `the Host would refuse this candidate retryPolicy after ops ${JSON.stringify(ops)}: ${JSON.stringify(candidate)}`,
+  )
+  assert.equal(candidate.mode, 'normal', `the mixed save must persist the reverted mode: ${JSON.stringify(ops)}`)
+  assert.equal(candidate.maxRetries, 7, `the mixed save lost the changed retry limit: ${JSON.stringify(ops)}`)
+  card.unmount()
+  page.unmount()
+})
+
+await check('a mode-only revert to the inherited normal still collapses to ONE whole-retryPolicy unset that the real schema accepts', async () => {
+  const schema = await upstreamRetryPolicySchema()
+  const stored = plain(ALWAYS_STORED_POLICY)
+  const forms = deviationForms({
+    openrouter: { value: { retryPolicy: plain(stored) }, user: { retryPolicy: plain(stored) } },
+  })
+  const { page, ctx } = mountPage({ forms })
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setMode(card.tree, 'normal')
+  await flush()
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, `expected one mode-only revert write, got ${form.calls.length}`)
+  const ops = plain(form.calls[0].ops)
+  /* The pure revert has no co-emitted set to protect, so the documented
+   * all-unset collapse still applies: ONE whole-node unset, never a leaf unset
+   * of the required mode. */
+  assertOps(ops, [{ op: 'unset', path: [...REGRESSION_RETRY_PATH] }], 'a pure mode revert must collapse to ONE whole-retryPolicy unset')
+  assertNoRequiredLeafUnset(schema, stored, ops, 'mode-only revert')
+  const candidate = applyRetryOps(stored, ops)
+  assert.equal(candidate, undefined, 'the collapse must remove the whole retryPolicy from the user layer')
+  assert.doesNotThrow(
+    () => schema(candidate),
+    `the Host still refuses the absent retryPolicy after the collapse: ${JSON.stringify(ops)}`,
+  )
+  card.unmount()
+  page.unmount()
+})
+
+await check('an untouched mode with another retry leaf changed emits no mode op and yields a schema-valid retryPolicy', async () => {
+  const schema = await upstreamRetryPolicySchema()
+  const stored = plain(PI_AI_RETRY_POLICY)
+  const { page, ctx } = mountPage()
+  await flush()
+  const card = mountRouteCard(page, 'openrouter')
+  setRetryInput(card.tree, 0, '7')
+  await flush()
+  buttonWithText(card.tree, [EN['provider.save']]).props.onClick()
+  await flush()
+  const form = ctx.configForms.get('llm-pi-ai')
+  assert.equal(form.calls.length, 1, `expected one leaf-change write, got ${form.calls.length}`)
+  const ops = plain(form.calls[0].ops)
+  assertOps(ops, [
+    { op: 'set', path: [...REGRESSION_RETRY_PATH, 'maxRetries'], value: 7 },
+  ], 'an untouched mode must not produce any mode op')
+  assertNoRequiredLeafUnset(schema, stored, ops, 'mode untouched')
+  const candidate = applyRetryOps(stored, ops)
+  assert.doesNotThrow(
+    () => schema(candidate),
+    `the Host would refuse this candidate retryPolicy after ops ${JSON.stringify(ops)}: ${JSON.stringify(candidate)}`,
+  )
+  assert.equal(candidate.mode, 'normal', 'an untouched mode must keep the stored mode')
+  assert.equal(candidate.maxRetries, 7, 'the leaf change was lost')
   card.unmount()
   page.unmount()
 })

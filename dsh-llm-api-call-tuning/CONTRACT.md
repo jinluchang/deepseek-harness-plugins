@@ -430,13 +430,13 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   touched leaf whose validated value differs from the global value is `set`, and a touched leaf that
   equals the global value is `unset` only when that global value is itself the code default
   (`CODE_RETRY_DEFAULTS`, the client mirror of the host's `DEFAULT_TUNE`) **and** the user layer stores
-  it. An `unset` falls back to the provider schema's code defaults, never to this plugin's saved preset,
-  so a touched leaf equal to a **non-default** global value is written as a `set` — that is what keeps a
-  Save stable after **Reset to global**, and it is why the all-unset collapse below stays sound (an
-  all-unset list means the route is at the code defaults). That is also what keeps
-  the opt-in code list inert: an untouched `retryableCodes` list produces no op, so a default route can
-  never gain an extra code from Save. `retryableCodes` is compared as an ordered list over the ten
-  offered codes. In an `always` draft the two normal-only leaves are inactive, so a stored
+  it (never for `mode`; see below). An `unset` falls back to the provider schema's code defaults, never
+  to this plugin's saved preset, so a touched leaf equal to a **non-default** global value is written as
+  a `set` — that is what keeps a Save stable after **Reset to global**, and it is why the all-unset
+  collapse below stays sound (an all-unset list means the route is at the code defaults). That is also
+  what keeps the opt-in code list inert: an untouched `retryableCodes` list produces no op, so a default
+  route can never gain an extra code from Save. `retryableCodes` is compared as an ordered list over the
+  ten offered codes. In an `always` draft the two normal-only leaves are inactive, so a stored
   `maxRetries`/`retryableCodes` is `unset` instead (regardless of dirtiness, because the mode change
   deactivates them), keeping the upstream union's shape. When the resulting list is non-empty and
   contains **only** unsets, it collapses into the single reset op:
@@ -444,6 +444,11 @@ Every write is one atomic list of **leaf-path operations** (`SettingsPathOp`):
   ```
   unset [...settingsPath, 'retryPolicy']
   ```
+
+  `retryPolicy.mode` is exempt from that leaf rule: both arms of the host's retry-policy union require
+  `mode`, so a touched mode is written with `set` whenever it is part of a mixed save — including when
+  it reverts to the global value — and a pure mode revert (no other dirty retry leaf) emits the single
+  whole-node unset above instead of a leaf op.
 
 - **Route card Save, timeout half** — only the CHANGED leaves for the row's family, in field order. A
   pi-ai route writes under `['providers', <route>]`; the two DeepSeek routes write at the namespace

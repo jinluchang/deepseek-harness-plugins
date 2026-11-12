@@ -195,13 +195,17 @@ route's retry leaves and its changed timeout leaves together.
 The retry half is written **relative to the global retry values** and **only for the leaves you
 actually touched**: an untouched leaf produces no operation at all, a touched leaf whose draft differs
 from the global value is `set`, and a touched leaf turned back to the global value is `unset` only when
-that global value is the **code default** and the user layer actually stores it. An `unset` falls back
-to the provider schema's code defaults, never to this plugin's saved preset, so matching a **non-default**
-global value is written as a `set` — which is what keeps **Save** stable after a **Reset to global**.
-That is also what keeps the opt-in code list safe: an untouched
+that global value is the **code default** and the user layer actually stores it (except `mode`, see
+below). An `unset` falls back to the provider schema's code defaults, never to this plugin's saved
+preset, so matching a **non-default** global value is written as a `set` — which is what keeps **Save**
+stable after a **Reset to global**. That is also what keeps the opt-in code list safe: an untouched
 `retryableCodes` list is never written, so a default route cannot be given an extra code by pressing
 Save. When the retry half's list is non-empty and every op in it is an `unset`, the page collapses it
-into the single `unset [...settingsPath, 'retryPolicy']`. In `normal` mode the touched leaves can be
+into the single `unset [...settingsPath, 'retryPolicy']`. `retryPolicy.mode` is exempt from the leaf
+`unset` rule: both arms of the provider schema's retry-policy union require `mode`, so a touched mode is
+persisted with `set` whenever it is part of a mixed save — including when it reverts to the global
+value — and a pure revert (no other dirty retry leaf) emits the single whole-node
+`unset [...settingsPath, 'retryPolicy']`. In `normal` mode the touched leaves can be
 `retryPolicy.mode`, `retryPolicy.maxRetries`, `retryPolicy.retryableCodes` and the three
 `retryPolicy.backoff.*` leaves. In `always` mode the code checklist is **hidden**, the maximum-retries
 input stays visible and typable but is **ignored and not validated**, and a save sets `retryPolicy.mode` and
