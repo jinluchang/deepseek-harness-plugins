@@ -250,7 +250,7 @@ window.__ModuleLoader__.load({
      * `deepseek` only on the two DeepSeek routes.
      *
      * `placeholder` is the package/SDK default a BLANK field leaves in force
-     * (300 000 ms idle watchdog, 600 000 ms SDK request timeout, 60 000 ms files
+     * (300 000 ms idle watchdog, 600 000 ms SDK request timeout, 20 000 ms files
      * API). The page never writes a placeholder: blank stays unset, and `0` is
      * refused for all three (the schemas reject it for the two watchdogs, and
      * the SDKs abort every request immediately on a zero request timeout).
@@ -260,7 +260,7 @@ window.__ModuleLoader__.load({
     const PROVIDER_TIMEOUT_FIELDS = Object.freeze([
       { key: 'streamIdleTimeoutMs', family: 'all', placeholder: 300_000 },
       { key: 'timeoutMs', family: 'pi-ai', placeholder: 600_000 },
-      { key: 'filesApiTimeoutMs', family: 'deepseek', placeholder: 60_000 },
+      { key: 'filesApiTimeoutMs', family: 'deepseek', placeholder: 20_000 },
     ]);
 
     /** The SDK request timeout in force while `timeoutMs` is blank (advisory copy only). */
@@ -379,7 +379,7 @@ window.__ModuleLoader__.load({
       'field.timeoutMs.label': 'Request timeout',
       'field.timeoutMs.description': 'SDK request timeout, covering the wait for response headers rather than the stream body (SDK default 600000 ms). 0 is not allowed because it would abort every request immediately.',
       'field.filesApiTimeoutMs.label': 'Files API timeout',
-      'field.filesApiTimeoutMs.description': 'DeepSeek files-API request timeout (package default 60000 ms).',
+      'field.filesApiTimeoutMs.description': 'DeepSeek files-API request timeout (package default 20000 ms).',
       'mode.normal': 'Normal \u2014 selected codes',
       'mode.always': 'Always \u2014 every failure, no limit',
       'code.EMPTY_RESPONSE': 'Empty response',
@@ -516,7 +516,7 @@ window.__ModuleLoader__.load({
       'field.timeoutMs.label': '\u8bf7\u6c42\u8d85\u65f6',
       'field.timeoutMs.description': 'SDK \u8bf7\u6c42\u8d85\u65f6\uff0c\u7ea6\u675f\u7684\u662f\u7b49\u5f85\u54cd\u5e94\u5934\u7684\u65f6\u95f4\uff0c\u800c\u975e\u6d41\u6b63\u6587\uff08SDK \u9ed8\u8ba4\u503c 600000 \u6beb\u79d2\uff09\u3002\u4e0d\u5141\u8bb8 0\uff0c\u56e0\u4e3a\u90a3\u4f1a\u8ba9\u6bcf\u4e2a\u8bf7\u6c42\u7acb\u5373\u4e2d\u6b62\u3002',
       'field.filesApiTimeoutMs.label': '\u6587\u4ef6 API \u8d85\u65f6',
-      'field.filesApiTimeoutMs.description': 'DeepSeek \u6587\u4ef6 API \u8bf7\u6c42\u8d85\u65f6\uff08\u5305\u9ed8\u8ba4\u503c 60000 \u6beb\u79d2\uff09\u3002',
+      'field.filesApiTimeoutMs.description': 'DeepSeek \u6587\u4ef6 API \u8bf7\u6c42\u8d85\u65f6\uff08\u5305\u9ed8\u8ba4\u503c 20000 \u6beb\u79d2\uff09\u3002',
       'mode.normal': '\u666e\u901a \u2014 \u6240\u9009\u9519\u8bef\u7801',
       'mode.always': '\u603b\u662f \u2014 \u6bcf\u6b21\u5931\u8d25\uff0c\u65e0\u4e0a\u9650',
       'code.EMPTY_RESPONSE': '\u7a7a\u54cd\u5e94',
@@ -730,7 +730,7 @@ window.__ModuleLoader__.load({
      * paints as its number (an override); anything absent paints BLANK, which
      * means "leave the package/SDK default in force". The EFFECTIVE value is
      * deliberately not used: it already contains the package default (300 000,
-     * 600 000, 60 000), and painting that would make an untouched route look
+     * 600 000, 20 000), and painting that would make an untouched route look
      * like an override the page had written.
      * @param user - the form snapshot's user layer.
      * @param settingsPath - the provider profile path inside its namespace.

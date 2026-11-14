@@ -17,11 +17,12 @@ that the browser already uses for every other Host call. Both sides must agree o
 | Item | Value |
 | --- | --- |
 | Channel | `/backend-restart` (matches Connection's `^/[A-Za-z0-9._~-]+$`, never `/api`) |
-| Host registration | `ctx.webServer.register({ kind: 'prefix', path: '/backend-restart', handler })` inside `ctx.effect`; every request first passes `ctx.connection.requestRejection(req)` |
+| Host registration | `ctx.webServer.register({ kind: 'prefix', path: '/backend-restart', handler })` inside `ctx.effect`; every request first passes `ctx.connection.admit({ headers, method, url })` |
 | Client call | `ctx.get('connection').rpc.call('/backend-restart', endpoint, payload, signal)` |
 
-The channel is authenticated: `HostConnectionService.requestRejection()` applies the Host/Origin fence
-plus the browser credential, so only an admitted browser peer reaches the envelope parser and handler.
+The channel is authenticated: `HostConnectionService.admit()` applies the Host/Origin fence plus
+credential verification, so only an admitted request reaches the envelope parser and handler. A refusal
+(`401`, `403`, or `503` when no credential verifier can decide) is answered before any parse.
 Both halves must treat a thrown or rejected call as "the backend is unreachable".
 
 Transport behavior mirrors Connection's own channel adapter, so the Client cannot tell this channel from
@@ -87,7 +88,7 @@ Client copy must localize every failure; `message` is diagnostic only.
 
 The Host exposes the Connection service and the Web carrier. The plugin mounts its channel as a
 `webServer` prefix route owned by its own fiber, so unloading the plugin removes it; each request asks
-`ctx.connection.requestRejection(req)` for the trust fence before anything is parsed.
+`ctx.connection.admit({ headers, method, url })` for the trust fence before anything is parsed.
 
 The route is deliberately **not** registered through `ctx.connection.rpc.handle()`. The defect is in
 the Host's `packages/client/connection/src/rpc-host.ts` (`get rpc()` at `:105-112`, `register()` at

@@ -7,7 +7,7 @@
 每个选项都按需求中要求的**两项**事实来记录和渲染：
 
 - 它的**上游代码默认值**——即没有任何设置时 `compaction-basic` 自身解析出的值（`packages/compaction/compaction-basic/src/config.ts`），页面上逐字段说明，也见下方的*使用*表格；以及
-- 它的**允许范围**——即它在加载期运行的断言（`validatePolicy` `config.ts:277-304`、`assertRatio` `config.ts:358-361`），而它自己的 schema 并不携带这些范围：`Config` 声明的是**没有 `.max()`**，并把两个 ratio 节点留作裸 `z.number()`（`packages/compaction/compaction-basic/src/index.ts:81,83,117,119`）；只有 token/计数节点带 `.min(0)`/`.min(1)`（`index.ts:82,84,87-89`）。因此 `(0, 1]` 的 ratio 边界只存在于 `assertRatio` 中，而调优器自己的 schema 带有自己的边界，其校验也镜像这些断言。
+- 它的**允许范围**——即它在加载期运行的断言（`validatePolicy` `config.ts:277-304`、`assertRatio` `config.ts:358-361`），而它自己的 schema 并不携带这些范围：`Config` 声明的是**没有 `.max()`**，并把两个 ratio 节点留作裸 `z.number()`（`packages/compaction/compaction-basic/src/index.ts:87,89,123,125`）；只有 token/计数节点带 `.min(0)`/`.min(1)`（`index.ts:88,90,93-95`）。因此 `(0, 1]` 的 ratio 边界只存在于 `assertRatio` 中，而调优器自己的 schema 带有自己的边界，其校验也镜像这些断言。
 
 **不预先写入任何值（seedless）。** 该插件包插入调优器行时不带任何存储值，因此调优器自身的默认值**就是**上游 `compaction-basic` 的代码默认值，全新安装本身不会改动任何预设：如果某个预设的 `compaction-basic` 子项已经省略这十一个键，它本来就在按这些值运行，首轮重新调优会跳过它且不写入。只有当用户在页面上编辑某个值时，调优才会改变；见下方的*初始值*与*安装行为变更*。
 
@@ -153,7 +153,7 @@ summarizationModel, maxTokens, compactionRetries, maxOverflowRetries
 页面在**保存**旁边有一个次要的**恢复系统默认值**操作（启用/禁用规则与保存相同：未就绪或不可写，或写入进行中）。选择它会：
 
 1. 用**未设置**状态替换整个草稿——十一个受管字段全部清空，按模型覆盖表也清空——并**不写入任何内容**；
-2. 让用户先检查，然后**保存**会发出同样的一次原子 mutate，只是现在为**全部十一个**受管键各带一个 `unset` op。关键之处正在于此：页面在其他情况下总是设置八个物化的代码默认值，而那些显式值恰恰是让旧行继续存在的原因。设置层会针对 `inherited` 层解析每个 `unset`，并应用删除或设置继承值（`packages/settings/settings/src/index.ts:372-373`）；当得到的 config 与该继承层深度相等时，config 编辑器会从 profile 补丁中移除该行的 `config`——当只剩 `id`/`name` 时还会删除该行本身（它在 `packages/boot/config-editor/src/index.ts:99-100,120-126` 推导出的 `next`）。对于本插件包无种子值的挂载补丁，继承的 config 是 `{}`，因此重置后完全不留下显式覆盖；
+2. 让用户先检查，然后**保存**会发出同样的一次原子 mutate，只是现在为**全部十一个**受管键各带一个 `unset` op。关键之处正在于此：页面在其他情况下总是设置八个物化的代码默认值，而那些显式值恰恰是让旧行继续存在的原因。设置层会针对 `inherited` 层解析每个 `unset`，并应用删除或设置继承值（`packages/settings/settings/src/index.ts:372-373`）；当得到的 config 与该继承层深度相等时，config 编辑器会从 profile 补丁中移除该行的 `config`——当只剩 `id`/`name` 时还会删除该行本身（它在 `packages/boot/config-editor/src/index.ts:98-99,119-125` 推导出的 `next`）。对于本插件包无种子值的挂载补丁，继承的 config 是 `{}`，因此重置后完全不留下显式覆盖；
 3. 随后重新调优处理会解析代码默认值（空行上的 `liveTune`），并重写它所管理、仍持有其他值的每一个预设子项——正是这一步把过期的 `0.5 / 0.15 / 2` 子项迁移到 `0.8 / 0.16 / 1`。它仍会写入显式的代码默认键，所以 profile 补丁**并不干净**：行为变成了默认行为；文件并未被清空。
 
 **生效点。** 保存本身并不可靠地实时传播到预设行（见*保存与重载语义*）；可靠的生效点是下一次启动/重组。重新调优处理**确实**由保存调度——插件监听表单的 `loader/volatile-update` 和 `app-boot/config-reload`——因此重置操作并非摆设；在实测运行中不可靠的是到预设行的实时投递，而不是调度本身。HMR 只监视 profile 补丁、home 补丁和 profile 的 `package.json`（`packages/boot/hmr/src/index.ts:384-385,406-407`），因此插件包代码的改动只会在重组时被重新读取。按下重置并保存后，请重启后端（页面上的**重启后端**操作，或你自己重启）。

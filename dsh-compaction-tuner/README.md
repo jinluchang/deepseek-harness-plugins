@@ -17,8 +17,8 @@ Every option is documented and rendered with **both** facts the request asks for
   *Use* table below; and
 - its **allowed range** — the load-time asserts it runs (`validatePolicy` `config.ts:277-304`, `assertRatio` `config.ts:358-361`),
   which its own schema does NOT carry: that `Config` declares **no `.max()`** and leaves the two ratio
-  nodes bare `z.number()` (`packages/compaction/compaction-basic/src/index.ts:81,83,117,119`); only the
-  token/count nodes carry `.min(0)`/`.min(1)` (`index.ts:82,84,87-89`). So the `(0, 1]` ratio bound
+  nodes bare `z.number()` (`packages/compaction/compaction-basic/src/index.ts:87,89,123,125`); only the
+  token/count nodes carry `.min(0)`/`.min(1)` (`index.ts:88,90,93-95`). So the `(0, 1]` ratio bound
   lives solely in `assertRatio`, and the tuner's schema carries its own bounds and its checks mirror
   the asserts.
 
@@ -294,7 +294,7 @@ rule as Save: not ready or not writable, or a write in flight). Choosing it:
    or a set of the inherited value (`packages/settings/settings/src/index.ts:372-373`); when the
    resulting config deep-equals that inherited layer, the config editor removes the row's `config` from
    the profile patch — and deletes the row itself when only `id`/`name` remain (the `next` it derives at
-   `packages/boot/config-editor/src/index.ts:99-100,120-126`). With this bundle's seedless mount patch
+   `packages/boot/config-editor/src/index.ts:98-99,119-125`). With this bundle's seedless mount patch
    the inherited config is `{}`, so a reset leaves no explicit override at all;
 3. the retune pass then resolves the code defaults (`liveTune` on an empty row) and rewrites every
    preset child it manages that still holds other values — this is what moves the stale

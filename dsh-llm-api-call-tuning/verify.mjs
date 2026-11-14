@@ -253,7 +253,7 @@ const retryInputs = tree => findAll(
 )
 
 /** The package/SDK default placeholders of the provider-timeout controls. */
-const TIMEOUT_PLACEHOLDERS = Object.freeze(['300000', '600000', '60000'])
+const TIMEOUT_PLACEHOLDERS = Object.freeze(['300000', '600000', '20000'])
 
 /** The provider-timeout inputs of one merged route card, in family field order. */
 const timeoutInputs = tree => findAll(
@@ -742,10 +742,10 @@ function providersCard(page) {
 
 await check('the manifest declares the frozen identity, bundle patch, engines, and web client', () => {
   assert.equal(manifest.name, 'dsh-llm-api-call-tuning', `package name drifted to ${String(manifest.name)}`)
-  assert.equal(manifest.version, '0.2.2-rc.2', `version drifted to ${String(manifest.version)}`)
+  assert.equal(manifest.version, '0.2.2-rc.3', `version drifted to ${String(manifest.version)}`)
   assert.equal(manifest.private, false, 'the package must be publicly publishable')
   assert.equal(manifest.type, 'module', `type drifted to ${String(manifest.type)}`)
-  assert.equal(manifest.engines?.dsh, '^0.2.2-rc.2', `engines.dsh drifted to ${String(manifest.engines?.dsh)}`)
+  assert.equal(manifest.engines?.dsh, '^0.2.2-rc.3', `engines.dsh drifted to ${String(manifest.engines?.dsh)}`)
   assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml', `dsh.bundle.patch drifted to ${String(manifest.dsh?.bundle?.patch)}`)
   assert.equal(manifest.dsh?.client?.platform, 'web', `dsh.client.platform drifted to ${String(manifest.dsh?.client?.platform)}`)
   assert.deepEqual(
@@ -980,8 +980,8 @@ await check('every provider-timeout option carries the frozen shape, family, def
     },
     filesApiTimeoutMs: {
       family: 'files',
-      default: 60_000,
-      defaultText: '60000 ms (1 min); unset = package default 60000',
+      default: 20_000,
+      defaultText: '20000 ms (20 s); unset = package default 20000',
       range: 'integer 1..2147483647; 0 is refused (schema and load-time assert)',
       scopes: [
         { ns: 'llm-deepseek', pathTemplate: ['filesApiTimeoutMs'] },
@@ -1502,10 +1502,12 @@ await check('validateTune accumulates problems in field order, returns a frozen 
  * @param options - `configure` overrides the settings.configure body (may
  *   throw); `logger` seeds the optional logger; `browser` is false to mimic a
  *   headless Host whose `connection`/`webServer` inject is never satisfied;
- *   `lifecycle` is false to drop `effect`/`on` (the offline-double path).
+ *   `lifecycle` is false to drop `effect`/`on` (the offline-double path);
+ *   `admit` stubs Connection's admission check (default: every request is
+ *   admitted), and `admit: null` drops the capability to mimic an older peer.
  * @returns the context, the recorded calls, and the fiber.
  */
-function hostApplyContext({ configure, logger, browser = true, lifecycle = true, requestRejection } = {}) {
+function hostApplyContext({ configure, logger, browser = true, lifecycle = true, admit } = {}) {
   const calls = {
     injects: [], ctxEffects: [], injectedEffects: [], configures: [], warnings: [],
     listeners: [], route: undefined,
@@ -1523,7 +1525,9 @@ function hostApplyContext({ configure, logger, browser = true, lifecycle = true,
         return () => {}
       },
     },
-    connection: { requestRejection: typeof requestRejection === 'function' ? requestRejection : () => undefined },
+    connection: admit === null
+      ? {}
+      : { admit: typeof admit === 'function' ? admit : () => ({ peer: {} }) },
     webServer: {
       register(registration) {
         calls.route = { path: registration.path, kind: registration.kind, handler: registration.handler, disposed: false }
@@ -1532,6 +1536,7 @@ function hostApplyContext({ configure, logger, browser = true, lifecycle = true,
     },
   }
   const makeChild = () => ({
+    logger: log,
     effect(callback, label) {
       const dispose = callback()
       assert.equal(typeof dispose, 'function', 'every injected effect must return a disposer')
@@ -1541,7 +1546,7 @@ function hostApplyContext({ configure, logger, browser = true, lifecycle = true,
     settings: services.settings,
     connection: services.connection,
     webServer: services.webServer,
-    get(service) { return services[service] },
+    get(service) { return service === 'logger' ? log : services[service] },
   })
   const ctx = {
     fiber,
@@ -1671,7 +1676,7 @@ function dispatcherHostContext(config = {}, fiber = undefined) {
   const child = {
     effect(callback) { const dispose = callback(); return () => { if (typeof dispose === 'function') dispose() } },
     settings: { configure() { return () => {} } },
-    connection: { requestRejection: () => undefined },
+    connection: { admit: () => ({ peer: {} }) },
     webServer: {
       register(registration) {
         state.route = { path: registration.path, kind: registration.kind, disposed: false }
@@ -1846,7 +1851,7 @@ const events = []
 const settingsChild = { effect(callback) { return callback() }, settings: { configure() { return () => {} } } }
 const browserChild = {
   effect(callback) { return callback() },
-  connection: { requestRejection: () => undefined },
+  connection: { admit: () => ({ peer: {} }) },
   webServer: { register() { return () => {} } },
 }
 const ctx = {
@@ -2123,7 +2128,7 @@ await check('all three docs name every provider-timeout field with its namespace
       assert.ok(text.includes(token), `${file} does not document the provider-timeout address/range token ${token}`)
     }
   }
-  for (const token of ['300000', '600000', '60000']) {
+  for (const token of ['300000', '600000', '20000']) {
     assert.ok(readme.includes(token), `README.md does not state the provider-timeout default ${token}`)
     assert.ok(readmeZh.includes(token), `README.zh.md does not state the provider-timeout default ${token}`)
     assert.ok(contract.includes(token), `CONTRACT.md does not state the provider-timeout default ${token}`)
@@ -2616,7 +2621,7 @@ await check('a route deviating ONLY by a stored timeout field is listed, and its
   assert.equal(cards[0].props.row.provider, 'deepseek-official', 'the timeout-only deviating route is missing')
   const card = mountRouteCard(page, 'deepseek-official')
   assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.value), ['450000', ''], 'the timeout half is not seeded from the USER layer')
-  assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.placeholder), ['300000', '60000'], 'the DeepSeek timeout placeholders drifted')
+  assert.deepEqual(timeoutInputs(card.tree).map(input => input.props.placeholder), ['300000', '20000'], 'the DeepSeek timeout placeholders drifted')
   assert.deepEqual(retryInputs(card.tree).map(input => input.props.value), ['5', '500', '10000', '0.1'], 'a timeout-only route must still show its effective retry half')
   assert.deepEqual(
     findAll(card.tree, node => node.type === 'h5').map(node => directText(node)),
@@ -4375,13 +4380,31 @@ await check('disposal settles every parked prompt with undefined and detaches th
   assert.equal(harness.calls.listeners.filter(entry => entry.event === 'agent/request-error').length, 0, 'disposal did not detach the listener')
 })
 
-await check('the route fence answers requestRejection 401/403 before method, body, or envelope parsing', async () => {
-  for (const [status, copy] of [[401, 'unauthorized'], [403, 'forbidden']]) {
-    const harness = manualRetryHost({ requestRejection: () => status })
+await check('the route fence answers admit rejections 401/403/503 before method, body, or envelope parsing', async () => {
+  for (const [status, copy] of [[401, 'unauthorized'], [403, 'forbidden'], [503, 'authentication unavailable']]) {
+    const harness = manualRetryHost({ admit: () => ({ rejection: status }) })
     const reply = await retryCall(harness, { method: 'GET', url: '/llm-api-call-tuning/state', rawBody: '{not json' })
-    assert.equal(reply.status, status, `the trust fence did not answer ${String(status)} first`)
+    assert.equal(reply.status, status, `the admission fence did not answer ${String(status)} first`)
     assert.equal(reply.body, copy, `the ${String(status)} body drifted to ${JSON.stringify(reply.body)}`)
   }
+
+  // An admitted peer proceeds to the endpoint dispatch, and the admission
+  // receives exactly the carrier facts the old `admit(req)` call supplied.
+  const seen = []
+  const admitted = manualRetryHost({ admit: (request) => { seen.push(request); return { peer: { id: 'peer-fence' } } } })
+  const reply = await retryCall(admitted, { endpoint: 'state', payload: { sessionId: 'sess-fence' } })
+  assert.deepEqual(retryValue(reply), { pending: null }, 'an admitted request did not reach the endpoint')
+  assert.equal(seen.length, 1, `the route admitted the request ${seen.length} times`)
+  assert.deepEqual(Object.keys(seen[0]).sort(), ['headers', 'method', 'url'], `the admission facts drifted: ${JSON.stringify(Object.keys(seen[0]))}`)
+  assert.equal(seen[0].headers['content-type'], 'application/json', 'the admission did not receive the request headers')
+  assert.equal(seen[0].method, 'POST', 'the admission did not receive the request method')
+  assert.equal(seen[0].url, '/llm-api-call-tuning/state', 'the admission did not receive the request URL')
+
+  // An older peer without `admit` keeps the feature off instead of crashing.
+  const legacy = manualRetryHost({ admit: null })
+  assert.equal(legacy.calls.route, undefined, 'a route mounted although connection.admit is unavailable')
+  assert.equal(legacy.calls.warnings.length, 1, `the missing-admit boot warned ${legacy.calls.warnings.length} times`)
+  assert.match(String(legacy.calls.warnings[0]), /needs the connection\.admit and webServer services; it stays unmounted/, `the missing-admit warning drifted: ${String(legacy.calls.warnings[0])}`)
 })
 
 await check('the route guards answer 404 unknown endpoint, 405 non-POST, 415 wrong media, 400 bad JSON, and 413 oversized bodies', async () => {

@@ -349,11 +349,11 @@ into the same op list as the card's retry leaves.
 | --- | --- | --- | --- | --- |
 | `streamIdleTimeoutMs` | `llm-pi-ai`; `llm-deepseek`; `llm-deepseek-account` | `['providers', <route>, 'streamIdleTimeoutMs']`; `['streamIdleTimeoutMs']` at the two DeepSeek roots | `300000` ms (5 min), upstream `DEFAULT_STREAM_IDLE_TIMEOUT_MS` | blank = unset (package default), or integer `1..2147483647`; `0` refused |
 | `timeoutMs` | `llm-pi-ai` only | `['providers', <route>, 'timeoutMs']` | `unset` = SDK default (about `600000` ms); DSH records no default (`z.natural()`) | blank = unset (SDK default), or integer `1..2147483647`; `0` refused |
-| `filesApiTimeoutMs` | `llm-deepseek`; `llm-deepseek-account` only | `['filesApiTimeoutMs']` at the two DeepSeek roots | `60000` ms (1 min), upstream `DEFAULT_FILES_API_TIMEOUT_MS` | blank = unset (package default), or integer `1..2147483647`; `0` refused |
+| `filesApiTimeoutMs` | `llm-deepseek`; `llm-deepseek-account` only | `['filesApiTimeoutMs']` at the two DeepSeek roots | `20000` ms (20 s), upstream `DEFAULT_FILES_API_TIMEOUT_MS` | blank = unset (package default), or integer `1..2147483647`; `0` refused |
 
 **Blank = unset = keep the package/SDK default.** The card seeds the timeout draft from the **user
 layer** only: a stored override paints its number, and an untouched route paints blank even when the
-effective value the Host reports is the package default (`300000` / `600000` / `60000`). Save writes only
+effective value the Host reports is the package default (`300000` / `600000` / `20000`). Save writes only
 the leaves whose draft changed; an untouched control writes nothing.
 
 **`0` is refused, and there is no off switch.** The upstream DeepSeek and stream-idle schemas require a
@@ -387,7 +387,7 @@ in this page. This is recorded here so the omission is intentional, not an overs
 
 The upstream defaults and schema bounds the metadata mirrors are pinned against `$DSH_HARNESS_CHECKOUT`:
 `llm-deepseek/src/defaults.ts` (`DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000`,
-`DEFAULT_FILES_API_TIMEOUT_MS = 60_000`), `llm-deepseek/src/config.ts` and `llm-pi-ai/src/config.ts`
+`DEFAULT_FILES_API_TIMEOUT_MS = 20_000`), `llm-deepseek/src/config.ts` and `llm-pi-ai/src/config.ts`
 (`z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS)`, `timeoutMs: z.natural()`).
 
 ## Write operation shapes (exact)
@@ -689,9 +689,10 @@ keys are ignored, like Connection's own schema.
 
 **Guards, in order** (all before any endpoint work):
 
-1. `connection.requestRejection(req)` — Connection's Host/Origin fence and browser authentication; a
-   rejection answers its status (`401`/`403`) as plain text. This is the route's authentication: there is
-   no bearer token of this plugin's own.
+1. `connection.admit({ headers, method, url })` — Connection's Host/Origin fence and provider
+   authentication; an admission rejection answers its status (`401`/`403`/`503`) as plain text. This is
+   the route's authentication: there is no bearer token of this plugin's own. The channel mounts only
+   when the peer exposes `admit`; an older Connection without it leaves the manual-retry feature off.
 2. Endpoint segment: only `state` and `decide` under the channel prefix, exactly one segment matching
    `[A-Za-z0-9_$.-]+`; anything else is `404`.
 3. Method: `POST` only; anything else is `405` with `allow: POST`.

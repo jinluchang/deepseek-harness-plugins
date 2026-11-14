@@ -269,7 +269,7 @@ Defaults are the upstream package/SDK values; a blank field writes nothing, so t
 | --- | --- | --- | --- | --- |
 | `streamIdleTimeoutMs` | every active route | `llm-pi-ai` → `providers.<route>.streamIdleTimeoutMs`; `llm-deepseek` / `llm-deepseek-account` → `streamIdleTimeoutMs` | `300000` ms (5 min) | blank (package default) or integer 1..2147483647; `0` is refused |
 | `timeoutMs` | `llm-pi-ai` routes only | `llm-pi-ai` → `providers.<route>.timeoutMs` | unset = SDK default (about `600000` ms) | blank (SDK default) or integer 1..2147483647; `0` is refused |
-| `filesApiTimeoutMs` | `llm-deepseek` and `llm-deepseek-account` only | `llm-deepseek` / `llm-deepseek-account` namespace root → `filesApiTimeoutMs` | `60000` ms (1 min) | blank (package default) or integer 1..2147483647; `0` is refused |
+| `filesApiTimeoutMs` | `llm-deepseek` and `llm-deepseek-account` only | `llm-deepseek` / `llm-deepseek-account` namespace root → `filesApiTimeoutMs` | `20000` ms (20 s) | blank (package default) or integer 1..2147483647; `0` is refused |
 
 Why `0` is refused and there is no off switch: the DeepSeek and stream-idle schemas require a strictly
 positive value (the load-time asserts reject `<= 0`), and a zero SDK request timeout would abort every

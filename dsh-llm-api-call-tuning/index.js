@@ -530,7 +530,7 @@ export const Config = z === undefined ? undefined : z.object(Object.fromEntries(
  *   `z.natural()` (0 is schema-legal) but 0 aborts every request immediately,
  *   so the page refuses it and the metadata marks it zero-rejected.
  * - `filesApiTimeoutMs`: `llm-deepseek`/`llm-deepseek-account` only, package
- *   default 60 000 ms, same `(0, MAX_TIMER_DELAY_MS]` bound and assert.
+ *   default 20 000 ms, same `(0, MAX_TIMER_DELAY_MS]` bound and assert.
  *
  * The page narrows all three to integers even where the upstream schema would
  * accept a fractional millisecond (`integerOnly`), and because the schemas have
@@ -591,8 +591,8 @@ export const PROVIDER_TIMEOUT_FIELDS = Object.freeze([
   Object.freeze({
     key: 'filesApiTimeoutMs',
     family: 'files',
-    default: 60_000,
-    defaultText: '60000 ms (1 min); unset = package default 60000',
+    default: 20_000,
+    defaultText: '20000 ms (20 s); unset = package default 20000',
     range: 'integer 1..2147483647; 0 is refused (schema and load-time assert)',
     unit: 'ms',
     integerOnly: true,
@@ -608,7 +608,7 @@ export const PROVIDER_TIMEOUT_FIELDS = Object.freeze([
         pathTemplate: Object.freeze(['filesApiTimeoutMs']),
       }),
     ]),
-    description: 'Timeout for the DeepSeek Files API calls on a DeepSeek route; unset keeps the package default of 60000 ms.',
+    description: 'Timeout for the DeepSeek Files API calls on a DeepSeek route; unset keeps the package default of 20000 ms.',
   }),
 ])
 
@@ -1028,8 +1028,8 @@ function installFetchTimeouts(ctx, config) {
 /**
  * Authenticated Web route the settings page uses for the manual same-turn
  * retry. `dsh-backend-restart` established the shape: a plugin-owned prefix
- * route whose first act is `ctx.connection.requestRejection(req)`, so
- * Connection's Host/Origin fence and browser authentication run before any
+ * route whose first act is `ctx.connection.admit({ headers, method, url })`, so
+ * Connection's Host/Origin fence and provider authentication run before any
  * method, body, or envelope decision.
  */
 const RETRY_CHANNEL = '/llm-api-call-tuning'
@@ -1459,8 +1459,9 @@ function handleRetryRequest(desk, endpoint, payload) {
  * def-site inject list, so that call is refused even though this plugin injects
  * `webServer` (the same limitation `dsh-backend-restart` records). Mounting on
  * this plugin's own fiber keeps `webServer` resolution here and reproduces
- * Connection's channel adapter before dispatch: its Host/Origin fence and
- * browser authentication first, then the request guards (POST only,
+ * Connection's channel adapter before dispatch: its admission check
+ * (`connection.admit`, which applies the Host/Origin fence and provider
+ * authentication) first, then the request guards (POST only,
  * channel-relative endpoint, JSON media type, bounded body), the
  * `client-request` envelope parse, and the `server-response` framing.
  *
@@ -1472,20 +1473,23 @@ function registerRetryChannel(ctx, desk) {
   const webServer = ctx.webServer ?? ctx.get?.('webServer')
   const connection = ctx.connection ?? ctx.get?.('connection')
   if (webServer === undefined || typeof webServer.register !== 'function'
-    || connection === undefined || typeof connection.requestRejection !== 'function') {
-    warn(ctx, `${name}: the manual-retry channel needs the connection and webServer services; it stays unmounted`)
+    || connection === undefined || typeof connection.admit !== 'function') {
+    warn(ctx, `${name}: the manual-retry channel needs the connection.admit and webServer services; it stays unmounted`)
     return () => {}
   }
   const dispose = webServer.register({
     kind: 'prefix',
     path: RETRY_CHANNEL,
     handler: async (req, res) => {
-      // Connection's fence owns trust and browser authentication; it answers
-      // before any method, body, or envelope decision, as its own adapter does.
-      const rejection = connection.requestRejection(req)
+      // Connection's admission owns trust and provider authentication; it
+      // answers before any method, body, or envelope decision, as its own
+      // adapter does. `admit` replaced `requestRejection` upstream: the
+      // admission's rejection status is the refusal Connection would have
+      // reported, and 503 means no authentication provider could decide.
+      const rejection = connection.admit({ headers: req.headers, method: req.method, url: req.url })?.rejection
       if (rejection !== undefined) {
         res.writeHead(rejection)
-        res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+        res.end(rejection === 401 ? 'unauthorized' : rejection === 503 ? 'authentication unavailable' : 'forbidden')
         return
       }
       const endpoint = retryEndpointOf(req.url)

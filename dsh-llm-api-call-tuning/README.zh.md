@@ -121,7 +121,7 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 | --- | --- | --- | --- | --- |
 | `streamIdleTimeoutMs` | 所有已激活路由 | `llm-pi-ai` → `providers.<route>.streamIdleTimeoutMs`；`llm-deepseek` / `llm-deepseek-account` → `streamIdleTimeoutMs` | `300000` 毫秒（5 分钟） | 留空（包默认）或 1..2147483647 的整数；`0` 被拒绝 |
 | `timeoutMs` | 仅 `llm-pi-ai` 路由 | `llm-pi-ai` → `providers.<route>.timeoutMs` | 未设置 = SDK 默认（约 `600000` 毫秒） | 留空（SDK 默认）或 1..2147483647 的整数；`0` 被拒绝 |
-| `filesApiTimeoutMs` | 仅 `llm-deepseek` 与 `llm-deepseek-account` | `llm-deepseek` / `llm-deepseek-account` 命名空间根 → `filesApiTimeoutMs` | `60000` 毫秒（1 分钟） | 留空（包默认）或 1..2147483647 的整数；`0` 被拒绝 |
+| `filesApiTimeoutMs` | 仅 `llm-deepseek` 与 `llm-deepseek-account` | `llm-deepseek` / `llm-deepseek-account` 命名空间根 → `filesApiTimeoutMs` | `20000` 毫秒（20 秒） | 留空（包默认）或 1..2147483647 的整数；`0` 被拒绝 |
 
 为什么拒绝 `0` 而没有关闭开关：DeepSeek 与流空闲 schema 要求严格为正（加载期断言拒绝 `<= 0`），而 SDK 请求超时为 0 会让每个请求立即中止。这些 schema 没有“禁用”状态，因此**不限**预设写入 `2147483647` 毫秒上限（这是上限，不是关闭开关，约 24.8 天）——一个极大的上限，而不是禁用。直接调用 `settings.mutate`（或手工编辑 profile patch）仍可能持久化 `0`；对两个看门狗而言这会触发提供方加载期断言失败，路由随之无法解析——这正是页面要阻止的情况。
 

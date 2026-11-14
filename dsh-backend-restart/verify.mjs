@@ -35,19 +35,24 @@ async function check(label, body) {
  * Build a Cordis context double for the Host half.
  *
  * It exposes exactly what the mounted route reads: the carrier's `register`
- * and `getOrigin`, and the Connection fence `requestRejection`. The old
- * `connection.rpc` accessor and the `ctx.root` fallback are deliberately gone,
- * so this double also guards against the removed registration mechanism
- * coming back.
+ * and `getOrigin`, and Connection's admission fence `admit`. The old
+ * `connection.rpc` accessor, the removed `requestRejection` helper, and the
+ * `ctx.root` fallback are deliberately gone, so this double also guards
+ * against a removed registration or fencing mechanism coming back.
  *
- * @param {{ appExit?: unknown, origin?: string | null, rejection?: 401 | 403 | ((request: object) => 401 | 403 | undefined) }} [options] - service stand-ins.
+ * @param {{ appExit?: unknown, origin?: string | null, admission?: { peer: object } | { rejection: 401 | 403 | 503 } | ((request: object) => { peer: object } | { rejection: 401 | 403 | 503 }), admit?: boolean }} [options] - service stand-ins.
  * @returns {object} the context double, exposing what the plugin mounted and disposed.
  */
-function fakeContext({ appExit = () => {}, origin = 'http://127.0.0.1:3099', rejection = undefined } = {}) {
+function fakeContext({
+  appExit = () => {},
+  origin = 'http://127.0.0.1:3099',
+  admission = { peer: { id: 'browser-peer' } },
+  admit = true,
+} = {}) {
   const routes = []
   const effects = []
   const warnings = []
-  const rejections = []
+  const admissions = []
   const services = new Map([['appExit', appExit]])
   const webServer = {
     getOrigin: () => {
@@ -66,18 +71,21 @@ function fakeContext({ appExit = () => {}, origin = 'http://127.0.0.1:3099', rej
     },
   }
   services.set('webServer', webServer)
-  const requestRejection = (request) => {
-    rejections.push(request)
-    return typeof rejection === 'function' ? rejection(request) : rejection
+  const connection = {}
+  if (admit) {
+    connection.admit = (request) => {
+      admissions.push(request)
+      return typeof admission === 'function' ? admission(request) : admission
+    }
   }
   return {
     routes,
     effects,
     warnings,
-    rejections,
+    admissions,
     logger: { warn: message => { warnings.push(message) } },
     webServer,
-    connection: { requestRejection },
+    connection,
     effect(callback, label) {
       const disposer = callback()
       effects.push({ label, disposer })
@@ -225,15 +233,28 @@ await check('the channel mounts one authenticated prefix route and disposes it',
   assert.equal(typeof ctx.routes[0].handler, 'function')
 
   // Connection's fence answers before any method, body, or envelope decision.
-  for (const [rejection, body] of [[401, 'unauthorized'], [403, 'forbidden']]) {
-    const fenced = fakeContext({ rejection })
+  for (const [rejection, body] of [[401, 'unauthorized'], [403, 'forbidden'], [503, 'authentication unavailable']]) {
+    const fenced = fakeContext({ admission: { rejection } })
     apply(fenced)
     const denied = await send(fenced, { method: 'GET', url: '/backend-restart/status', headers: {} })
     assert.equal(denied.res.status, rejection)
     assert.equal(denied.res.body, body)
     assert.equal(denied.res.headers, undefined, 'the fence answers before any content-type decision')
-    assert.equal(fenced.rejections.length, 1)
+    assert.deepEqual(fenced.admissions, [{ headers: {}, method: 'GET', url: '/backend-restart/status' }])
   }
+
+  // A Host without `admit()` cannot make an authentication decision: the
+  // channel answers 503 instead of throwing or dispatching the request.
+  const unfenced = fakeContext({ admit: false })
+  apply(unfenced)
+  const refused = await send(unfenced, { method: 'GET', url: '/backend-restart/status', headers: {} })
+  assert.equal(refused.res.status, 503)
+  assert.equal(refused.res.body, 'authentication unavailable')
+
+  // The default double admits; dispatch therefore proceeds past the fence.
+  const admitted = await post(ctx, 'status')
+  assert.equal(admitted.res.status, 200)
+  assert.deepEqual(ctx.admissions, [{ headers: { 'content-type': 'application/json' }, method: 'POST', url: '/backend-restart/status' }])
 
   ctx.effects.forEach(entry => { if (typeof entry.disposer === 'function') entry.disposer() })
   assert.deepEqual(ctx.routes, [])

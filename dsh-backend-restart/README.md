@@ -61,7 +61,7 @@ argv, or a launcher that never exits).
   `parseArguments`, `probePort`, `waitForSlot`, `startSuccessor`, and `supervise` are exercised directly by
   passing flags on the command line and reading the exit codes documented in the module header.
 - Host half without a browser: the plugin's `apply()` only needs a Cordis context exposing
-  `webServer.register`, `webServer.getOrigin`, `connection.requestRejection`, and `appExit`, so a fake
+  `webServer.register`, `webServer.getOrigin`, `connection.admit`, and `appExit`, so a fake
   context drives the mounted route with Connection-shaped envelopes and asserts the `status` and `restart`
   responses, the refusal cases, the trust fence, the request guards, and the launch command it records.
 - Full cycle: run an isolated instance with its own `DSH_HOME` on a spare port, mint a browser-session

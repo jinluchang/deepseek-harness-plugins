@@ -16,7 +16,7 @@ README, and ships a hermetic verification suite that runs without a live Host.
 
 ## Requirements
 
-- **DSH `^0.2.2-rc.2`** — declared as `engines.dsh` in every manifest, so a DSH host outside that range
+- **DSH `^0.2.2-rc.3`** — declared as `engines.dsh` in every manifest, so a DSH host outside that range
   refuses the install.
 - These packages declare no separate Node.js version. Their verification scripts are plain ESM and run
   with the `node` binary you already use for DSH.
@@ -56,11 +56,11 @@ full page load.
 
 ```sh
 cd dsh-backend-restart
-npm pack    # -> dsh-backend-restart-0.2.2-rc.2.tgz
+npm pack    # -> dsh-backend-restart-0.2.2-rc.3.tgz
 ```
 
 ```js
-plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.2.tgz" })
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.3.tgz" })
 ```
 
 ### From Git (subdirectory selector)

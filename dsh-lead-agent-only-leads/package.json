@@ -1,6 +1,6 @@
 {
   "name": "dsh-lead-agent-only-leads",
-  "version": "0.2.2-rc.2",
+  "version": "0.2.2-rc.3",
   "private": false,
   "type": "module",
   "description": "Lead agent only leads: a preset whose Team Lead delegates every job and never waits on a teammate, plus the host plugin that enforces that contract.",
@@ -16,7 +16,7 @@
   },
   "homepage": "https://github.com/jinluchang/deepseek-harness-plugins/tree/main/dsh-lead-agent-only-leads",
   "bugs": { "url": "https://github.com/jinluchang/deepseek-harness-plugins/issues" },
-  "engines": { "dsh": "^0.2.2-rc.2" },
+  "engines": { "dsh": "^0.2.2-rc.3" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

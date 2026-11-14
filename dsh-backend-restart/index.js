@@ -96,6 +96,26 @@ export function currentOrigin(ctx) {
 }
 
 /**
+ * Apply Connection's trust fence to one request.
+ *
+ * `admit()` is the Host half's stable admission API: it applies the Host/Origin
+ * fence and credential verification, and reports a refusal status instead of a
+ * Peer. The `requestRejection()` helper it superseded is gone from current
+ * Hosts, so in its absence the channel fails closed rather than dispatching an
+ * unauthenticated request.
+ *
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin's context (injects connection).
+ * @param {import('node:http').IncomingMessage} req - request entering the channel.
+ * @returns {401 | 403 | 503 | undefined} status refusing the request, or undefined when it is admitted.
+ */
+function admissionStatus(ctx, req) {
+  const connection = ctx.connection
+  if (typeof connection?.admit !== 'function') return 503
+  const admission = connection.admit({ headers: req.headers, method: req.method, url: req.url })
+  return 'rejection' in admission ? admission.rejection : undefined
+}
+
+/**
  * Mount the restart channel as an authenticated Web route.
  *
  * `ctx.connection.rpc.handle()` cannot be used here. On Cordis 4.0.0-rc.11 the
@@ -106,7 +126,7 @@ export function currentOrigin(ctx) {
  *
  * Mounting the route on this plugin's own fiber keeps `webServer` resolution
  * where it belongs. Connection's channel adapter is reproduced before dispatch:
- * its Host/Origin fence and browser authentication run first, then the request
+ * its Host/Origin fence and credential verification run first, then the request
  * guards (POST only, channel-relative endpoint, JSON media type, JSON body), the
  * `client-request` envelope parse, and the `server-response` framing including
  * Connection's failure results and its raw 500 for a thrown handler.
@@ -120,12 +140,13 @@ export function registerChannel(ctx, handler) {
     kind: 'prefix',
     path: CHANNEL,
     handler: async (req, res) => {
-      // Connection's fence owns trust and browser authentication; it answers
+      // Connection's fence owns trust and credential verification; it answers
       // before any method, body, or envelope decision, as its own adapter does.
-      const rejection = ctx.connection.requestRejection(req)
+      const rejection = admissionStatus(ctx, req)
       if (rejection !== undefined) {
         res.writeHead(rejection)
-        res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+        res.end(rejection === 401 ? 'unauthorized'
+          : rejection === 503 ? 'authentication unavailable' : 'forbidden')
         return
       }
       const endpoint = endpointOf(req.url)

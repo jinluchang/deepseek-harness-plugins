@@ -53,8 +53,8 @@ The *Code default* column is the upstream `compaction-basic` resolution fallback
 (`packages/compaction/compaction-basic/src/config.ts:20,23,75-76,102-103,105-108,244-245`); the
 *Range (enforced by)* column is the load-time assert. **Precisely:** upstream's own `Config` declares
 **no `.max()`** and leaves the two ratio nodes bare `z.number()`
-(`packages/compaction/compaction-basic/src/index.ts:81,83,117,119`), so the `(0, 1]` ratio bound lives
-ONLY in `assertRatio`; the token/count nodes do carry `.min(0)`/`.min(1)` (`index.ts:82,84,87-89`).
+(`packages/compaction/compaction-basic/src/index.ts:87,89,123,125`), so the `(0, 1]` ratio bound lives
+ONLY in `assertRatio`; the token/count nodes do carry `.min(0)`/`.min(1)` (`index.ts:88,90,93-95`).
 **Nothing is seeded.** `cordis.patch.yml` inserts the row with no `config`, so the *Code default* column
 is also the value a fresh install runs, and a preset that omits the keys is already in tune.
 
@@ -141,7 +141,7 @@ applies either the deletion or a set of the inherited value
 (`packages/settings/settings/src/index.ts:390-398`). When the resulting config deep-equals that
 inherited layer, the config editor removes the row's `config` from the profile patch — and deletes the
 row itself when only `id`/`name` remain (the `next` it derives at
-`packages/boot/config-editor/src/index.ts:99-100,120-126`). The retune pass then resolves the code defaults
+`packages/boot/config-editor/src/index.ts:98-99,119-125`). The retune pass then resolves the code defaults
 (`liveTune` on an empty row) and rewrites every managed preset child that holds other values, while a
 child that already omits the keys stays skipped. It still writes explicit code-default keys, so the
 profile patch is **not pristine** after a reset. The retune pass **is** scheduled by the save itself
@@ -165,7 +165,7 @@ The tuner then projects the same values into the preset rows the resolved editor
   removes. Every other child row, every other key of the compaction child, and every
   `{__jsExpr: "..."}` expression map is preserved verbatim; `deepClone()` passes any value with a
   non-plain prototype through untouched. On write, the editor turns single-key `{__jsExpr}` maps back
-  into `!!js` tags (`visit(document` `packages/boot/config-editor/src/index.ts:128-134`).
+  into `!!js` tags (`visit(document` `packages/boot/config-editor/src/index.ts:127-133`).
 - `projectedTune(values)` is the exact key set written: the live/default value of each owned key, the
   retention pair resolved to exactly one form, and `maxTokens` resolved as
   `liveMaxTokens ?? liveHeadroomTokens` — upstream's derivation order (`config.maxTokens ?? headroomTokens` `config.ts:76`) applied to the
@@ -182,8 +182,8 @@ The tuner then projects the same values into the preset rows the resolved editor
   because it skips such a row first.
 
 `configEditor.edit()` re-validates the next config on the row's own fiber runtime before it writes
-anything — `resolveConfig` at `packages/boot/config-editor/src/index.ts:103-104`, atomic write at
-`:142` — so a per-field range/step violation never reaches the profile patch.
+anything — `resolveConfig` at `packages/boot/config-editor/src/index.ts:102-103`, atomic write at
+`:140` — so a per-field range/step violation never reaches the profile patch.
 
 ### Install behaviour change (the ten projected keys)
 
@@ -345,7 +345,7 @@ regardless (see *Live save behaviour*).
 - `loader/volatile-update`, which the loader dispatches to the **owning fiber only**, i.e. this
   plugin's own volatile commits. A save on the Settings page is what this carries.
 - `app-boot/config-reload`, the profile-reconcile completion signal (declared at
-  `packages/boot/app-boot/src/index.ts:55`, emitted by `ctx.emit` at `:409`), so a live save is followed even when
+  `packages/boot/app-boot/src/index.ts:56`, emitted by `ctx.emit` at `:421`), so a live save is followed even when
   the volatile-diff branch never reports it; the settings service consumes the same event
   (`ctx.on` `packages/settings/settings/src/index.ts:234`).
 - `loader/entry-init` for a row whose `name` is `@deepseek-ai/dsh-agent-preset`, so a preset that
@@ -481,7 +481,7 @@ The page (`TunerSection`):
   `role="alert"` (`restartAlert` `client.js:1183-1185`).
 - **Transport rejection means possibly-restarting.** A rejected `restart` call enters recovery rather
   than reporting failure (`recover` `client.js:1176`), because the process may exit before its reply arrives —
-  the rule (`transport rejection` `dsh-backend-restart/CONTRACT.md:59`) sets for that channel's own client.
+  the rule (`transport rejection` `dsh-backend-restart/CONTRACT.md:60`) sets for that channel's own client.
 - **Bounded recovery.** `recover()` (`client.js:1141`) runs `awaitSuccessor()` (`client.js:845`):
   poll the document root (`probeRoot()`, `client.js:817`; GET, `cache:'no-store'`, same-origin, 5 s
   probe timeout) until the old listener stops answering, for up to `DOWN_BUDGET_MS = 20000`
@@ -525,7 +525,7 @@ copy with the action disabled. The manifest declares the connection client in `d
   replaces it. There is deliberately no "clear every preset's table" expression. The page checks the
   picker's box values (including each entry's resolved cap), and `tuneProblem()` re-checks it Host-side before any
   write, mirroring `resolveConfig()`'s per-entry cap resolution (`policy.maxTokens` `config.ts:83-90`), so an accepted
-  table cannot abort compaction-basic load at the next boot (`constructor` `index.ts:136-140`) — a property that no
+  table cannot abort compaction-basic load at the next boot (`constructor` `index.ts:145-149`) — a property that no
   longer depends on `projectedTune()` happening to emit a top-level `maxTokens`.
 - **The integer range is narrower than upstream's.** Every integer field, and the DERIVED `maxTokens`
   value, is checked with `Number.isSafeInteger` Host-side and page-side, so `9007199254740993` and `1e21`

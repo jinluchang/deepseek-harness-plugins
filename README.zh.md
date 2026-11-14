@@ -14,7 +14,7 @@
 
 ## 要求
 
-- **DSH `^0.2.2-rc.2`** —— 在每个 manifest 中都声明为 `engines.dsh`，因此超出该范围的 DSH 宿主会拒绝安装。
+- **DSH `^0.2.2-rc.3`** —— 在每个 manifest 中都声明为 `engines.dsh`，因此超出该范围的 DSH 宿主会拒绝安装。
 - 这些包没有单独声明 Node.js 版本。它们的校验脚本是普通 ESM，用你运行 DSH 时已经在用的 `node` 二进制即可执行。
 
 ## 安装
@@ -45,11 +45,11 @@ plugin_manager({ action: "install_bundle", target: "/abs/path/to/deepseek-harnes
 
 ```sh
 cd dsh-backend-restart
-npm pack    # -> dsh-backend-restart-0.2.2-rc.2.tgz
+npm pack    # -> dsh-backend-restart-0.2.2-rc.3.tgz
 ```
 
 ```js
-plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.2.tgz" })
+plugin_manager({ action: "install_bundle", target: "/abs/path/dsh-backend-restart-0.2.2-rc.3.tgz" })
 ```
 
 ### 从 Git 安装（子目录选择器）
